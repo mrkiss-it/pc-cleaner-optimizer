@@ -608,23 +608,42 @@ class ServiceContextDialog(QDialog):
             self.table_menus.setItem(row, 4, item_st_m)
 
             # Action
-            btn_toggle = QPushButton("Tắt" if m.is_enabled else "Bật")
-            btn_toggle.setFixedHeight(24)
-            btn_toggle.setStyleSheet(f"""
-                QPushButton {{
-                    background: {_CARD_BG};
-                    color: {_TEXT_PRIMARY};
-                    border: 1px solid {_CARD_BORDER};
-                    border-radius: 4px;
-                    padding: 0 10px;
-                    font-size: 11px;
-                }}
-                QPushButton:hover {{ background: #21262d; }}
-            """)
-            btn_toggle.setCursor(Qt.PointingHandCursor)
-            target_enable = not m.is_enabled
-            btn_toggle.clicked.connect(lambda checked=False, item=m, en=target_enable: self._on_toggle_menu(item, en))
-            self.table_menus.setCellWidget(row, 5, btn_toggle)
+            if m.is_orphan:
+                btn_act = QPushButton("🗑️ Xóa")
+                btn_act.setFixedHeight(24)
+                btn_act.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {_DANGER}22;
+                        color: {_DANGER};
+                        border: 1px solid {_DANGER};
+                        border-radius: 4px;
+                        padding: 0 10px;
+                        font-size: 11px;
+                        font-weight: bold;
+                    }}
+                    QPushButton:hover {{ background: {_DANGER}44; }}
+                """)
+                btn_act.setCursor(Qt.PointingHandCursor)
+                btn_act.setToolTip("Xóa vĩnh viễn menu mồ côi rác này khỏi Registry")
+                btn_act.clicked.connect(lambda checked=False, item=m: self._on_delete_menu(item))
+            else:
+                btn_act = QPushButton("Tắt" if m.is_enabled else "Bật")
+                btn_act.setFixedHeight(24)
+                btn_act.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {_CARD_BG};
+                        color: {_TEXT_PRIMARY};
+                        border: 1px solid {_CARD_BORDER};
+                        border-radius: 4px;
+                        padding: 0 10px;
+                        font-size: 11px;
+                    }}
+                    QPushButton:hover {{ background: #21262d; }}
+                """)
+                btn_act.setCursor(Qt.PointingHandCursor)
+                target_enable = not m.is_enabled
+                btn_act.clicked.connect(lambda checked=False, item=m, en=target_enable: self._on_toggle_menu(item, en))
+            self.table_menus.setCellWidget(row, 5, btn_act)
 
     # ------------------------------------------------------------------
     # Actions
@@ -713,19 +732,62 @@ class ServiceContextDialog(QDialog):
         else:
             QMessageBox.warning(self, "Lỗi Thao Tác", msg)
 
-    def _on_clean_orphan_menus(self):
-        cleaned_cnt, details = ContextMenuManager.clean_orphan_items()
-        if cleaned_cnt > 0:
-            details_str = "\n".join(details)
-            QMessageBox.information(
-                self,
-                "Dọn Dẹp Menu Mồ Côi Hoàn Tất",
-                f"✨ Đã vô hiệu hóa thành công {cleaned_cnt} mục menu mồ côi rác!\n\n{details_str}"
-            )
+    def _on_delete_menu(self, item: ContextMenuItem):
+        reply = QMessageBox.question(
+            self,
+            "Xác Nhận Xóa Menu Mồ Côi",
+            f"Bạn có chắc chắn muốn xóa vĩnh viễn mục menu rác '{item.name}' ({item.location_title}) khỏi Registry?\n\n"
+            f"Thao tác này sẽ dọn sạch hoàn toàn khóa rác của phần mềm đã gỡ cài đặt.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        ok, msg = ContextMenuManager.delete_item(item, allow_elevation=True)
+        if ok:
+            QMessageBox.information(self, "Đã Dọn Sạch", msg)
             self._refresh_all_data()
         else:
+            QMessageBox.warning(self, "Thông Báo", msg)
+
+    def _on_clean_orphan_menus(self):
+        orphans = [m for m in self._menus_cache if m.is_orphan]
+        if not orphans:
             QMessageBox.information(
                 self,
                 "Menu Chuột Phải Sạch Sẽ",
                 "Không phát hiện thấy menu mồ côi nào trên hệ thống."
             )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Xác Nhận Dọn Sạch Menu Mồ Côi",
+            f"Phát hiện {len(orphans)} mục menu chuột phải mồ côi (file DLL đã mất do phần mềm đã gỡ cài đặt).\n\n"
+            f"👉 Bạn có muốn dọn dẹp và xóa hoàn toàn các khóa Registry rác này khỏi hệ thống không?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.lbl_status.setText("⏳ Đang dọn sạch các mục menu mồ côi...")
+        QApplication.processEvents()
+
+        cleaned_cnt, details = ContextMenuManager.clean_orphan_items(allow_elevation=True)
+        if cleaned_cnt > 0:
+            details_str = "\n".join(details)
+            QMessageBox.information(
+                self,
+                "Dọn Dẹp Menu Mồ Côi Hoàn Tất",
+                f"✨ Đã dọn sạch thành công {cleaned_cnt} mục menu mồ côi rác!\n\n{details_str}"
+            )
+        else:
+            details_str = "\n".join(details)
+            QMessageBox.warning(
+                self,
+                "Thông Báo",
+                f"Chưa thể xóa các mục menu mồ côi.\n\n{details_str}"
+            )
+        self._refresh_all_data()

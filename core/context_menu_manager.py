@@ -267,22 +267,97 @@ class ContextMenuManager:
             return False, f"Lỗi thao tác: {str(e)}"
 
     @staticmethod
-    def clean_orphan_items() -> Tuple[int, List[str]]:
+    def delete_item(item: ContextMenuItem, allow_elevation: bool = True) -> Tuple[bool, str]:
         """
-        Dọn dẹp các mục menu mồ côi (file DLL không còn tồn tại).
-        Thực hiện qua việc thêm vào Blocked hoặc xóa khóa nếu có quyền.
+        Xóa vĩnh viễn một mục menu mồ côi khỏi Registry (HKLM và HKCU).
         """
+        import subprocess
+        from core.network_optimizer import NetworkOptimizer
+        from core.service_optimizer import ServiceOptimizer
+
+        hklm_target = f"HKLM\\Software\\Classes\\{item.reg_path}"
+        hkcu_target = f"HKCU\\Software\\Classes\\{item.reg_path}"
+
+        # Xóa khỏi danh sách Blocked nếu có
+        if item.clsid:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, BLOCKED_KEY_PATH, 0, winreg.KEY_SET_VALUE) as key:
+                    winreg.DeleteValue(key, item.clsid.upper())
+            except Exception:
+                pass
+
+        if NetworkOptimizer.is_admin():
+            r1 = subprocess.run(f'reg.exe delete "{hklm_target}" /f', shell=True, capture_output=True, text=True)
+            r2 = subprocess.run(f'reg.exe delete "{hkcu_target}" /f', shell=True, capture_output=True, text=True)
+            if r1.returncode == 0 or r2.returncode == 0:
+                return True, f"Đã xóa thành công mục menu '{item.name}' khỏi Registry!"
+            err = r1.stderr.strip() or r1.stdout.strip() or r2.stderr.strip()
+            return False, f"Không thể xóa key: {err}"
+        elif allow_elevation:
+            batch = f'reg.exe delete "{hklm_target}" /f & reg.exe delete "{hkcu_target}" /f'
+            ok, msg = ServiceOptimizer._run_elevated_cmd(f'/c "{batch}"')
+            if ok:
+                return True, f"Đã xóa thành công mục menu '{item.name}' (Admin)!"
+            return False, msg
+        else:
+            return False, "Cần quyền Administrator để xóa mục menu khỏi Registry."
+
+    @staticmethod
+    def clean_orphan_items(allow_elevation: bool = True) -> Tuple[int, List[str]]:
+        """
+        Dọn dẹp triệt để các mục menu mồ côi (file DLL không còn tồn tại):
+        Xóa bỏ hoàn toàn registry key bị bỏ lại của phần mềm đã gỡ cài đặt.
+        """
+        import subprocess
+        from core.network_optimizer import NetworkOptimizer
+        from core.service_optimizer import ServiceOptimizer
+
         items = ContextMenuManager.scan_items()
         orphans = [it for it in items if it.is_orphan]
+        if not orphans:
+            return 0, []
+
         cleaned_count = 0
         details = []
 
-        for it in orphans:
-            ok, msg = ContextMenuManager.toggle_item(it, enable=False)
-            if ok:
-                cleaned_count += 1
-                details.append(f"🧹 Đã vô hiệu hóa menu mồ côi: {it.name} ({it.location_title})")
-            else:
-                details.append(f"⚠️ Thất bại với: {it.name} ({msg})")
+        if NetworkOptimizer.is_admin():
+            for it in orphans:
+                ok, msg = ContextMenuManager.delete_item(it, allow_elevation=False)
+                if ok:
+                    cleaned_count += 1
+                    details.append(f"🧹 Đã xóa menu rác: {it.name} ({it.location_title})")
+                else:
+                    ContextMenuManager.toggle_item(it, enable=False)
+                    details.append(f"⚠️ Không thể xóa {it.name}: {msg} (Đã vô hiệu hóa)")
+            return cleaned_count, details
+        elif allow_elevation:
+            batch_cmds = []
+            for it in orphans:
+                hklm_target = f"HKLM\\Software\\Classes\\{it.reg_path}"
+                hkcu_target = f"HKCU\\Software\\Classes\\{it.reg_path}"
+                batch_cmds.append(f'reg.exe delete "{hklm_target}" /f')
+                batch_cmds.append(f'reg.exe delete "{hkcu_target}" /f')
+                if it.clsid:
+                    try:
+                        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, BLOCKED_KEY_PATH, 0, winreg.KEY_SET_VALUE) as key:
+                            winreg.DeleteValue(key, it.clsid.upper())
+                    except Exception:
+                        pass
 
-        return cleaned_count, details
+            chained = " & ".join(batch_cmds)
+            ok, msg = ServiceOptimizer._run_elevated_cmd(f'/c "{chained}"', timeout_ms=20000)
+            if ok:
+                cleaned_count = len(orphans)
+                details = [f"🧹 Đã xóa vĩnh viễn menu rác: {it.name} ({it.location_title})" for it in orphans]
+            else:
+                for it in orphans:
+                    ContextMenuManager.toggle_item(it, enable=False)
+                details.append(f"⚠️ {msg} (Đã tạm vô hiệu hóa menu).")
+            return cleaned_count, details
+        else:
+            for it in orphans:
+                ok, msg = ContextMenuManager.toggle_item(it, enable=False)
+                if ok:
+                    cleaned_count += 1
+                    details.append(f"⚪ Đã tắt menu mồ côi: {it.name}")
+            return cleaned_count, details
