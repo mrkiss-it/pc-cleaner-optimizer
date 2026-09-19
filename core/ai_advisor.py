@@ -1,0 +1,504 @@
+"""
+core/ai_advisor.py – AI Smart Suggestions Engine (v3.3 Pro)
+=============================================================
+Phân tích hành vi hệ thống theo rolling window và sinh gợi ý tối ưu
+dựa trên rule-based engine hoàn toàn offline, không cần internet/cloud.
+
+Categories: RAM, CPU, DISK, NETWORK, BATTERY, SECURITY, CLEANUP
+Priority  : CRITICAL (đỏ) > WARNING (vàng) > TIP (xanh)
+"""
+from __future__ import annotations
+
+import time
+import json
+import os
+from collections import deque
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any, Deque
+
+
+# ---------------------------------------------------------------------------
+# Data Model
+# ---------------------------------------------------------------------------
+
+PRIORITY_CRITICAL = "CRITICAL"
+PRIORITY_WARNING  = "WARNING"
+PRIORITY_TIP      = "TIP"
+
+CATEGORY_RAM      = "RAM"
+CATEGORY_CPU      = "CPU"
+CATEGORY_DISK     = "DISK"
+CATEGORY_NETWORK  = "NETWORK"
+CATEGORY_BATTERY  = "BATTERY"
+CATEGORY_SECURITY = "SECURITY"
+CATEGORY_CLEANUP  = "CLEANUP"
+CATEGORY_PROCESS  = "PROCESS"
+
+CATEGORY_ICONS = {
+    CATEGORY_RAM:      "⚡",
+    CATEGORY_CPU:      "🖥️",
+    CATEGORY_DISK:     "💾",
+    CATEGORY_NETWORK:  "🌐",
+    CATEGORY_BATTERY:  "🔋",
+    CATEGORY_SECURITY: "🛡️",
+    CATEGORY_CLEANUP:  "🗑️",
+    CATEGORY_PROCESS:  "🔄",
+}
+
+PRIORITY_ORDER = {PRIORITY_CRITICAL: 0, PRIORITY_WARNING: 1, PRIORITY_TIP: 2}
+
+
+@dataclass
+class Suggestion:
+    """Một gợi ý tối ưu từ AI Advisor."""
+    category:   str          # CATEGORY_* constant
+    priority:   str          # PRIORITY_* constant
+    title:      str          # Tiêu đề ngắn (≤ 60 ký tự)
+    detail:     str          # Mô tả chi tiết
+    action_key: Optional[str] = None   # Key để MainWindow dispatch action
+    action_label: str = "Áp Dụng Ngay"
+    timestamp:  float = field(default_factory=time.time)
+
+    @property
+    def icon(self) -> str:
+        return CATEGORY_ICONS.get(self.category, "💡")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "category":     self.category,
+            "priority":     self.priority,
+            "title":        self.title,
+            "detail":       self.detail,
+            "action_key":   self.action_key,
+            "action_label": self.action_label,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Rolling Window Snapshot Buffer
+# ---------------------------------------------------------------------------
+
+_BUFFER_SIZE = 100   # ~80 giây @ 800ms polling
+
+
+@dataclass
+class _Snapshot:
+    ts:          float
+    ram_pct:     float
+    cpu_pct:     float
+    disk_free_gb: float
+    net_ping_ms: float
+    process_count: int
+
+
+# ---------------------------------------------------------------------------
+# AI Advisor – Rule Engine
+# ---------------------------------------------------------------------------
+
+class AIAdvisor:
+    """
+    Singleton-style class nhận snapshot từ SystemMonitorHub và sinh suggestions.
+
+    Cách dùng:
+        advisor = AIAdvisor()
+        advisor.feed_snapshot(stats_dict)      # gọi từ SystemMonitorHub signal
+        suggestions = advisor.get_suggestions()
+    """
+
+    def __init__(self, config_path: Optional[str] = None):
+        self._buffer: Deque[_Snapshot] = deque(maxlen=_BUFFER_SIZE)
+        self._last_battery_info: Dict[str, Any] = {}
+        self._last_security_info: Dict[str, Any] = {}
+        self._last_leak_info: List[Dict] = []
+        self._config_path = config_path or self._default_config_path()
+        self._suggestions_cache: List[Suggestion] = []
+        self._cache_ts: float = 0.0
+        self._cache_ttl: float = 8.0   # giây – refresh suggestions mỗi 8s
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def feed_snapshot(self, stats: Dict[str, Any]) -> None:
+        """Nhận một snapshot stats từ SystemMonitorHub."""
+        try:
+            ram  = stats.get("ram", {})
+            cpu  = stats.get("cpu", {})
+            disk = stats.get("disk", {})
+            net  = stats.get("net", {})
+            snap = _Snapshot(
+                ts=time.time(),
+                ram_pct=float(ram.get("percent", 0)),
+                cpu_pct=float(cpu.get("percent", 0)),
+                disk_free_gb=float(disk.get("free_gb", 999)),
+                net_ping_ms=float(net.get("ping_ms", -1)),
+                process_count=int(stats.get("process_count", 0)),
+            )
+            self._buffer.append(snap)
+            # Invalidate cache
+            self._cache_ts = 0.0
+        except Exception:
+            pass
+
+    def update_battery_info(self, battery_data: Dict[str, Any]) -> None:
+        """Cập nhật thông tin pin từ HardwareMonitor."""
+        self._last_battery_info = battery_data or {}
+        self._cache_ts = 0.0
+
+    def update_security_info(self, security_result: Dict[str, Any]) -> None:
+        """Cập nhật kết quả quét bảo mật."""
+        self._last_security_info = security_result or {}
+        self._cache_ts = 0.0
+
+    def update_leak_info(self, leaks: List[Dict]) -> None:
+        """Cập nhật danh sách tiến trình nghi ngờ rò rỉ bộ nhớ."""
+        self._last_leak_info = leaks or []
+        self._cache_ts = 0.0
+
+    def get_suggestions(self) -> List[Suggestion]:
+        """Trả về danh sách suggestions đã sắp xếp theo priority."""
+        now = time.time()
+        if now - self._cache_ts < self._cache_ttl and self._suggestions_cache:
+            return self._suggestions_cache
+
+        suggestions = self._run_rules()
+        # Sắp xếp: CRITICAL → WARNING → TIP, sau đó theo thứ tự sinh
+        suggestions.sort(key=lambda s: PRIORITY_ORDER.get(s.priority, 99))
+        self._suggestions_cache = suggestions
+        self._cache_ts = now
+        return suggestions
+
+    def get_suggestions_count_by_priority(self) -> Dict[str, int]:
+        """Trả về số lượng suggestions theo từng mức ưu tiên."""
+        sug = self.get_suggestions()
+        return {
+            PRIORITY_CRITICAL: sum(1 for s in sug if s.priority == PRIORITY_CRITICAL),
+            PRIORITY_WARNING:  sum(1 for s in sug if s.priority == PRIORITY_WARNING),
+            PRIORITY_TIP:      sum(1 for s in sug if s.priority == PRIORITY_TIP),
+        }
+
+    # ------------------------------------------------------------------
+    # Rule Engine (private)
+    # ------------------------------------------------------------------
+
+    def _run_rules(self) -> List[Suggestion]:
+        results: List[Suggestion] = []
+        buf = list(self._buffer)
+
+        if buf:
+            results += self._rule_ram(buf)
+            results += self._rule_cpu(buf)
+            results += self._rule_disk(buf)
+            results += self._rule_network(buf)
+
+        results += self._rule_battery()
+        results += self._rule_security()
+        results += self._rule_memory_leak()
+        results += self._rule_cleanup_timing()
+
+        return results
+
+    # --- RAM ---
+    def _rule_ram(self, buf: List[_Snapshot]) -> List[Suggestion]:
+        recent = buf[-10:]  # 10 mẫu gần nhất (~8 giây)
+        if not recent:
+            return []
+        avg_ram = sum(s.ram_pct for s in recent) / len(recent)
+        sustained_high = all(s.ram_pct >= 85 for s in recent)
+        results = []
+
+        if sustained_high:
+            results.append(Suggestion(
+                category=CATEGORY_RAM,
+                priority=PRIORITY_CRITICAL,
+                title="RAM quá tải nghiêm trọng (>85% liên tục)",
+                detail=(
+                    f"RAM trung bình {avg_ram:.1f}% trong 8 giây qua. "
+                    "Hệ thống đang dùng bộ nhớ ảo (pagefile) làm chậm máy đáng kể. "
+                    "Khuyến nghị tối ưu RAM ngay để giải phóng bộ nhớ."
+                ),
+                action_key="optimize_ram",
+                action_label="Tối Ưu RAM Ngay",
+            ))
+        elif avg_ram >= 75:
+            results.append(Suggestion(
+                category=CATEGORY_RAM,
+                priority=PRIORITY_WARNING,
+                title=f"RAM cao ({avg_ram:.0f}%) – Cần theo dõi",
+                detail=(
+                    f"RAM đang ở mức {avg_ram:.1f}%. Nếu tiếp tục tăng, "
+                    "hiệu năng sẽ bị ảnh hưởng. Có thể tối ưu RAM để cải thiện."
+                ),
+                action_key="optimize_ram",
+                action_label="Tối Ưu RAM",
+            ))
+        return results
+
+    # --- CPU ---
+    def _rule_cpu(self, buf: List[_Snapshot]) -> List[Suggestion]:
+        recent = buf[-15:]  # ~12 giây
+        if not recent:
+            return []
+        avg_cpu = sum(s.cpu_pct for s in recent) / len(recent)
+        results = []
+
+        if avg_cpu >= 80:
+            results.append(Suggestion(
+                category=CATEGORY_CPU,
+                priority=PRIORITY_WARNING,
+                title=f"CPU tải cao ({avg_cpu:.0f}%) – Kiểm tra tiến trình",
+                detail=(
+                    f"CPU trung bình {avg_cpu:.1f}% trong 12 giây. "
+                    "Có thể có tiến trình nền ngốn tài nguyên. "
+                    "Mở tab Tiến Trình để xem và dừng các process không cần thiết."
+                ),
+                action_key="open_process_tab",
+                action_label="Xem Tiến Trình",
+            ))
+        elif avg_cpu >= 60:
+            results.append(Suggestion(
+                category=CATEGORY_CPU,
+                priority=PRIORITY_TIP,
+                title=f"CPU ở mức trung bình ({avg_cpu:.0f}%)",
+                detail=(
+                    "CPU đang hoạt động ổn định. "
+                    "Nếu không chạy tác vụ nặng, có thể có phần mềm nền hoạt động không cần thiết."
+                ),
+                action_key=None,
+            ))
+        return results
+
+    # --- DISK ---
+    def _rule_disk(self, buf: List[_Snapshot]) -> List[Suggestion]:
+        if not buf:
+            return []
+        latest = buf[-1]
+        results = []
+
+        if latest.disk_free_gb < 5:
+            results.append(Suggestion(
+                category=CATEGORY_DISK,
+                priority=PRIORITY_CRITICAL,
+                title=f"Ổ C: chỉ còn {latest.disk_free_gb:.1f} GB – Khẩn cấp!",
+                detail=(
+                    f"Ổ đĩa C: chỉ còn {latest.disk_free_gb:.1f} GB. "
+                    "Windows cần ít nhất 10 GB để hoạt động ổn định. "
+                    "Dọn rác ngay để tránh hệ thống bị treo."
+                ),
+                action_key="clean_junk",
+                action_label="Dọn Rác Ngay",
+            ))
+        elif latest.disk_free_gb < 15:
+            results.append(Suggestion(
+                category=CATEGORY_DISK,
+                priority=PRIORITY_WARNING,
+                title=f"Ổ C: sắp đầy ({latest.disk_free_gb:.1f} GB còn trống)",
+                detail=(
+                    f"Ổ đĩa C: còn {latest.disk_free_gb:.1f} GB. "
+                    "Nên dọn rác và kiểm tra file lớn để tránh hết dung lượng."
+                ),
+                action_key="clean_junk",
+                action_label="Dọn Rác",
+            ))
+        return results
+
+    # --- NETWORK ---
+    def _rule_network(self, buf: List[_Snapshot]) -> List[Suggestion]:
+        recent_pings = [s.net_ping_ms for s in buf[-5:] if s.net_ping_ms > 0]
+        if not recent_pings:
+            return []
+        avg_ping = sum(recent_pings) / len(recent_pings)
+        results = []
+
+        if avg_ping > 200:
+            results.append(Suggestion(
+                category=CATEGORY_NETWORK,
+                priority=PRIORITY_WARNING,
+                title=f"Độ trễ mạng cao ({avg_ping:.0f} ms)",
+                detail=(
+                    f"Ping trung bình {avg_ping:.0f} ms. "
+                    "Thử đổi sang DNS nhanh hơn (Google 8.8.8.8 / Cloudflare 1.1.1.1) "
+                    "để cải thiện tốc độ browsing và gaming."
+                ),
+                action_key="open_network_dialog",
+                action_label="Tối Ưu Mạng",
+            ))
+        elif avg_ping > 100:
+            results.append(Suggestion(
+                category=CATEGORY_NETWORK,
+                priority=PRIORITY_TIP,
+                title=f"Ping ở mức trung bình ({avg_ping:.0f} ms)",
+                detail=(
+                    "Có thể cải thiện tốc độ mạng bằng cách đổi DNS "
+                    "hoặc flush DNS cache."
+                ),
+                action_key="open_network_dialog",
+                action_label="Xem Tùy Chọn Mạng",
+            ))
+        return results
+
+    # --- BATTERY ---
+    def _rule_battery(self) -> List[Suggestion]:
+        batt = self._last_battery_info
+        if not batt:
+            return []
+        results = []
+
+        wear = batt.get("wear_level_pct", 0)
+        cycles = batt.get("cycle_count", 0)
+
+        if wear > 40:
+            results.append(Suggestion(
+                category=CATEGORY_BATTERY,
+                priority=PRIORITY_WARNING,
+                title=f"Pin đã hao mòn {wear:.1f}% – Cần kiểm tra",
+                detail=(
+                    f"Pin đã qua {cycles} chu kỳ sạc và hao mòn {wear:.1f}%. "
+                    "Dung lượng thực giảm đáng kể. Hãy bật Battery Care Mode "
+                    "và tránh để pin dưới 20% thường xuyên."
+                ),
+                action_key="open_hardware_dialog",
+                action_label="Xem Chi Tiết Pin",
+            ))
+        elif wear > 20:
+            results.append(Suggestion(
+                category=CATEGORY_BATTERY,
+                priority=PRIORITY_TIP,
+                title=f"Pin hao mòn {wear:.1f}% – Theo dõi thêm",
+                detail=(
+                    f"Pin đã qua {cycles} chu kỳ sạc. "
+                    "Để kéo dài tuổi thọ, tránh sạc đầy 100% liên tục, "
+                    "giữ pin ở mức 20–80%."
+                ),
+                action_key="open_hardware_dialog",
+                action_label="Xem Sức Khỏe Pin",
+            ))
+        return results
+
+    # --- SECURITY ---
+    def _rule_security(self) -> List[Suggestion]:
+        sec = self._last_security_info
+        if not sec:
+            # Đọc từ config.json nếu chưa có
+            sec = self._load_last_security_from_config()
+        if not sec:
+            return []
+        results = []
+
+        critical_count = sec.get("critical_count", 0)
+        warning_count  = sec.get("warning_count", 0)
+        overall        = sec.get("overall", "SAFE")
+        timestamp      = sec.get("timestamp", "")
+
+        if critical_count > 0:
+            results.append(Suggestion(
+                category=CATEGORY_SECURITY,
+                priority=PRIORITY_CRITICAL,
+                title=f"Phát hiện {critical_count} vấn đề bảo mật nghiêm trọng!",
+                detail=(
+                    f"Quét bảo mật ({timestamp}) phát hiện {critical_count} lỗi nghiêm trọng "
+                    f"và {warning_count} cảnh báo. Cần kiểm tra và xử lý ngay."
+                ),
+                action_key="open_security_dialog",
+                action_label="Xem Báo Cáo Bảo Mật",
+            ))
+        elif warning_count > 0:
+            results.append(Suggestion(
+                category=CATEGORY_SECURITY,
+                priority=PRIORITY_WARNING,
+                title=f"Có {warning_count} cảnh báo bảo mật",
+                detail=(
+                    f"Quét bảo mật ({timestamp}) phát hiện {warning_count} điểm cần lưu ý. "
+                    "Nên xem lại báo cáo để đảm bảo an toàn hệ thống."
+                ),
+                action_key="open_security_dialog",
+                action_label="Xem Cảnh Báo",
+            ))
+        return results
+
+    # --- MEMORY LEAK ---
+    def _rule_memory_leak(self) -> List[Suggestion]:
+        leaks = self._last_leak_info
+        if not leaks:
+            return []
+        results = []
+        for leak in leaks[:3]:  # Tối đa 3 cảnh báo leak
+            name   = leak.get("name", "Unknown")
+            growth = leak.get("growth_mb", 0)
+            cur    = leak.get("current_mb", 0)
+            results.append(Suggestion(
+                category=CATEGORY_PROCESS,
+                priority=PRIORITY_WARNING,
+                title=f"Tiến trình '{name}' có dấu hiệu rò rỉ RAM",
+                detail=(
+                    f"'{name}' đang dùng {cur:.0f} MB RAM và tăng liên tục "
+                    f"+{growth:.0f} MB. Nên khởi động lại tiến trình này."
+                ),
+                action_key="open_process_tab",
+                action_label="Xem Tiến Trình",
+            ))
+        return results
+
+    # --- CLEANUP TIMING ---
+    def _rule_cleanup_timing(self) -> List[Suggestion]:
+        """Phân tích lịch sử dọn rác để gợi ý thời điểm tối ưu."""
+        try:
+            history = self._load_cleanup_history()
+            if not history:
+                # Chưa từng dọn → gợi ý dọn ngay
+                return [Suggestion(
+                    category=CATEGORY_CLEANUP,
+                    priority=PRIORITY_TIP,
+                    title="Chưa có lần dọn rác nào được ghi nhận",
+                    detail=(
+                        "Hãy thực hiện dọn dẹp hệ thống lần đầu để kiểm tra "
+                        "dung lượng rác đang chiếm. Click '1-Click Dọn Dẹp' trên Dashboard."
+                    ),
+                    action_key="clean_junk",
+                    action_label="Dọn Rác Ngay",
+                )]
+
+            # Kiểm tra lần cuối dọn rác
+            latest = max(history, key=lambda h: h.get("ts", 0), default=None)
+            if latest:
+                hours_since = (time.time() - latest.get("ts", time.time())) / 3600
+                if hours_since > 168:  # > 7 ngày
+                    return [Suggestion(
+                        category=CATEGORY_CLEANUP,
+                        priority=PRIORITY_TIP,
+                        title=f"Đã {int(hours_since/24)} ngày chưa dọn rác",
+                        detail=(
+                            f"Lần dọn rác gần nhất cách đây {int(hours_since/24)} ngày. "
+                            "Rác hệ thống có thể đã tích lũy đáng kể. "
+                            "Khuyến nghị dọn định kỳ mỗi 3-7 ngày."
+                        ),
+                        action_key="clean_junk",
+                        action_label="Dọn Rác Ngay",
+                    )]
+        except Exception:
+            pass
+        return []
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _default_config_path(self) -> str:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base, "config.json")
+
+    def _load_cleanup_history(self) -> List[Dict]:
+        try:
+            with open(self._config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            return cfg.get("history", [])
+        except Exception:
+            return []
+
+    def _load_last_security_from_config(self) -> Dict[str, Any]:
+        try:
+            with open(self._config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            return cfg.get("last_security_scan_result", {})
+        except Exception:
+            return {}

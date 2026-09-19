@@ -56,7 +56,9 @@ def build():
         "--hidden-import=winreg",
         "--hidden-import=core.security_scanner",
         "--hidden-import=core.hardware_monitor",
+        "--hidden-import=core.ai_advisor",
         "--hidden-import=ui.hardware_dialog",
+        "--hidden-import=ui.ai_advisor_dialog",
         main_script
     ]
 

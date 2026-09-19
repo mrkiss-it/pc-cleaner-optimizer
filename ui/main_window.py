@@ -25,6 +25,8 @@ from ui.disk_analyzer_dialog import DiskAnalyzerDialog
 from ui.network_dialog import NetworkOptimizerDialog
 from ui.disk_registry_dialog import DiskRegistryDialog
 from ui.hardware_dialog import HardwareMonitorDialog
+from ui.ai_advisor_dialog import AIAdvisorDialog
+from core.ai_advisor import AIAdvisor
 from core.system_tweaker import SystemTweaker
 
 
@@ -109,6 +111,9 @@ class MainWindow(QMainWindow):
         self.first_minimize_notified = False
         self.system_tweaker = SystemTweaker()
 
+        # AI Advisor – khởi tạo rule engine
+        self._ai_advisor = AIAdvisor()
+
         from core.network_optimizer import NetworkOptimizer
         if NetworkOptimizer.is_admin():
             self.setWindowTitle("PC Auto Cleaner & RAM Optimizer [Administrator]")
@@ -128,12 +133,26 @@ class MainWindow(QMainWindow):
         # Đồng bộ hóa dữ liệu thời gian thực từ trạm điều phối trung tâm
         if self.monitor_hub:
             self.monitor_hub.stats_updated.connect(self.update_system_stats)
+            self.monitor_hub.stats_updated.connect(self._ai_advisor.feed_snapshot)
             self.update_system_stats(self.monitor_hub.get_latest())
         else:
             self.monitor_timer = QTimer(self)
             self.monitor_timer.timeout.connect(self.update_system_stats)
             self.monitor_timer.start(1000)
             self.update_system_stats()
+
+        # Feed AI với dữ liệu bảo mật từ config
+        try:
+            self._ai_advisor.update_security_info(
+                self.config_manager.config.get("last_security_scan_result", {})
+            )
+        except Exception:
+            pass
+
+        # Timer cập nhật badge AI button mỗi 10 giây
+        self._ai_badge_timer = QTimer(self)
+        self._ai_badge_timer.timeout.connect(self._update_ai_badge)
+        self._ai_badge_timer.start(10_000)
 
     def init_ui(self):
         central_widget = QWidget()
@@ -307,10 +326,17 @@ class MainWindow(QMainWindow):
         self.btn_hardware.setCursor(Qt.PointingHandCursor)
         self.btn_hardware.clicked.connect(self.open_hardware_dialog)
 
+        self.btn_ai_advisor = QPushButton("🤖 AI Gợi Ý")
+        self.btn_ai_advisor.setProperty("class", "btn-secondary")
+        self.btn_ai_advisor.setCursor(Qt.PointingHandCursor)
+        self.btn_ai_advisor.clicked.connect(self.open_ai_advisor_dialog)
+        # Badge style sẽ được cập nhật bởi _update_ai_badge()
+
         btn_row2.addWidget(self.btn_network, stretch=1)
         btn_row2.addWidget(self.btn_game_boost, stretch=1)
         btn_row2.addWidget(self.btn_disk_reg, stretch=1)
         btn_row2.addWidget(self.btn_hardware, stretch=1)
+        btn_row2.addWidget(self.btn_ai_advisor, stretch=1)
         btn_row2.addWidget(self.btn_tweaks, stretch=1)
         btn_row2.addWidget(self.btn_large_files, stretch=1)
         btn_row2.addWidget(self.btn_disk_analyzer, stretch=1)
@@ -1129,6 +1155,63 @@ class MainWindow(QMainWindow):
         """Mở hộp thoại Quản Lý Sức Khỏe Pin Laptop & Cảm Biến Phần Cứng (v3.2 Pro)."""
         dialog = HardwareMonitorDialog(self)
         dialog.exec_()
+
+    def open_ai_advisor_dialog(self):
+        """Mở hộp thoại AI Smart Suggestions (v3.3 Pro)."""
+        dialog = AIAdvisorDialog(
+            advisor=self._ai_advisor,
+            action_dispatcher=self._ai_action_dispatcher,
+            parent=self,
+        )
+        dialog.exec_()
+
+    def _ai_action_dispatcher(self, action_key: str):
+        """Xử lý action từ AI Advisor khi user click 'Áp Dụng Ngay'."""
+        try:
+            if action_key == "optimize_ram":
+                self.optimize_ram_now()
+            elif action_key == "clean_junk":
+                self.start_clean_only()
+            elif action_key == "open_network_dialog":
+                self.open_network_dialog()
+            elif action_key == "open_hardware_dialog":
+                self.open_hardware_dialog()
+            elif action_key == "open_security_dialog":
+                # Chuyển sang tab bảo mật nếu có
+                if hasattr(self, "tab_targets"):
+                    self.tabs.setCurrentWidget(self.tab_targets)
+            elif action_key == "open_process_tab":
+                if hasattr(self, "tab_performance"):
+                    self.tabs.setCurrentWidget(self.tab_performance)
+        except Exception:
+            pass
+
+    def _update_ai_badge(self):
+        """Cập nhật màu/text button AI theo số lượng suggestions nghiêm trọng."""
+        try:
+            counts = self._ai_advisor.get_suggestions_count_by_priority()
+            critical = counts.get("CRITICAL", 0)
+            warning  = counts.get("WARNING", 0)
+            if critical > 0:
+                self.btn_ai_advisor.setText(f"🤖 AI Gợi Ý 🔴{critical}")
+                self.btn_ai_advisor.setStyleSheet(
+                    "QPushButton { color: #f85149; border: 1px solid #f85149; "
+                    "border-radius: 8px; padding: 4px 8px; background: #f8514922; }"
+                    "QPushButton:hover { background: #f8514944; }"
+                )
+            elif warning > 0:
+                self.btn_ai_advisor.setText(f"🤖 AI Gợi Ý 🟡{warning}")
+                self.btn_ai_advisor.setStyleSheet(
+                    "QPushButton { color: #e3b341; border: 1px solid #e3b341; "
+                    "border-radius: 8px; padding: 4px 8px; background: #e3b34122; }"
+                    "QPushButton:hover { background: #e3b34144; }"
+                )
+            else:
+                self.btn_ai_advisor.setText("🤖 AI Gợi Ý")
+                self.btn_ai_advisor.setStyleSheet("")
+                self.btn_ai_advisor.setProperty("class", "btn-secondary")
+        except Exception:
+            pass
 
     def show_leak_alert(self, info: dict):
         """

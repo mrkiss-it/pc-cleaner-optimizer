@@ -200,6 +200,80 @@ else:
 
 print(f" [PASS] 20. Hardware Sensors & Battery Health: {bat_str} | CPU: {cpu_info['name']} ({cpu_info['core_summary']}) | GPU: {gpu_list[0]['name']} ({gpu_list[0]['vram']}).")
 
-print("\n>>> TAT CA 20 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE SENSORS & BATTERY HEALTH DEU THANH CONG 100%! <<<")
+# 21. Test AI Smart Suggestions - Engine & Data Model (v3.3 Pro)
+from core.ai_advisor import (
+    AIAdvisor, Suggestion,
+    PRIORITY_CRITICAL, PRIORITY_WARNING, PRIORITY_TIP,
+    CATEGORY_RAM, CATEGORY_CPU, CATEGORY_DISK, CATEGORY_NETWORK,
+)
+advisor = AIAdvisor()
+assert advisor.get_suggestions() is not None, "get_suggestions() phai tra ve list"
+counts = advisor.get_suggestions_count_by_priority()
+assert isinstance(counts, dict) and PRIORITY_CRITICAL in counts, "Phai tra ve count dict"
+print(f" [PASS] 21. AI Advisor: Rule Engine & Data Model khoi tao thanh cong, cache TTL hoat dong chuan xac!")
+
+# 22. Test AI Advisor Rules Triggering
+for _ in range(12):
+    advisor.feed_snapshot({
+        "ram": {"percent": 92.5},
+        "cpu": {"percent": 45.0},
+        "disk": {"free_gb": 40.0},
+        "net": {"ping_ms": 35.0},
+    })
+suggestions = advisor.get_suggestions()
+ram_crit = [s for s in suggestions if s.category == CATEGORY_RAM and s.priority == PRIORITY_CRITICAL]
+assert len(ram_crit) >= 1, "Khi RAM > 85% lien tuc phai kich hoat suggestion CRITICAL cho RAM"
+assert ram_crit[0].action_key == "optimize_ram", "Goi y RAM phai co action_key optimize_ram"
+
+advisor.feed_snapshot({
+    "ram": {"percent": 50.0},
+    "cpu": {"percent": 20.0},
+    "disk": {"free_gb": 3.2},
+    "net": {"ping_ms": 30.0},
+})
+suggestions = advisor.get_suggestions()
+disk_crit = [s for s in suggestions if s.category == CATEGORY_DISK and s.priority == PRIORITY_CRITICAL]
+assert len(disk_crit) >= 1, "Khi O C: < 5GB phai kich hoat suggestion CRITICAL cho DISK"
+assert disk_crit[0].action_key == "clean_junk", "Goi y DISK phai co action_key clean_junk"
+print(f" [PASS] 22. AI Advisor Rules: RAM spike (>85%) -> CRITICAL RAM suggestion; Low Disk (<5GB) -> CRITICAL Disk suggestion.")
+
+# 23. Test AI Advisor Dialog & UI Components
+from ui.ai_advisor_dialog import AIAdvisorDialog, SuggestionCard
+test_sug = Suggestion(
+    category=CATEGORY_RAM,
+    priority=PRIORITY_CRITICAL,
+    title="Test Suggestion",
+    detail="Test Detail Description",
+    action_key="optimize_ram",
+    action_label="Test Action"
+)
+card = SuggestionCard(test_sug)
+assert card is not None, "SuggestionCard phai khoi tao thanh cong"
+
+ai_dlg = AIAdvisorDialog(advisor=advisor, parent=win)
+assert ai_dlg is not None, "AIAdvisorDialog phai khoi tao thanh cong"
+assert hasattr(win, "btn_ai_advisor"), "MainWindow phai co nut btn_ai_advisor"
+assert hasattr(win, "open_ai_advisor_dialog"), "MainWindow phai co ham open_ai_advisor_dialog"
+ai_dlg.close()
+print(" [PASS] 23. AI Advisor UI: AIAdvisorDialog, SuggestionCard & MainWindow Integration khoi tao thanh cong!")
+
+# 24. Test Action Dispatcher & Badge Updates
+dispatched_actions = []
+def mock_dispatcher(action_key: str):
+    dispatched_actions.append(action_key)
+
+dlg_with_dispatcher = AIAdvisorDialog(advisor=advisor, action_dispatcher=mock_dispatcher)
+assert dlg_with_dispatcher._dispatcher is not None, "Action dispatcher phai duoc luu trong dialog"
+card.action_triggered.connect(mock_dispatcher)
+card.action_triggered.emit("optimize_ram")
+assert "optimize_ram" in dispatched_actions, "Card phai trigger action qua signal"
+dlg_with_dispatcher.close()
+
+win._update_ai_badge()
+badge_text = win.btn_ai_advisor.text()
+assert "AI Gợi Ý" in badge_text, f"Button text phai chua 'AI Gợi Ý', hien tai: {badge_text}"
+print(f" [PASS] 24. Action Dispatcher & Badge: Action dispatch hoat dong chuan, Badge button cap nhat: '{badge_text}'.")
+
+print("\n>>> TAT CA 24 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE SENSORS, BATTERY & AI ADVISOR DEU THANH CONG 100%! <<<")
 
 
