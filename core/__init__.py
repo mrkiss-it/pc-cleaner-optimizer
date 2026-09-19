@@ -5,6 +5,7 @@ from core.ai_advisor import AIAdvisor
 from core.service_optimizer import ServiceOptimizer
 from core.context_menu_manager import ContextMenuManager
 from core.uninstaller_manager import UninstallerManager, InstalledApp
+from core.winsxs_cleaner import WinSxSCleaner, UpdateCacheItem, OemDriverItem
 
 __all__ = [
     "SystemTweaker",
@@ -14,5 +15,8 @@ __all__ = [
     "ContextMenuManager",
     "UninstallerManager",
     "InstalledApp",
+    "WinSxSCleaner",
+    "UpdateCacheItem",
+    "OemDriverItem",
 ]
 

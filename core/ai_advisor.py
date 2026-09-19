@@ -36,6 +36,7 @@ CATEGORY_CLEANUP  = "CLEANUP"
 CATEGORY_PROCESS  = "PROCESS"
 CATEGORY_SERVICES   = "SERVICES"
 CATEGORY_UNINSTALLER = "UNINSTALLER"
+CATEGORY_WINSXS     = "WINSXS"
 
 CATEGORY_ICONS = {
     CATEGORY_RAM:         "⚡",
@@ -48,6 +49,7 @@ CATEGORY_ICONS = {
     CATEGORY_PROCESS:     "🔄",
     CATEGORY_SERVICES:    "⚙️",
     CATEGORY_UNINSTALLER: "📦",
+    CATEGORY_WINSXS:      "🗄️",
 }
 
 PRIORITY_ORDER = {PRIORITY_CRITICAL: 0, PRIORITY_WARNING: 1, PRIORITY_TIP: 2}
@@ -208,6 +210,7 @@ class AIAdvisor:
         results += self._rule_cleanup_timing()
         results += self._rule_services()
         results += self._rule_uninstaller()
+        results += self._rule_winsxs()
 
         return results
 
@@ -623,6 +626,45 @@ class AIAdvisor:
                     ),
                     action_key="open_uninstaller_dialog",
                     action_label="Quản Lý Ứng Dụng",
+                ))
+        except Exception:
+            pass
+
+        return results
+
+    # --- WINSXS & UPDATE CACHE ---
+    def _rule_winsxs(self) -> List[Suggestion]:
+        results: List[Suggestion] = []
+        try:
+            from core.winsxs_cleaner import WinSxSCleaner
+            summary = WinSxSCleaner.get_summary()
+            cache_mb = summary.get("total_cache_mb", 0.0)
+            dup_drivers = summary.get("duplicate_drivers_count", 0)
+
+            if cache_mb >= 300:
+                results.append(Suggestion(
+                    category=CATEGORY_WINSXS,
+                    priority=PRIORITY_WARNING if cache_mb >= 1024 else PRIORITY_TIP,
+                    title=f"Bộ đệm cập nhật & Servicing Logs lớn: {cache_mb:.1f} MB",
+                    detail=(
+                        f"Phát hiện {cache_mb:.1f} MB tệp đệm tải về của Windows Update và nhật ký CBS/DISM. "
+                        "Dọn dẹp các tệp này giúp giải phóng dung lượng quý giá trên ổ C: mà không ảnh hưởng hệ điều hành."
+                    ),
+                    action_key="open_winsxs_dialog",
+                    action_label="Dọn Bộ Đệm Cập Nhật",
+                ))
+
+            if dup_drivers >= 3:
+                results.append(Suggestion(
+                    category=CATEGORY_WINSXS,
+                    priority=PRIORITY_TIP,
+                    title=f"Phát hiện {dup_drivers} phiên bản Driver cũ trùng lặp",
+                    detail=(
+                        f"Kho DriverStore đang lưu {dup_drivers} gói Driver OEM phiên bản cũ đã được thay thế. "
+                        "Dọn dẹp các driver không còn sử dụng giúp giải phóng dung lượng thư mục FileRepository."
+                    ),
+                    action_key="open_winsxs_dialog",
+                    action_label="Dọn DriverStore",
                 ))
         except Exception:
             pass

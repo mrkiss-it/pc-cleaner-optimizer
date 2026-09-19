@@ -28,6 +28,7 @@ from ui.hardware_dialog import HardwareMonitorDialog
 from ui.ai_advisor_dialog import AIAdvisorDialog
 from ui.service_context_dialog import ServiceContextDialog
 from ui.uninstaller_dialog import UninstallerDialog
+from ui.winsxs_dialog import WinSxSDialog
 from core.ai_advisor import AIAdvisor
 from core.system_tweaker import SystemTweaker
 
@@ -348,12 +349,19 @@ class MainWindow(QMainWindow):
         self.btn_uninstaller.setToolTip("Quản lý & gỡ bỏ phần mềm, xóa Bloatware Windows và dọn dẹp rác còn sót")
         self.btn_uninstaller.clicked.connect(self.open_uninstaller_dialog)
 
+        self.btn_winsxs = QPushButton("🗄️ Dọn WinSxS")
+        self.btn_winsxs.setProperty("class", "btn-secondary")
+        self.btn_winsxs.setCursor(Qt.PointingHandCursor)
+        self.btn_winsxs.setToolTip("Dọn dẹp kho thành phần WinSxS (DISM), bộ đệm Windows Update và DriverStore cũ")
+        self.btn_winsxs.clicked.connect(self.open_winsxs_dialog)
+
         btn_row2.addWidget(self.btn_network, stretch=1)
         btn_row2.addWidget(self.btn_game_boost, stretch=1)
         btn_row2.addWidget(self.btn_disk_reg, stretch=1)
         btn_row2.addWidget(self.btn_hardware, stretch=1)
         btn_row2.addWidget(self.btn_services, stretch=1)
         btn_row2.addWidget(self.btn_uninstaller, stretch=1)
+        btn_row2.addWidget(self.btn_winsxs, stretch=1)
         btn_row2.addWidget(self.btn_ai_advisor, stretch=1)
         btn_row2.addWidget(self.btn_tweaks, stretch=1)
         btn_row2.addWidget(self.btn_large_files, stretch=1)
@@ -1199,6 +1207,11 @@ class MainWindow(QMainWindow):
         dialog = UninstallerDialog(self)
         dialog.exec_()
 
+    def open_winsxs_dialog(self):
+        """Mở hộp thoại Dọn Dẹp Kho WinSxS & Windows Update Chuyên Sâu (v3.6 Pro)."""
+        dialog = WinSxSDialog(self)
+        dialog.exec_()
+
     def _ai_action_dispatcher(self, action_key: str):
         """Xử lý action từ AI Advisor khi user click 'Áp Dụng Ngay'."""
         try:
@@ -1218,6 +1231,8 @@ class MainWindow(QMainWindow):
                 self.open_services_context_dialog()
             elif action_key == "open_uninstaller_dialog":
                 self.open_uninstaller_dialog()
+            elif action_key == "open_winsxs_dialog":
+                self.open_winsxs_dialog()
             elif action_key == "open_security_dialog":
                 if hasattr(self, "tab_security"):
                     self.tabs.setCurrentWidget(self.tab_security)
