@@ -399,6 +399,7 @@ class AIAdvisorDialog(QDialog):
         self._render_cards(self._advisor.get_suggestions())
 
     def _refresh(self):
+        self._advisor.invalidate_cache()
         suggestions = self._advisor.get_suggestions()
         self._update_badge(suggestions)
         self._render_cards(suggestions)

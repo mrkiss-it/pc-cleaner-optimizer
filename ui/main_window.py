@@ -112,7 +112,10 @@ class MainWindow(QMainWindow):
         self.system_tweaker = SystemTweaker()
 
         # AI Advisor – khởi tạo rule engine
-        self._ai_advisor = AIAdvisor()
+        self._ai_advisor = AIAdvisor(
+            config_path=self.config_manager.config_path,
+            config_manager=self.config_manager
+        )
 
         from core.network_optimizer import NetworkOptimizer
         if NetworkOptimizer.is_admin():
@@ -1049,6 +1052,9 @@ class MainWindow(QMainWindow):
 
         self.config_manager.add_history(0.0, freed, trigger_type="manual")
         self.refresh_history_table()
+        if hasattr(self, "_ai_advisor"):
+            self._ai_advisor.invalidate_cache()
+            self._update_ai_badge()
         if self.monitor_hub:
             self.monitor_hub.force_refresh()
         else:
@@ -1095,6 +1101,9 @@ class MainWindow(QMainWindow):
             # Record history
             self.config_manager.add_history(freed_junk_mb, freed_ram_mb, trigger_type="manual")
             self.refresh_history_table()
+            if hasattr(self, "_ai_advisor"):
+                self._ai_advisor.invalidate_cache()
+                self._update_ai_badge()
             if self.monitor_hub:
                 self.monitor_hub.force_refresh()
             else:

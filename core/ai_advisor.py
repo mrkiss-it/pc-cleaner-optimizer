@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 import json
 import os
+import sys
 from collections import deque
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Deque
@@ -105,15 +106,21 @@ class AIAdvisor:
         suggestions = advisor.get_suggestions()
     """
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, config_manager: Optional[Any] = None):
         self._buffer: Deque[_Snapshot] = deque(maxlen=_BUFFER_SIZE)
         self._last_battery_info: Dict[str, Any] = {}
         self._last_security_info: Dict[str, Any] = {}
         self._last_leak_info: List[Dict] = []
+        self._config_manager = config_manager
         self._config_path = config_path or self._default_config_path()
         self._suggestions_cache: List[Suggestion] = []
         self._cache_ts: float = 0.0
         self._cache_ttl: float = 8.0   # giây – refresh suggestions mỗi 8s
+
+    def invalidate_cache(self) -> None:
+        """Xóa cache gợi ý để tính toán lại ngay lập tức."""
+        self._cache_ts = 0.0
+        self._suggestions_cache = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -440,6 +447,23 @@ class AIAdvisor:
         return results
 
     # --- CLEANUP TIMING ---
+    def _parse_history_ts(self, record: Dict) -> float:
+        """Parse timestamp từ record lịch sử ra Unix epoch time (giây)."""
+        if "ts" in record:
+            try:
+                return float(record["ts"])
+            except (ValueError, TypeError):
+                pass
+        ts_str = record.get("timestamp", "")
+        if ts_str:
+            from datetime import datetime
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    return datetime.strptime(ts_str, fmt).timestamp()
+                except ValueError:
+                    continue
+        return 0.0
+
     def _rule_cleanup_timing(self) -> List[Suggestion]:
         """Phân tích lịch sử dọn rác để gợi ý thời điểm tối ưu."""
         try:
@@ -459,22 +483,27 @@ class AIAdvisor:
                 )]
 
             # Kiểm tra lần cuối dọn rác
-            latest = max(history, key=lambda h: h.get("ts", 0), default=None)
-            if latest:
-                hours_since = (time.time() - latest.get("ts", time.time())) / 3600
-                if hours_since > 168:  # > 7 ngày
-                    return [Suggestion(
-                        category=CATEGORY_CLEANUP,
-                        priority=PRIORITY_TIP,
-                        title=f"Đã {int(hours_since/24)} ngày chưa dọn rác",
-                        detail=(
-                            f"Lần dọn rác gần nhất cách đây {int(hours_since/24)} ngày. "
-                            "Rác hệ thống có thể đã tích lũy đáng kể. "
-                            "Khuyến nghị dọn định kỳ mỗi 3-7 ngày."
-                        ),
-                        action_key="clean_junk",
-                        action_label="Dọn Rác Ngay",
-                    )]
+            timestamps = [self._parse_history_ts(h) for h in history]
+            latest_ts = max(timestamps, default=0.0)
+            if latest_ts <= 0:
+                # Có bản ghi trong history nhưng không parse được thời gian -> coi như đã từng dọn
+                return []
+
+            hours_since = (time.time() - latest_ts) / 3600
+            if hours_since > 168:  # > 7 ngày
+                days = max(1, int(hours_since / 24))
+                return [Suggestion(
+                    category=CATEGORY_CLEANUP,
+                    priority=PRIORITY_TIP,
+                    title=f"Đã {days} ngày chưa dọn rác",
+                    detail=(
+                        f"Lần dọn rác gần nhất cách đây {days} ngày. "
+                        "Rác hệ thống có thể đã tích lũy đáng kể. "
+                        "Khuyến nghị dọn định kỳ mỗi 3-7 ngày."
+                    ),
+                    action_key="clean_junk",
+                    action_label="Dọn Rác Ngay",
+                )]
         except Exception:
             pass
         return []
@@ -484,10 +513,15 @@ class AIAdvisor:
     # ------------------------------------------------------------------
 
     def _default_config_path(self) -> str:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if getattr(sys, 'frozen', False):
+            base = os.path.dirname(sys.executable)
+        else:
+            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         return os.path.join(base, "config.json")
 
     def _load_cleanup_history(self) -> List[Dict]:
+        if self._config_manager is not None:
+            return self._config_manager.get("history", [])
         try:
             with open(self._config_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
@@ -496,6 +530,8 @@ class AIAdvisor:
             return []
 
     def _load_last_security_from_config(self) -> Dict[str, Any]:
+        if self._config_manager is not None:
+            return self._config_manager.get("last_security_scan_result", {})
         try:
             with open(self._config_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
