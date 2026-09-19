@@ -24,6 +24,8 @@ from ui.large_files_dialog import LargeFilesDialog
 from ui.disk_analyzer_dialog import DiskAnalyzerDialog
 from ui.network_dialog import NetworkOptimizerDialog
 from ui.disk_registry_dialog import DiskRegistryDialog
+from core.system_tweaker import SystemTweaker
+
 
 # Worker Thread for Background Scan & Clean to keep GUI completely smooth
 class CleanWorker(QThread):
@@ -104,6 +106,7 @@ class MainWindow(QMainWindow):
         self.monitor_hub = monitor_hub
         self.worker = None
         self.first_minimize_notified = False
+        self.system_tweaker = SystemTweaker()
 
         from core.network_optimizer import NetworkOptimizer
         if NetworkOptimizer.is_admin():
@@ -150,6 +153,7 @@ class MainWindow(QMainWindow):
         self.tab_history = QWidget()
         self.tab_analytics = QWidget()   # Phase 4
         self.tab_security = QWidget()    # Security Scanner
+        self.tab_tweaks = QWidget()      # System Tweaks & Privacy Shield
 
         self.init_tab_dashboard()
         self.init_tab_performance()
@@ -158,6 +162,7 @@ class MainWindow(QMainWindow):
         self.init_tab_history()
         self.init_tab_analytics()  # Phase 4
         self.init_tab_security()   # Security Scanner
+        self.init_tab_tweaks()     # System Tweaks & Privacy Shield
 
         self.tabs.addTab(self.tab_dashboard, "⚡ Bảng Điều Khiển")
         self.tabs.addTab(self.tab_performance, "🚀 Tiến Trình && Game Boost")
@@ -166,6 +171,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_history, "📊 Lịch Sử && Nhật Ký")
         self.tabs.addTab(self.tab_analytics, "🧠 Phân Tích Thông Minh")
         self.tabs.addTab(self.tab_security, "🔒 Bảo Mật")
+        self.tabs.addTab(self.tab_tweaks, "🛡️ Tinh Chỉnh && Riêng Tư")
+
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         main_layout.addWidget(self.tabs)
@@ -283,17 +290,25 @@ class MainWindow(QMainWindow):
         self.btn_large_files.setCursor(Qt.PointingHandCursor)
         self.btn_large_files.clicked.connect(self.open_large_files_dialog)
 
+        self.btn_tweaks = QPushButton("🛡️ Tinh Chỉnh && Privacy")
+        self.btn_tweaks.setProperty("class", "btn-secondary")
+        self.btn_tweaks.setCursor(Qt.PointingHandCursor)
+        self.btn_tweaks.clicked.connect(lambda: self.tabs.setCurrentWidget(self.tab_tweaks))
+
         self.btn_disk_analyzer = QPushButton("📊 Phân Tích Ổ Đĩa")
         self.btn_disk_analyzer.setProperty("class", "btn-secondary")
         self.btn_disk_analyzer.setCursor(Qt.PointingHandCursor)
         self.btn_disk_analyzer.clicked.connect(self.open_disk_analyzer)
 
+
         btn_row2.addWidget(self.btn_network, stretch=1)
         btn_row2.addWidget(self.btn_game_boost, stretch=1)
         btn_row2.addWidget(self.btn_disk_reg, stretch=1)
+        btn_row2.addWidget(self.btn_tweaks, stretch=1)
         btn_row2.addWidget(self.btn_large_files, stretch=1)
         btn_row2.addWidget(self.btn_disk_analyzer, stretch=1)
         layout.addLayout(btn_row2)
+
 
         # Row 3: Stat Cards
         stats_layout = QHBoxLayout()
@@ -1078,6 +1093,9 @@ class MainWindow(QMainWindow):
             self.btn_game_boost.setEnabled(enabled)
         if hasattr(self, "btn_disk_reg"):
             self.btn_disk_reg.setEnabled(enabled)
+        if hasattr(self, "btn_tweaks"):
+            self.btn_tweaks.setEnabled(enabled)
+
 
     def open_large_files_dialog(self):
         dialog = LargeFilesDialog(self)
@@ -1238,6 +1256,9 @@ class MainWindow(QMainWindow):
             self.refresh_process_table()
         elif hasattr(self, "tabs") and self.tabs.widget(idx) == self.tab_analytics:
             self._refresh_analytics_cards()
+        elif hasattr(self, "tabs") and hasattr(self, "tab_tweaks") and self.tabs.widget(idx) == self.tab_tweaks:
+            self.refresh_tweaks_ui()
+
 
     def _on_proc_auto_refresh_changed(self, state):
         if state == Qt.Checked:
@@ -2054,7 +2075,327 @@ class MainWindow(QMainWindow):
                 result["message"] + ("\n\nLưu ý: Bạn cần bấm 'Yes' trên hộp thoại Windows UAC để cấp quyền sửa đổi thiết lập hệ thống." if not is_elevated else ""))
             self.txt_security_log.appendPlainText(f"⚠️ Thất bại [{check_name}]: {result['message']}")
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAB 8: TINH CHỈNH HỆ THỐNG & BẢO VỆ QUYỀN RIÊNG TƯ (v3.1 PRO)
+    # ──────────────────────────────────────────────────────────────────────────
+    def init_tab_tweaks(self):
+        """Khởi tạo Tab thứ 8: Tinh Chỉnh Hệ Thống & Bảo Vệ Quyền Riêng Tư (v3.1 Pro)."""
+        layout = QVBoxLayout(self.tab_tweaks)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        # ── 1. Top Action & Summary Bar ───────────────────────────────────────
+        header = QHBoxLayout()
+
+        self.lbl_tweak_badge = QLabel("🛡️ ĐÃ TỐI ƯU 0/15")
+        self.lbl_tweak_badge.setStyleSheet("""
+            background-color: #064e3b; color: #34d399;
+            font-size: 13px; font-weight: bold; padding: 8px 18px;
+            border-radius: 20px; border: 1px solid #059669;
+        """)
+
+        self.lbl_tweak_rec_count = QLabel("Đang tải dữ liệu tinh chỉnh...")
+        self.lbl_tweak_rec_count.setStyleSheet("color: #94a3b8; font-size: 12px; background: transparent;")
+
+        self.btn_apply_rec_tweaks = QPushButton("⚡  Tối Ưu Khuyên Dùng (1-Click)")
+        self.btn_apply_rec_tweaks.setProperty("class", "btn-success")
+        self.btn_apply_rec_tweaks.setCursor(Qt.PointingHandCursor)
+        self.btn_apply_rec_tweaks.clicked.connect(self.apply_all_recommended_tweaks)
+
+        self.btn_revert_all_tweaks = QPushButton("🔄  Khôi Phục Mặc Định")
+        self.btn_revert_all_tweaks.setProperty("class", "btn-secondary")
+        self.btn_revert_all_tweaks.setCursor(Qt.PointingHandCursor)
+        self.btn_revert_all_tweaks.clicked.connect(self.revert_all_tweaks)
+
+        self.btn_restart_explorer = QPushButton("🚀  Khởi Động Lại Explorer")
+        self.btn_restart_explorer.setProperty("class", "btn-purple")
+        self.btn_restart_explorer.setCursor(Qt.PointingHandCursor)
+        self.btn_restart_explorer.clicked.connect(self.restart_explorer_clicked)
+
+        header.addWidget(self.lbl_tweak_badge)
+        header.addWidget(self.lbl_tweak_rec_count)
+        header.addStretch()
+        header.addWidget(self.btn_apply_rec_tweaks)
+        header.addWidget(self.btn_revert_all_tweaks)
+        header.addWidget(self.btn_restart_explorer)
+        layout.addLayout(header)
+
+        # ── 2. Filter & Search Toolbar ─────────────────────────────────────────
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+
+        self.btn_filter_all = QPushButton("Tất Cả (15)")
+        self.btn_filter_privacy = QPushButton("🛡️ Quyền Riêng Tư (8)")
+        self.btn_filter_perf = QPushButton("⚡ Hiệu Năng (4)")
+        self.btn_filter_ui = QPushButton("🖱️ Giao Diện (3)")
+
+        self.filter_buttons = [
+            ("all", self.btn_filter_all),
+            ("privacy", self.btn_filter_privacy),
+            ("performance", self.btn_filter_perf),
+            ("ui", self.btn_filter_ui)
+        ]
+
+        self.current_tweak_category = "all"
+
+        for cat_id, btn in self.filter_buttons:
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setProperty("class", "btn-secondary")
+            btn.clicked.connect(lambda checked, c=cat_id: self._set_tweak_category_filter(c))
+            toolbar.addWidget(btn)
+
+        self.btn_filter_all.setStyleSheet("background-color: #0284c7; color: #ffffff; font-weight: bold;")
+
+        toolbar.addStretch()
+
+        self.txt_tweak_search = QLineEdit()
+        self.txt_tweak_search.setPlaceholderText("🔍 Tìm kiếm tinh chỉnh (vd: telemetry, bing, menu, pin...)")
+        self.txt_tweak_search.setFixedWidth(320)
+        self.txt_tweak_search.setStyleSheet("""
+            QLineEdit {
+                background-color: #0f172a;
+                border: 1px solid #334155;
+                border-radius: 8px;
+                padding: 6px 12px;
+                color: #f1f5f9;
+            }
+            QLineEdit:focus {
+                border-color: #38bdf8;
+            }
+        """)
+        self.txt_tweak_search.textChanged.connect(self._filter_tweaks)
+        toolbar.addWidget(self.txt_tweak_search)
+
+        layout.addLayout(toolbar)
+
+        # ── 3. Scroll Area with Tweak Cards ────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        cards_container = QWidget()
+        cards_container.setStyleSheet("background: transparent;")
+        self.tweak_cards_layout = QVBoxLayout(cards_container)
+        self.tweak_cards_layout.setContentsMargins(0, 4, 8, 4)
+        self.tweak_cards_layout.setSpacing(10)
+
+        self.tweak_card_widgets = {}
+
+        for tid, info in SystemTweaker.TWEAKS_DEF.items():
+            card = QFrame()
+            card.setProperty("class", "tweak-card")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(14, 12, 14, 12)
+            card_layout.setSpacing(8)
+
+            # Top Row: Icon, Title, Badges, Button
+            top_row = QHBoxLayout()
+            top_row.setSpacing(10)
+
+            lbl_icon = QLabel(info.get("icon", "⚙️"))
+            lbl_icon.setStyleSheet("font-size: 18px; background: transparent;")
+
+            lbl_title = QLabel(info.get("name", tid))
+            lbl_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #f1f5f9; background: transparent;")
+
+            top_row.addWidget(lbl_icon)
+            top_row.addWidget(lbl_title)
+            top_row.addStretch()
+
+            # Badge
+            if info.get("recommended"):
+                badge = QLabel("⭐ Khuyên Dùng")
+                badge.setProperty("class", "badge-rec")
+            else:
+                badge = QLabel("⚡ Nâng Cao")
+                badge.setProperty("class", "badge-adv")
+            top_row.addWidget(badge)
+
+            if info.get("requires_admin"):
+                lbl_admin = QLabel("🔒 Cần Admin")
+                lbl_admin.setStyleSheet("color: #94a3b8; font-size: 11px; font-weight: 600; padding: 2px 6px; background: transparent;")
+                top_row.addWidget(lbl_admin)
+
+            btn_toggle = QPushButton("Đang kiểm tra...")
+            btn_toggle.setCursor(Qt.PointingHandCursor)
+            btn_toggle.setProperty("class", "btn-tweak-off")
+            btn_toggle.clicked.connect(lambda checked, t=tid: self.toggle_tweak(t))
+            top_row.addWidget(btn_toggle)
+
+            card_layout.addLayout(top_row)
+
+            # Description Row
+            lbl_desc = QLabel(info.get("description", ""))
+            lbl_desc.setWordWrap(True)
+            lbl_desc.setStyleSheet("color: #94a3b8; font-size: 12px; line-height: 1.4; background: transparent;")
+            card_layout.addWidget(lbl_desc)
+
+            self.tweak_cards_layout.addWidget(card)
+
+            self.tweak_card_widgets[tid] = {
+                "card": card,
+                "btn_toggle": btn_toggle,
+                "info": info
+            }
+
+        self.tweak_cards_layout.addStretch()
+        scroll.setWidget(cards_container)
+        layout.addWidget(scroll)
+
+        # Lần đầu hiển thị
+        self.refresh_tweaks_ui()
+
+    def _set_tweak_category_filter(self, category: str):
+        self.current_tweak_category = category
+        for cat_id, btn in self.filter_buttons:
+            if cat_id == category:
+                btn.setStyleSheet("background-color: #0284c7; color: #ffffff; font-weight: bold;")
+            else:
+                btn.setStyleSheet("")
+        self._filter_tweaks()
+
+    def _filter_tweaks(self):
+        query = self.txt_tweak_search.text().lower().strip()
+        cat = self.current_tweak_category
+
+        for tid, data in self.tweak_card_widgets.items():
+            info = data["info"]
+            matches_cat = (cat == "all" or info.get("category") == cat)
+            matches_query = (
+                not query or 
+                query in info.get("name", "").lower() or 
+                query in info.get("description", "").lower() or 
+                query in tid.lower()
+            )
+            data["card"].setVisible(matches_cat and matches_query)
+
+    def refresh_tweaks_ui(self):
+        """Cập nhật trạng thái hiển thị của toàn bộ 15 tinh chỉnh."""
+        if not hasattr(self, "system_tweaker") or not hasattr(self, "tweak_card_widgets"):
+            return
+
+        stats = self.system_tweaker.get_summary_stats()
+        self.lbl_tweak_badge.setText(f"🛡️ ĐÃ TỐI ƯU {stats['applied']}/{stats['total']}")
+        self.lbl_tweak_rec_count.setText(f"({stats['recommended_applied']}/{stats['recommended_total']} mục khuyên dùng đã kích hoạt)")
+
+        for tid, data in self.tweak_card_widgets.items():
+            btn = data["btn_toggle"]
+            is_on = self.system_tweaker.is_applied(tid)
+            if is_on:
+                btn.setText("✅  Đang Bật")
+                btn.setProperty("class", "btn-tweak-on")
+            else:
+                btn.setText("Bật Ngay")
+                btn.setProperty("class", "btn-tweak-off")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+    def toggle_tweak(self, tweak_id: str):
+        """Bật hoặc tắt một tinh chỉnh cụ thể."""
+        data = self.tweak_card_widgets.get(tweak_id)
+        if not data:
+            return
+
+        info = data["info"]
+        is_on = self.system_tweaker.is_applied(tweak_id)
+        is_elevated = SystemTweaker.is_admin()
+
+        if is_on:
+            # Muốn hoàn tác
+            if info.get("requires_admin") and not is_elevated:
+                reply = QMessageBox.question(
+                    self, "Xác Nhận Hoàn Tác",
+                    f"Bạn có muốn khôi phục tinh chỉnh:\n\n'{info['name']}'\n\nvề mặc định của Windows?\n\n"
+                    "Thao tác này yêu cầu quyền Administrator.",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
+
+            ok, msg = self.system_tweaker.revert_tweak(tweak_id)
+            if ok:
+                self.lbl_status.setText(msg)
+            else:
+                QMessageBox.warning(self, "Không Thể Hoàn Tác", msg)
+        else:
+            # Muốn bật
+            if info.get("requires_admin") and not is_elevated:
+                reply = QMessageBox.question(
+                    self, "Xác Nhận Kích Hoạt",
+                    f"Bạn có muốn kích hoạt tinh chỉnh:\n\n'{info['name']}'?\n\n"
+                    f"{info['description']}\n\n"
+                    "Thao tác này thay đổi thiết lập hệ thống và yêu cầu quyền Administrator (chọn 'Yes' khi Windows hỏi).",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
+
+            ok, msg = self.system_tweaker.apply_tweak(tweak_id)
+            if ok:
+                self.lbl_status.setText(msg)
+            else:
+                QMessageBox.warning(self, "Không Thể Kích Hoạt", msg)
+
+        self.refresh_tweaks_ui()
+
+    def apply_all_recommended_tweaks(self):
+        """Kích hoạt toàn bộ các mục khuyên dùng."""
+        is_elevated = SystemTweaker.is_admin()
+        if not is_elevated:
+            reply = QMessageBox.question(
+                self, "Xác Nhận Tối Ưu Khuyên Dùng",
+                "Bạn có muốn tự động kích hoạt TOÀN BỘ các mục khuyên dùng?\n\n"
+                "• Chặn Telemetry, DiagTrack, Activity History\n"
+                "• Tắt Bing Search trên Start Menu & gợi ý quảng cáo\n"
+                "• Giảm độ trễ mở Menu xuống 50ms\n"
+                "• Hiện đuôi file & mở This PC trên Explorer\n"
+                "• Khôi phục menu chuột phải đầy đủ trên Windows 11\n\n"
+                "Một số mục yêu cầu quyền Administrator. Bạn có đồng ý tiếp tục?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        self.lbl_status.setText("⏳ Đang áp dụng các tinh chỉnh khuyên dùng...")
+        res = self.system_tweaker.apply_all_recommended()
+        self.refresh_tweaks_ui()
+
+        msg = f"✅ Đã kích hoạt thành công {res['applied_count']} mục khuyên dùng!"
+        if res['failed_count'] > 0:
+            msg += f"\n⚠️ {res['failed_count']} mục cần cấp quyền Administrator."
+        QMessageBox.information(self, "Kết Quả Tối Ưu", msg)
+        self.lbl_status.setText(msg)
+
+    def revert_all_tweaks(self):
+        """Khôi phục toàn bộ các tinh chỉnh về mặc định."""
+        reply = QMessageBox.question(
+            self, "Xác Nhận Khôi Phục",
+            "Bạn có chắc chắn muốn khôi phục TẤT CẢ các tinh chỉnh về cấu hình mặc định của Windows?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.lbl_status.setText("⏳ Đang hoàn tác các tinh chỉnh về mặc định Windows...")
+        res = self.system_tweaker.revert_all()
+        self.refresh_tweaks_ui()
+
+        msg = f"🔄 Đã khôi phục thành công {res['reverted_count']} tinh chỉnh về mặc định!"
+        QMessageBox.information(self, "Khôi Phục Hoàn Tất", msg)
+        self.lbl_status.setText(msg)
+
+    def restart_explorer_clicked(self):
+        """Khởi động lại Windows Explorer."""
+        self.lbl_status.setText("⏳ Đang khởi động lại Windows Explorer...")
+        ok = SystemTweaker.restart_explorer()
+        if ok:
+            QMessageBox.information(self, "Khởi Động Lại Explorer", "✅ Đã khởi động lại Windows Explorer thành công!")
+            self.lbl_status.setText("✅ Windows Explorer đã được khởi động lại.")
+        else:
+            QMessageBox.warning(self, "Lỗi", "Không thể khởi động lại Windows Explorer.")
+
     def closeEvent(self, event):
+
         """
         Bắt sự kiện đóng cửa sổ: Nếu người dùng bật thu nhỏ xuống khay, ẩn cửa sổ thay vì tắt
         """

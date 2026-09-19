@@ -68,12 +68,14 @@ from PyQt5.QtWidgets import QApplication
 app = QApplication.instance() or QApplication(sys.argv)
 from ui.main_window import MainWindow
 win = MainWindow(cfg)
-assert win.tabs.count() == 7, f"MainWindow phai co 7 tabs, hien co {win.tabs.count()}"
+assert win.tabs.count() == 8, f"MainWindow phai co 8 tabs, hien co {win.tabs.count()}"
 for idx in range(win.tabs.count()):
     win.tabs.setCurrentIndex(idx)
 win._populate_whitelist()
 win._refresh_analytics_cards()
-print(f" [PASS] 10. UI & MainWindow: 7 tabs khoi tao sach se, chuyen tab & refresh cards thanh cong!")
+win.refresh_tweaks_ui()
+print(f" [PASS] 10. UI & MainWindow: 8 tabs khoi tao sach se, chuyen tab & refresh cards thanh cong!")
+
 
 # 10. Test Network Speed Monitor
 from core.system_monitor import SystemMonitor
@@ -146,5 +148,29 @@ if os.path.exists(exe_path):
 else:
     print(" [INFO] 18. Standalone Executable chua duoc build lai (co the build bang build_exe.bat).")
 
-print("\n>>> TAT CA 18 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY & SSD TRIM DEU THANH CONG 100%! <<<")
+# 19. Test System Tweaker & Privacy Shield (v3.1 Pro)
+from core.system_tweaker import SystemTweaker
+
+tweaker = SystemTweaker()
+assert len(tweaker.TWEAKS_DEF) == 15, f"Phai co 15 tinh chinh he thong, hien co {len(tweaker.TWEAKS_DEF)}"
+stats = tweaker.get_summary_stats()
+assert stats["total"] == 15, "Tong so tweak phai la 15"
+assert stats["recommended_total"] == 12, "Tong so muc khuyen dung phai la 12"
+
+# Test apply and revert on a safe HKCU key
+test_key = "speedup_menu_delay"
+init_status = tweaker.is_applied(test_key)
+ok, msg = tweaker.apply_tweak(test_key)
+assert ok == True, f"Apply tweak {test_key} phai thanh cong"
+assert tweaker.is_applied(test_key) == True, "Status sau apply phai la True"
+ok2, msg2 = tweaker.revert_tweak(test_key)
+assert ok2 == True, f"Revert tweak {test_key} phai thanh cong"
+assert tweaker.is_applied(test_key) == False, "Status sau revert phai la False"
+if init_status:
+    tweaker.apply_tweak(test_key)
+
+print(f" [PASS] 19. System Tweaker & Privacy Shield: {stats['total']} tinh chinh (12 khuyen dung), Test Apply & Revert {test_key} hoan hao 100%!")
+
+print("\n>>> TAT CA 19 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM & WINDOWS TWEAKS DEU THANH CONG 100%! <<<")
+
 

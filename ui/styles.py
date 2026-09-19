@@ -297,4 +297,64 @@ QProgressBar::chunk {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0284c7, stop:1 #10b981);
     border-radius: 5px;
 }
+
+/* Tweak Cards & Badges */
+QFrame.tweak-card {
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    padding: 12px;
+}
+
+QFrame.tweak-card:hover {
+    border-color: #38bdf8;
+    background-color: #223046;
+}
+
+QLabel.badge-rec {
+    background-color: #064e3b;
+    color: #34d399;
+    border: 1px solid #059669;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QLabel.badge-adv {
+    background-color: #451a03;
+    color: #fbbf24;
+    border: 1px solid #d97706;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QPushButton.btn-tweak-on {
+    background: #059669;
+    color: #ffffff;
+    font-weight: bold;
+    border-radius: 6px;
+    padding: 6px 14px;
+}
+
+QPushButton.btn-tweak-on:hover {
+    background: #047857;
+}
+
+QPushButton.btn-tweak-off {
+    background: #334155;
+    color: #94a3b8;
+    font-weight: 600;
+    border: 1px solid #475569;
+    border-radius: 6px;
+    padding: 6px 14px;
+}
+
+QPushButton.btn-tweak-off:hover {
+    background: #475569;
+    color: #f1f5f9;
+}
 """
+

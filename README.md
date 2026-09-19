@@ -1,12 +1,13 @@
-# ⚡ PC Auto Cleaner & System Optimizer Pro (v3.0)
+# ⚡ PC Auto Cleaner & System Optimizer Pro (v3.1)
 
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![PyQt5 Modern GUI](https://img.shields.io/badge/UI-PyQt5%20Fluent%20Dark-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://pypi.org/project/PyQt5/)
 [![Platform Windows](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://microsoft.com)
-[![Tests Passing](https://img.shields.io/badge/Tests-18%2F18%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com)
+[![Tests Passing](https://img.shields.io/badge/Tests-19%2F19%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com)
 [![License MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
 
-**Phần mềm toàn diện tối ưu hóa Windows, tự động dọn dẹp rác, giải phóng RAM, tăng tốc Gaming, đo tốc độ DNS song song, kiểm tra sức khỏe ổ cứng SSD S.M.A.R.T, dọn dẹp an toàn Registry và quét bảo mật hệ thống.**
+**Phần mềm toàn diện tối ưu hóa Windows, tự động dọn dẹp rác, giải phóng RAM, tăng tốc Gaming, đo tốc độ DNS song song, kiểm tra sức khỏe ổ cứng SSD S.M.A.R.T, dọn dẹp an toàn Registry, quét bảo mật hệ thống và bảo vệ quyền riêng tư (Windows Tweaks & Privacy Shield).**
+
 
 ---
 
@@ -102,12 +103,35 @@
   - Chạm 1-click để dồn RAM tức thì với hiệu ứng trực quan.
 - **Quyền hạn thông minh (`asInvoker`)**:
   - Khởi chạy bình thường không cần quyền Administrator (không hiện cảnh báo UAC phiền toái).
-  - Khi người dùng chạy với Administrator: Các tác vụ cấp cao (TRIM, Registry, DNS) thực thi trực tiếp 100% không hỏi lại.
+  - Khi người dùng chạy với Administrator: Các tác vụ cấp cao (TRIM, Registry, DNS, Tweaks) thực thi trực tiếp 100% không hỏi lại.
   - Khi chạy quyền thường: Hướng dẫn thân thiện và chỉ yêu cầu quyền khi thao tác tính năng đặc quyền.
 
 ---
 
+### 10. 🛡️ Windows Tweaks & Privacy Shield (15 Tinh Chỉnh Hệ Thống & Quyền Riêng Tư)
+- **Quyền Riêng Tư & Chống Theo Dõi (Privacy Shield)**:
+  - 🛑 Chặn thu thập dữ liệu chẩn đoán ngầm (Telemetry) gửi về Microsoft.
+  - 🚫 Vô hiệu hóa dịch vụ ngốn CPU `DiagTrack` (Connected User Experiences and Telemetry).
+  - 🔍 Tắt tìm kiếm Bing trên Start Menu (tăng tốc tìm kiếm app cục bộ gấp 3 lần và bảo mật gõ phím).
+  - 🚫 Chặn Advertising ID & theo dõi vị trí nền (Location Tracking).
+  - 📢 Tắt quảng cáo ứng dụng được tài trợ (Promoted Apps) và khảo sát định kỳ (Feedback Prompts).
+  - ⏳ Tắt lịch sử hoạt động đồng bộ Timeline (Activity History).
+- **Tăng Tốc Hiệu Năng & Nguồn Điện (Performance Tweaks)**:
+  - ⚡ Kích hoạt chế độ nguồn cực đại ẩn **Ultimate Performance** của Windows 10/11.
+  - 🚀 Giảm độ trễ mở Menu chuột phải từ 400ms xuống **50ms** (`MenuShowDelay`), phản hồi tức thì.
+  - 💾 Tùy chọn tắt chế độ ngủ đông (`powercfg -h off`) giải phóng **8GB - 32GB** tệp `hiberfil.sys` trên ổ C:.
+  - 🎮 Tắt ghi hình nền Game DVR của Xbox Game Bar giúp tăng FPS và giảm giật khung hình.
+- **Giao Diện & Explorer (UI & Windows 11 Tweaks)**:
+  - 🖱️ Khôi phục **Menu chuột phải cổ điển đầy đủ trên Windows 11** (không còn bị ẩn sau "Show more options").
+  - 📄 Luôn hiển thị đuôi tệp tin (`.exe`, `.pdf`, `.bat`...) phòng chống tệp độc hại mạo danh.
+  - 💻 Mở File Explorer trực tiếp vào **This PC** thay vì trang Quick Access.
+  - 🚀 Nút 1-click **Khởi động lại Windows Explorer** để áp dụng thay đổi giao diện ngay lập tức.
+- **An toàn tuyệt đối**: Hỗ trợ nút **Tối ưu khuyên dùng 1-Click** và **Khôi phục mặc định Windows 100%**.
+
+---
+
 ## 🏗️ Cấu Trúc Mã Nguồn (Architecture)
+
 
 ```text
 pc_cleaner_optimizer/
@@ -139,6 +163,7 @@ pc_cleaner_optimizer/
 │   ├── disk_health_optimizer.py# S.M.A.R.T NVMe/SSD Health, nhiệt độ & TRIM Optimizer
 │   ├── registry_cleaner.py     # Quét dọn Registry an toàn, tự động backup & rollback
 │   ├── security_scanner.py     # Quét bảo mật UAC, Defender, Firewall, Ports 135/445, SMBv1
+│   ├── system_tweaker.py       # Tinh chỉnh Windows Tweaks & Privacy Shield (15 mục hoàn tác)
 │   ├── disk_analyzer.py        # Phân tích cây dung lượng ổ đĩa
 │   ├── leak_detector.py        # Phát hiện tiến trình rò rỉ bộ nhớ (Memory Leaks)
 │   ├── analytics_reporter.py   # Báo cáo thống kê hiệu năng hệ thống
@@ -147,7 +172,7 @@ pc_cleaner_optimizer/
 │   └── logger.py               # Hệ thống ghi log an toàn SafeStreamHandler
 │
 └── ui/                         # Giao diện người dùng đồ họa (PyQt5 Fluent Dark UI)
-    ├── main_window.py          # Cửa sổ trung tâm điều khiển 7 tab tích hợp
+    ├── main_window.py          # Cửa sổ trung tâm điều khiển 8 tab tích hợp
     ├── floating_widget.py      # Widget nổi Desktop kéo thả & điều chỉnh độ mờ
     ├── tray_icon.py            # Biểu tượng khay hệ thống với menu điều khiển nhanh
     ├── network_dialog.py       # Hộp thoại đo tốc độ DNS & Tối ưu mạng
@@ -209,7 +234,7 @@ Bạn có thể mang thư mục này sang bất kỳ máy tính Windows nào kh�
 
 ## 🧪 Kiểm Thử & Đảm Bảo Chất Lượng (Quality Assurance)
 
-Dự án đi kèm bộ kiểm thử tự động toàn diện `test_full_system.py` xác thực 18 tiêu chí hoạt động:
+Dự án đi kèm bộ kiểm thử tự động toàn diện `test_full_system.py` xác thực 19 tiêu chí hoạt động:
 ```bash
 python test_full_system.py
 ```
@@ -217,28 +242,30 @@ python test_full_system.py
 ### Kết Quả Kiểm Thử Thực Tế:
 ```text
 [PASS]  1. Import all Core modules
-[PASS]  2. Import all UI dialogs and MainWindow
-[PASS]  3. ConfigManager (load/save/defaults)
-[PASS]  4. SystemMonitor metrics (CPU, RAM, Disk)
-[PASS]  5. MemoryOptimizer (EmptyWorkingSet & trim)
-[PASS]  6. JunkCleaner scan (Temp, Cache, Recycler)
-[PASS]  7. ProcessManager (Top CPU/RAM, Protected system whitelist)
-[PASS]  8. GameBooster (Boost & Restore priority classes)
-[PASS]  9. LargeFileScanner (Scan, format size, safe delete)
-[PASS] 10. MemoryLeakDetector (Detection cycle & tracking)
-[PASS] 11. NetworkOptimizer (DNS benchmark & ping calculation)
-[PASS] 12. DiskHealthOptimizer (S.M.A.R.T, Wear level, TRIM support)
-[PASS] 13. RegistryCleaner (Scan invalid keys, safe backup & rollback)
-[PASS] 14. SecurityScanner (UAC, Defender, Firewall, Ports 135/445, SMBv1)
-[PASS] 15. DiskAnalyzer (Directory consumption analysis)
-[PASS] 16. AnalyticsReporter (Generate performance reports)
-[PASS] 17. StartupManager (Run on startup registry integration)
-[PASS] 18. Cleanup Scheduler & Event Loop integrity
+[PASS]  2. ProcessManager (Top CPU/RAM, Protected system whitelist)
+[PASS]  3. GameBooster Bat (Thu hồi RAM, điều chỉnh tiến trình)
+[PASS]  4. GameBooster Tat (Khôi phục tiến trình bình thường)
+[PASS]  5. JunkCleaner Targets (Quét 6 danh mục rác)
+[PASS]  6. HealthMonitor (Chẩn đoán trạng thái HEALTHY)
+[PASS]  7. AnalyticsReporter (Báo cáo hiệu năng hệ thống)
+[PASS]  8. MemoryLeakDetector (Quét phát hiện rò rỉ RAM)
+[PASS]  9. Process Whitelist (Quản lý danh sách loại trừ an toàn)
+[PASS] 10. UI & MainWindow (8 tabs khởi tạo sạch sẽ, chuyển tab mượt mà)
+[PASS] 11. Network Monitor (Đo tốc độ mạng, Ping, Card mạng)
+[PASS] 12. Network Optimizer (Flush DNS, tối ưu TCP stack, benchmark DNS)
+[PASS] 13. Network UI (Hộp thoại tối ưu mạng & Widget nổi)
+[PASS] 14. Auto Network Optimizer (Tự động kích hoạt khi Ping vượt ngưỡng)
+[PASS] 15. Security Scanner (Quét UAC, Defender, Firewall, Ports 135/445, SMBv1)
+[PASS] 16. Safe Registry Cleaner (Quét khóa hỏng, sao lưu .reg & rollback)
+[PASS] 17. Disk Health & SSD TRIM (S.M.A.R.T NVMe, Wear level, Lệnh TRIM)
+[PASS] 18. Standalone Executable (File .exe độc lập sẵn sàng)
+[PASS] 19. System Tweaker & Privacy Shield (15 tinh chỉnh, 12 khuyên dùng, Apply & Revert 100%)
 
 ============================================================
-All 18 tests passed successfully! (100% PASS RATE)
+All 19 tests passed successfully! (100% PASS RATE)
 ============================================================
 ```
+
 
 ---
 
