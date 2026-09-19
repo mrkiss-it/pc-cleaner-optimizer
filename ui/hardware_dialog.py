@@ -31,10 +31,16 @@ class HardwareMonitorDialog(QDialog):
         self.resize(920, 640)
         self.setMinimumSize(820, 560)
         self.setStyleSheet("""
+            QDialog, QLabel, QPushButton {
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            QLabel {
+                border: none;
+                background-color: transparent;
+            }
             QDialog {
                 background-color: #0f172a;
                 color: #f8fafc;
-                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
             }
             QTabWidget::pane {
                 border: 1px solid #334155;
@@ -44,12 +50,13 @@ class HardwareMonitorDialog(QDialog):
             QTabBar::tab {
                 background-color: #1e293b;
                 color: #94a3b8;
-                padding: 10px 20px;
-                margin-right: 4px;
+                padding: 10px 24px;
+                margin-right: 6px;
                 border-top-left-radius: 8px;
                 border-top-right-radius: 8px;
                 font-size: 13px;
                 font-weight: 600;
+                min-width: 150px;
             }
             QTabBar::tab:selected {
                 background-color: #0284c7;
@@ -61,7 +68,10 @@ class HardwareMonitorDialog(QDialog):
             }
             QScrollArea {
                 border: none;
-                background: transparent;
+                background-color: #0f172a;
+            }
+            QScrollArea > QWidget > QWidget {
+                background-color: #0f172a;
             }
             QScrollBar:vertical {
                 border: none;
@@ -255,9 +265,13 @@ class HardwareMonitorDialog(QDialog):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1e293b, stop:1 #0f172a);
                 border: 1px solid #334155;
                 border-radius: 12px;
-                padding: 14px 20px;
+            }
+            QLabel {
+                border: none;
+                background: transparent;
             }
         """)
+
         h_layout = QHBoxLayout(health_banner)
         h_layout.setContentsMargins(10, 8, 10, 8)
 
@@ -268,15 +282,15 @@ class HardwareMonitorDialog(QDialog):
 
         left_box = QVBoxLayout()
         lbl_h_tag = QLabel("SỨC KHỎE PIN TỔNG THỂ")
-        lbl_h_tag.setStyleSheet("font-size: 11px; font-weight: bold; color: #94a3b8; letter-spacing: 1px;")
+        lbl_h_tag.setStyleSheet("font-family: 'Segoe UI'; font-size: 11px; font-weight: bold; color: #94a3b8; letter-spacing: 1px;")
         left_box.addWidget(lbl_h_tag)
 
         self.lbl_health_val = QLabel(f"{health_pct}%")
-        self.lbl_health_val.setStyleSheet(f"font-size: 38px; font-weight: bold; color: {health_color};")
+        self.lbl_health_val.setStyleSheet(f"font-family: 'Segoe UI'; font-size: 34px; font-weight: bold; color: {health_color};")
         left_box.addWidget(self.lbl_health_val)
 
         self.lbl_health_status = QLabel(f"Đánh giá: {health_status}")
-        self.lbl_health_status.setStyleSheet("font-size: 13px; font-weight: 600; color: #e2e8f0;")
+        self.lbl_health_status.setStyleSheet("font-family: 'Segoe UI'; font-size: 13px; font-weight: 600; color: #e2e8f0;")
         left_box.addWidget(self.lbl_health_status)
         h_layout.addLayout(left_box)
 
@@ -291,20 +305,21 @@ class HardwareMonitorDialog(QDialog):
         right_box.setAlignment(Qt.AlignRight)
 
         lbl_c_tag = QLabel("MỨC PIN HIỆN TẠI")
-        lbl_c_tag.setStyleSheet("font-size: 11px; font-weight: bold; color: #94a3b8; letter-spacing: 1px;")
+        lbl_c_tag.setStyleSheet("font-family: 'Segoe UI'; font-size: 11px; font-weight: bold; color: #94a3b8; letter-spacing: 1px;")
         lbl_c_tag.setAlignment(Qt.AlignRight)
         right_box.addWidget(lbl_c_tag)
 
         charge_symbol = "⚡ " if plugged else "🔋 "
         self.lbl_cur_val = QLabel(f"{charge_symbol}{cur_pct}%")
-        self.lbl_cur_val.setStyleSheet("font-size: 38px; font-weight: bold; color: #38bdf8;")
+        self.lbl_cur_val.setStyleSheet("font-family: 'Segoe UI'; font-size: 34px; font-weight: bold; color: #38bdf8;")
         self.lbl_cur_val.setAlignment(Qt.AlignRight)
         right_box.addWidget(self.lbl_cur_val)
 
         self.lbl_cur_status = QLabel(secs_str)
-        self.lbl_cur_status.setStyleSheet("font-size: 13px; color: #cbd5e1;")
+        self.lbl_cur_status.setStyleSheet("font-family: 'Segoe UI'; font-size: 13px; color: #cbd5e1;")
         self.lbl_cur_status.setAlignment(Qt.AlignRight)
         right_box.addWidget(self.lbl_cur_status)
+
         h_layout.addLayout(right_box)
 
         layout.addWidget(health_banner)
@@ -341,9 +356,14 @@ class HardwareMonitorDialog(QDialog):
         advice_card.setStyleSheet("""
             QFrame {
                 background-color: #1e293b;
+                border: 1px solid #334155;
                 border-left: 4px solid #38bdf8;
                 border-radius: 8px;
                 padding: 12px 16px;
+            }
+            QLabel {
+                border: none;
+                background: transparent;
             }
         """)
         ad_layout = QVBoxLayout(advice_card)
@@ -397,26 +417,30 @@ class HardwareMonitorDialog(QDialog):
                 background-color: #1e293b;
                 border: 1px solid #334155;
                 border-radius: 10px;
-                padding: 12px;
+                padding: 10px 14px;
             }
             QFrame:hover {
                 border-color: #475569;
             }
+            QLabel {
+                border: none;
+                background: transparent;
+            }
         """)
         lay = QVBoxLayout(frame)
-        lay.setContentsMargins(6, 4, 6, 4)
+        lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(4)
 
         lbl_t = QLabel(title)
-        lbl_t.setStyleSheet("font-size: 11px; font-weight: 600; color: #94a3b8;")
+        lbl_t.setStyleSheet("font-family: 'Segoe UI'; font-size: 11px; font-weight: 600; color: #94a3b8;")
         lay.addWidget(lbl_t)
 
         lbl_v = QLabel(value)
-        lbl_v.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {val_color};")
+        lbl_v.setStyleSheet(f"font-family: 'Segoe UI'; font-size: 16px; font-weight: bold; color: {val_color};")
         lay.addWidget(lbl_v)
 
         lbl_s = QLabel(sub)
-        lbl_s.setStyleSheet("font-size: 11px; color: #64748b;")
+        lbl_s.setStyleSheet("font-family: 'Segoe UI'; font-size: 11px; color: #64748b;")
         lay.addWidget(lbl_s)
 
         frame.lbl_val = lbl_v
@@ -429,9 +453,14 @@ class HardwareMonitorDialog(QDialog):
     def create_cpu_gpu_tab(self) -> QWidget:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background-color: #0f172a; border: none; }")
 
         content = QWidget()
+        content.setStyleSheet("QWidget { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI'; }")
         layout = QVBoxLayout(content)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(14)
 
@@ -445,6 +474,10 @@ class HardwareMonitorDialog(QDialog):
                 border: 1px solid #334155;
                 border-radius: 12px;
                 padding: 16px;
+            }
+            QLabel {
+                border: none;
+                background: transparent;
             }
         """)
         c_layout = QVBoxLayout(cpu_frame)
@@ -505,6 +538,10 @@ class HardwareMonitorDialog(QDialog):
                     border-radius: 6px;
                     padding: 6px 10px;
                 }
+                QLabel {
+                    border: none;
+                    background: transparent;
+                }
             """)
             b_lay = QHBoxLayout(c_box)
             b_lay.setContentsMargins(4, 2, 4, 2)
@@ -545,6 +582,10 @@ class HardwareMonitorDialog(QDialog):
                 border-radius: 12px;
                 padding: 16px;
             }
+            QLabel {
+                border: none;
+                background: transparent;
+            }
         """)
         g_layout = QVBoxLayout(gpu_frame)
         g_layout.setSpacing(10)
@@ -561,6 +602,10 @@ class HardwareMonitorDialog(QDialog):
                     border: 1px solid #334155;
                     border-radius: 8px;
                     padding: 12px;
+                }
+                QLabel {
+                    border: none;
+                    background: transparent;
                 }
             """)
             i_lay = QVBoxLayout(g_item)
