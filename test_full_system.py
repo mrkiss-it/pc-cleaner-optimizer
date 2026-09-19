@@ -279,6 +279,61 @@ badge_text = win.btn_ai_advisor.text()
 assert "AI Gợi Ý" in badge_text, f"Button text phai chua 'AI Gợi Ý', hien tai: {badge_text}"
 print(f" [PASS] 24. Action Dispatcher & Badge: Action dispatch hoat dong chuan, Tab navigation chinh xac, Badge button cap nhat: '{badge_text}'.")
 
-print("\n>>> TAT CA 24 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE SENSORS, BATTERY & AI ADVISOR DEU THANH CONG 100%! <<<")
+# 25. Test Windows Services Optimizer (v3.4 Pro)
+from core.service_optimizer import (
+    ServiceOptimizer, WindowsService,
+    RECOMMENDATION_SAFE_DISABLE, RECOMMENDATION_MANUAL,
+)
+svc_summary = ServiceOptimizer.get_summary()
+assert svc_summary["total"] > 0, "Tong so services phai > 0"
+assert svc_summary["running"] > 0, "So service dang chay phai > 0"
+all_services = ServiceOptimizer.get_services()
+assert len(all_services) == svc_summary["total"], "So luong get_services() phai bang tong summary"
+candidates = ServiceOptimizer.get_services(only_candidates=True)
+assert isinstance(candidates, list), "Candidates phai la list"
+print(f" [PASS] 25. Windows Services: Nhan dien {svc_summary['total']} services ({svc_summary['running']} running, {svc_summary['candidates']} candidates toi uu).")
+
+# 26. Test Context Menu Manager (v3.4 Pro)
+from core.context_menu_manager import ContextMenuManager, ContextMenuItem
+menu_summary = ContextMenuManager.get_summary()
+assert menu_summary["total"] > 0, "Tong so context menu handlers phai > 0"
+assert "enabled" in menu_summary and "orphan" in menu_summary, "Menu summary phai day du thong tin"
+menu_items = ContextMenuManager.scan_items()
+assert len(menu_items) == menu_summary["total"], "So luong scan_items() phai bang total"
+print(f" [PASS] 26. Context Menu Manager: Quet thanh cong {menu_summary['total']} Shell Extensions, {menu_summary['orphan']} menu mo coi (orphan).")
+
+# 27. Test Context Menu Toggle & Blocked List
+blocked_set = ContextMenuManager.get_blocked_clsids()
+assert isinstance(blocked_set, set), "Blocked CLSIDs phai la set"
+dummy_item = ContextMenuItem(
+    id="test::dummy",
+    name="TestDummyHandler",
+    location_key="file",
+    location_title="Tập Tin (*)",
+    reg_path="dummy_path",
+    clsid="{00000000-0000-0000-0000-000000000000}",
+    dll_path=None,
+    company="Test Co",
+    is_enabled=True,
+    is_orphan=False
+)
+ok_dis, msg_dis = ContextMenuManager.toggle_item(dummy_item, enable=False)
+assert ok_dis == True, "Disable dummy item phai thanh cong"
+assert "{00000000-0000-0000-0000-000000000000}" in ContextMenuManager.get_blocked_clsids()
+ok_en, msg_en = ContextMenuManager.toggle_item(dummy_item, enable=True)
+assert ok_en == True, "Enable dummy item phai thanh cong"
+assert "{00000000-0000-0000-0000-000000000000}" not in ContextMenuManager.get_blocked_clsids()
+print(" [PASS] 27. Context Menu Toggle: Logic Block / Unblock qua HKCU Shell Extensions hoat dong an toan 100%!")
+
+# 28. Test Service & Context Menu Dialog UI
+from ui.service_context_dialog import ServiceContextDialog
+svc_dlg = ServiceContextDialog(parent=win)
+assert svc_dlg.tabs.count() == 2, "ServiceContextDialog phai co 2 tabs"
+assert hasattr(win, "btn_services"), "MainWindow phai co nut btn_services"
+assert hasattr(win, "open_services_context_dialog"), "MainWindow phai co ham open_services_context_dialog"
+svc_dlg.close()
+print(" [PASS] 28. Service & Context Menu UI: ServiceContextDialog (2 tabs) & MainWindow Integration khoi tao thanh cong!")
+
+print("\n>>> TAT CA 28 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES & CONTEXT MENU DEU THANH CONG 100%! <<<")
 
 

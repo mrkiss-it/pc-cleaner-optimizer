@@ -26,6 +26,7 @@ from ui.network_dialog import NetworkOptimizerDialog
 from ui.disk_registry_dialog import DiskRegistryDialog
 from ui.hardware_dialog import HardwareMonitorDialog
 from ui.ai_advisor_dialog import AIAdvisorDialog
+from ui.service_context_dialog import ServiceContextDialog
 from core.ai_advisor import AIAdvisor
 from core.system_tweaker import SystemTweaker
 
@@ -335,10 +336,16 @@ class MainWindow(QMainWindow):
         self.btn_ai_advisor.clicked.connect(self.open_ai_advisor_dialog)
         # Badge style sẽ được cập nhật bởi _update_ai_badge()
 
+        self.btn_services = QPushButton("⚙️ Dịch Vụ && Menu")
+        self.btn_services.setProperty("class", "btn-secondary")
+        self.btn_services.setCursor(Qt.PointingHandCursor)
+        self.btn_services.clicked.connect(self.open_services_context_dialog)
+
         btn_row2.addWidget(self.btn_network, stretch=1)
         btn_row2.addWidget(self.btn_game_boost, stretch=1)
         btn_row2.addWidget(self.btn_disk_reg, stretch=1)
         btn_row2.addWidget(self.btn_hardware, stretch=1)
+        btn_row2.addWidget(self.btn_services, stretch=1)
         btn_row2.addWidget(self.btn_ai_advisor, stretch=1)
         btn_row2.addWidget(self.btn_tweaks, stretch=1)
         btn_row2.addWidget(self.btn_large_files, stretch=1)
@@ -1174,6 +1181,11 @@ class MainWindow(QMainWindow):
         )
         dialog.exec_()
 
+    def open_services_context_dialog(self):
+        """Mở hộp thoại Quản lý Dịch vụ Windows & Menu Chuột Phải (v3.4 Pro)."""
+        dialog = ServiceContextDialog(self)
+        dialog.exec_()
+
     def _ai_action_dispatcher(self, action_key: str):
         """Xử lý action từ AI Advisor khi user click 'Áp Dụng Ngay'."""
         try:
@@ -1189,6 +1201,8 @@ class MainWindow(QMainWindow):
                 self.open_network_dialog()
             elif action_key == "open_hardware_dialog":
                 self.open_hardware_dialog()
+            elif action_key == "open_services_dialog":
+                self.open_services_context_dialog()
             elif action_key == "open_security_dialog":
                 if hasattr(self, "tab_security"):
                     self.tabs.setCurrentWidget(self.tab_security)

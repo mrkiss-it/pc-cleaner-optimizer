@@ -34,6 +34,7 @@ CATEGORY_BATTERY  = "BATTERY"
 CATEGORY_SECURITY = "SECURITY"
 CATEGORY_CLEANUP  = "CLEANUP"
 CATEGORY_PROCESS  = "PROCESS"
+CATEGORY_SERVICES = "SERVICES"
 
 CATEGORY_ICONS = {
     CATEGORY_RAM:      "⚡",
@@ -44,6 +45,7 @@ CATEGORY_ICONS = {
     CATEGORY_SECURITY: "🛡️",
     CATEGORY_CLEANUP:  "🗑️",
     CATEGORY_PROCESS:  "🔄",
+    CATEGORY_SERVICES: "⚙️",
 }
 
 PRIORITY_ORDER = {PRIORITY_CRITICAL: 0, PRIORITY_WARNING: 1, PRIORITY_TIP: 2}
@@ -202,6 +204,7 @@ class AIAdvisor:
         results += self._rule_security()
         results += self._rule_memory_leak()
         results += self._rule_cleanup_timing()
+        results += self._rule_services()
 
         return results
 
@@ -538,3 +541,48 @@ class AIAdvisor:
             return cfg.get("last_security_scan_result", {})
         except Exception:
             return {}
+
+    # --- SERVICES & CONTEXT MENU ---
+    def _rule_services(self) -> List[Suggestion]:
+        results: List[Suggestion] = []
+        try:
+            from core.service_optimizer import ServiceOptimizer
+            candidates = ServiceOptimizer.get_services(only_candidates=True)
+            if candidates:
+                candidate_names = [c.name for c in candidates[:3]]
+                names_str = ", ".join(candidate_names)
+                has_critical = any(c.name.lower() in ("diagtrack", "sysmain") for c in candidates)
+                results.append(Suggestion(
+                    category=CATEGORY_SERVICES,
+                    priority=PRIORITY_WARNING if has_critical else PRIORITY_TIP,
+                    title=f"Phát hiện {len(candidates)} dịch vụ Windows có thể tối ưu",
+                    detail=(
+                        f"Các dịch vụ như {names_str}... đang tự động chạy ngầm. "
+                        "Tối ưu các dịch vụ này để giảm tải CPU/Disk và bảo vệ quyền riêng tư."
+                    ),
+                    action_key="open_services_dialog",
+                    action_label="Tối Ưu Dịch Vụ",
+                ))
+        except Exception:
+            pass
+
+        try:
+            from core.context_menu_manager import ContextMenuManager
+            menu_summary = ContextMenuManager.get_summary()
+            orphans = menu_summary.get("orphan", 0)
+            if orphans > 0:
+                results.append(Suggestion(
+                    category=CATEGORY_SERVICES,
+                    priority=PRIORITY_TIP,
+                    title=f"Có {orphans} mục menu chuột phải mồ côi (file bị xóa)",
+                    detail=(
+                        f"Phát hiện {orphans} menu chuột phải của các phần mềm đã gỡ cài đặt nhưng vẫn còn sót lại trong Registry. "
+                        "Dọn dẹp chúng để File Explorer phản hồi nhanh hơn khi nhấp chuột phải."
+                    ),
+                    action_key="open_services_dialog",
+                    action_label="Dọn Menu Chuột Phải",
+                ))
+        except Exception:
+            pass
+
+        return results

@@ -57,8 +57,11 @@ def build():
         "--hidden-import=core.security_scanner",
         "--hidden-import=core.hardware_monitor",
         "--hidden-import=core.ai_advisor",
+        "--hidden-import=core.service_optimizer",
+        "--hidden-import=core.context_menu_manager",
         "--hidden-import=ui.hardware_dialog",
         "--hidden-import=ui.ai_advisor_dialog",
+        "--hidden-import=ui.service_context_dialog",
         main_script
     ]
 
