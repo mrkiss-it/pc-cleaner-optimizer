@@ -1,0 +1,37 @@
+{
+    "auto_clean_enabled": true,
+    "interval_minutes": 60,
+    "auto_ram_optimize_enabled": true,
+    "ram_threshold_percent": 80,
+    "floating_widget_enabled": true,
+    "run_on_startup": false,
+    "minimize_to_tray_on_close": true,
+    "show_notifications": true,
+    "targets": {
+        "user_temp": true,
+        "system_temp": true,
+        "recycle_bin": true,
+        "browser_cache": true,
+        "crash_dumps": true,
+        "windows_update": true,
+        "app_caches": true,
+        "ram_optimize": true
+    },
+    "history": [],
+    "memory_leak_detection_enabled": true,
+    "memory_leak_threshold_mb": 150,
+    "process_whitelist": [
+        "obs64.exe",
+        "premiere.exe",
+        "photoshop.exe",
+        "vmware.exe",
+        "virtualbox.exe"
+    ],
+    "auto_network_optimize_enabled": true,
+    "auto_network_ping_threshold_ms": 180,
+    "auto_best_dns_enabled": false,
+    "auto_best_dns_interval_hours": 2,
+    "auto_security_scan_enabled": true,
+    "auto_security_scan_interval_hours": 24,
+    "last_security_scan_result": {}
+}
