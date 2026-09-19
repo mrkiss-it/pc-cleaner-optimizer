@@ -334,6 +334,66 @@ assert hasattr(win, "open_services_context_dialog"), "MainWindow phai co ham ope
 svc_dlg.close()
 print(" [PASS] 28. Service & Context Menu UI: ServiceContextDialog (2 tabs) & MainWindow Integration khoi tao thanh cong!")
 
-print("\n>>> TAT CA 28 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES & CONTEXT MENU DEU THANH CONG 100%! <<<")
+# 29. Test Software Uninstaller - Desktop Apps (v3.5 Pro)
+from core.uninstaller_manager import UninstallerManager, InstalledApp
+desktop_apps = UninstallerManager.get_installed_desktop_apps()
+assert isinstance(desktop_apps, list), "Desktop apps phai la list"
+assert len(desktop_apps) > 0, "So luong desktop apps tim thay phai > 0"
+sample_app = desktop_apps[0]
+assert hasattr(sample_app, "name") and hasattr(sample_app, "uninstall_string"), "App phai co name va uninstall_string"
+assert sample_app.app_type == "desktop", "App type phai la desktop"
+print(f" [PASS] 29. Desktop Apps Uninstaller: Tim thay {len(desktop_apps)} phan mem desktop (VD: {sample_app.name}).")
+
+# 30. Test Windows Bloatware Scan (v3.5 Pro)
+bloatware_apps = UninstallerManager.get_bloatware_apps()
+assert isinstance(bloatware_apps, list), "Bloatware apps phai la list"
+uninst_summary = UninstallerManager.get_summary()
+assert uninst_summary["desktop_count"] == len(desktop_apps), "Summary desktop count phai khop"
+assert uninst_summary["bloatware_count"] == len(bloatware_apps), "Summary bloatware count phai khop"
+if bloatware_apps:
+    sample_bloat = bloatware_apps[0]
+    assert sample_bloat.is_bloatware == True, "Bloatware app phai co is_bloatware == True"
+    assert sample_bloat.package_full_name is not None, "UWP bloatware phai co package_full_name"
+print(f" [PASS] 30. Windows Bloatware Scanner: Phat hien {len(bloatware_apps)} ung dung rac/bloatware UWP can go.")
+
+# 31. Test Residual Junk Hunter Scan & Clean Logic (v3.5 Pro)
+# Tao thu muc gia lap trong TEMP de test an toan
+import tempfile
+import shutil
+test_temp_dir = tempfile.mkdtemp(prefix="pc_cleaner_mock_residual_")
+test_sub = os.path.join(test_temp_dir, "MockSoftwareLeftover")
+os.makedirs(test_sub, exist_ok=True)
+with open(os.path.join(test_sub, "junk_cache.dat"), "w") as f:
+    f.write("mock residual data" * 50)
+
+# Test clean_residuals logic truc tiep voi dict chua dummy folders
+mock_res_data = {
+    "app_name": "MockSoftware",
+    "folders": [{"path": test_sub, "name": "MockSoftwareLeftover", "size_mb": 0.1}],
+    "reg_keys": [],
+    "total_size_mb": 0.1,
+}
+cleaned_folders, cleaned_keys, clean_msg = UninstallerManager.clean_residuals(mock_res_data)
+assert cleaned_folders == 1, "Real clean phai xoa 1 folder thanh cong"
+assert not os.path.exists(test_sub), "Folder leftover gia lap phai bi xoa khoi he thong"
+shutil.rmtree(test_temp_dir, ignore_errors=True)
+
+# Test scan residuals cho 1 app
+scanned_res = UninstallerManager.scan_residuals("Kaspersky")
+assert isinstance(scanned_res, dict), "Scan residuals phai tra ve dict"
+assert "folders" in scanned_res and "reg_keys" in scanned_res, "Scan residuals phai co folders va reg_keys"
+total_leftovers = len(scanned_res["folders"]) + len(scanned_res["reg_keys"])
+print(f" [PASS] 31. Residual Junk Hunter: Clean residuals hoat dong an toan 100%, scan keyword thu duoc {total_leftovers} leftover items.")
+
+# 32. Test Uninstaller Dialog UI & MainWindow Integration (v3.5 Pro)
+from ui.uninstaller_dialog import UninstallerDialog
+uninst_dlg = UninstallerDialog(parent=win)
+assert uninst_dlg.tabs.count() == 3, "UninstallerDialog phai co 3 tabs (Desktop, Bloatware, Residuals)"
+assert hasattr(win, "btn_uninstaller"), "MainWindow phai co nut btn_uninstaller"
+assert hasattr(win, "open_uninstaller_dialog"), "MainWindow phai co ham open_uninstaller_dialog"
+uninst_dlg.close()
+print(" [PASS] 32. Uninstaller UI: UninstallerDialog (3 tabs) & MainWindow btn_uninstaller khoi tao hoan hao!")
+
+print("\n>>> TAT CA 32 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU & UNINSTALLER DEU THANH CONG 100%! <<<")
 
 

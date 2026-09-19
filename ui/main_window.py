@@ -27,6 +27,7 @@ from ui.disk_registry_dialog import DiskRegistryDialog
 from ui.hardware_dialog import HardwareMonitorDialog
 from ui.ai_advisor_dialog import AIAdvisorDialog
 from ui.service_context_dialog import ServiceContextDialog
+from ui.uninstaller_dialog import UninstallerDialog
 from core.ai_advisor import AIAdvisor
 from core.system_tweaker import SystemTweaker
 
@@ -341,11 +342,18 @@ class MainWindow(QMainWindow):
         self.btn_services.setCursor(Qt.PointingHandCursor)
         self.btn_services.clicked.connect(self.open_services_context_dialog)
 
+        self.btn_uninstaller = QPushButton("📦 Gỡ Phần Mềm")
+        self.btn_uninstaller.setProperty("class", "btn-secondary")
+        self.btn_uninstaller.setCursor(Qt.PointingHandCursor)
+        self.btn_uninstaller.setToolTip("Quản lý & gỡ bỏ phần mềm, xóa Bloatware Windows và dọn dẹp rác còn sót")
+        self.btn_uninstaller.clicked.connect(self.open_uninstaller_dialog)
+
         btn_row2.addWidget(self.btn_network, stretch=1)
         btn_row2.addWidget(self.btn_game_boost, stretch=1)
         btn_row2.addWidget(self.btn_disk_reg, stretch=1)
         btn_row2.addWidget(self.btn_hardware, stretch=1)
         btn_row2.addWidget(self.btn_services, stretch=1)
+        btn_row2.addWidget(self.btn_uninstaller, stretch=1)
         btn_row2.addWidget(self.btn_ai_advisor, stretch=1)
         btn_row2.addWidget(self.btn_tweaks, stretch=1)
         btn_row2.addWidget(self.btn_large_files, stretch=1)
@@ -1186,6 +1194,11 @@ class MainWindow(QMainWindow):
         dialog = ServiceContextDialog(self)
         dialog.exec_()
 
+    def open_uninstaller_dialog(self):
+        """Mở hộp thoại Quản lý Gỡ Phần Mềm & Thợ Săn Rác Còn Sót (v3.5 Pro)."""
+        dialog = UninstallerDialog(self)
+        dialog.exec_()
+
     def _ai_action_dispatcher(self, action_key: str):
         """Xử lý action từ AI Advisor khi user click 'Áp Dụng Ngay'."""
         try:
@@ -1203,6 +1216,8 @@ class MainWindow(QMainWindow):
                 self.open_hardware_dialog()
             elif action_key == "open_services_dialog":
                 self.open_services_context_dialog()
+            elif action_key == "open_uninstaller_dialog":
+                self.open_uninstaller_dialog()
             elif action_key == "open_security_dialog":
                 if hasattr(self, "tab_security"):
                     self.tabs.setCurrentWidget(self.tab_security)

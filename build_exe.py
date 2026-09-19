@@ -59,9 +59,11 @@ def build():
         "--hidden-import=core.ai_advisor",
         "--hidden-import=core.service_optimizer",
         "--hidden-import=core.context_menu_manager",
+        "--hidden-import=core.uninstaller_manager",
         "--hidden-import=ui.hardware_dialog",
         "--hidden-import=ui.ai_advisor_dialog",
         "--hidden-import=ui.service_context_dialog",
+        "--hidden-import=ui.uninstaller_dialog",
         main_script
     ]
 

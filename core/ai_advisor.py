@@ -34,18 +34,20 @@ CATEGORY_BATTERY  = "BATTERY"
 CATEGORY_SECURITY = "SECURITY"
 CATEGORY_CLEANUP  = "CLEANUP"
 CATEGORY_PROCESS  = "PROCESS"
-CATEGORY_SERVICES = "SERVICES"
+CATEGORY_SERVICES   = "SERVICES"
+CATEGORY_UNINSTALLER = "UNINSTALLER"
 
 CATEGORY_ICONS = {
-    CATEGORY_RAM:      "⚡",
-    CATEGORY_CPU:      "🖥️",
-    CATEGORY_DISK:     "💾",
-    CATEGORY_NETWORK:  "🌐",
-    CATEGORY_BATTERY:  "🔋",
-    CATEGORY_SECURITY: "🛡️",
-    CATEGORY_CLEANUP:  "🗑️",
-    CATEGORY_PROCESS:  "🔄",
-    CATEGORY_SERVICES: "⚙️",
+    CATEGORY_RAM:         "⚡",
+    CATEGORY_CPU:         "🖥️",
+    CATEGORY_DISK:        "💾",
+    CATEGORY_NETWORK:     "🌐",
+    CATEGORY_BATTERY:     "🔋",
+    CATEGORY_SECURITY:    "🛡️",
+    CATEGORY_CLEANUP:     "🗑️",
+    CATEGORY_PROCESS:     "🔄",
+    CATEGORY_SERVICES:    "⚙️",
+    CATEGORY_UNINSTALLER: "📦",
 }
 
 PRIORITY_ORDER = {PRIORITY_CRITICAL: 0, PRIORITY_WARNING: 1, PRIORITY_TIP: 2}
@@ -205,6 +207,7 @@ class AIAdvisor:
         results += self._rule_memory_leak()
         results += self._rule_cleanup_timing()
         results += self._rule_services()
+        results += self._rule_uninstaller()
 
         return results
 
@@ -581,6 +584,45 @@ class AIAdvisor:
                     ),
                     action_key="open_services_dialog",
                     action_label="Dọn Menu Chuột Phải",
+                ))
+        except Exception:
+            pass
+
+        return results
+
+    # --- UNINSTALLER & BLOATWARE ---
+    def _rule_uninstaller(self) -> List[Suggestion]:
+        results: List[Suggestion] = []
+        try:
+            from core.uninstaller_manager import UninstallerManager
+            bloat = UninstallerManager.get_bloatware_apps()
+            if bloat:
+                results.append(Suggestion(
+                    category=CATEGORY_UNINSTALLER,
+                    priority=PRIORITY_TIP,
+                    title=f"Phát hiện {len(bloat)} ứng dụng Bloatware Windows có thể gỡ bỏ",
+                    detail=(
+                        f"Windows đang cài sẵn {len(bloat)} ứng dụng rác (như {bloat[0].name}...). "
+                        "Gỡ bỏ các ứng dụng không dùng giúp giải phóng bộ nhớ và giảm tiến trình ngầm."
+                    ),
+                    action_key="open_uninstaller_dialog",
+                    action_label="Gỡ Bloatware",
+                ))
+
+            summary = UninstallerManager.get_summary()
+            largest_size = summary.get("largest_size_mb", 0)
+            largest_name = summary.get("largest_name", "")
+            if largest_size >= 3000:
+                results.append(Suggestion(
+                    category=CATEGORY_UNINSTALLER,
+                    priority=PRIORITY_TIP,
+                    title=f"Ứng dụng dung lượng lớn: {largest_name} ({largest_size/1024:.1f} GB)",
+                    detail=(
+                        f"Phần mềm '{largest_name}' đang chiếm tới {largest_size/1024:.1f} GB dung lượng ổ đĩa. "
+                        "Nếu không còn nhu cầu sử dụng, bạn có thể gỡ bỏ tận gốc qua Trình Gỡ Cài Đặt."
+                    ),
+                    action_key="open_uninstaller_dialog",
+                    action_label="Quản Lý Ứng Dụng",
                 ))
         except Exception:
             pass
