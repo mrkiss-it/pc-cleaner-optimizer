@@ -21,7 +21,8 @@ from PyQt5.QtGui import QColor, QFont, QIcon
 from PyQt5.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QTabWidget, QFrame, QMessageBox, QAbstractItemView, QSizePolicy
+    QTabWidget, QFrame, QMessageBox, QAbstractItemView, QSizePolicy,
+    QApplication
 )
 
 from core.service_optimizer import (
@@ -187,7 +188,25 @@ class ServiceContextDialog(QDialog):
             QPushButton:hover {{ background: {_ACCENT_BLUE}22; }}
         """)
         btn_refresh.setCursor(Qt.PointingHandCursor)
-        btn_refresh.clicked.connect(self._refresh_all_data)
+        if not NetworkOptimizer.is_admin():
+            btn_admin = QPushButton("🛡️ Chạy Quyền Admin")
+            btn_admin.setFixedHeight(32)
+            btn_admin.setStyleSheet(f"""
+                QPushButton {{
+                    background: {_WARNING}22;
+                    color: {_WARNING};
+                    border: 1px solid {_WARNING};
+                    border-radius: 6px;
+                    padding: 0 12px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{ background: {_WARNING}44; }}
+            """)
+            btn_admin.setCursor(Qt.PointingHandCursor)
+            btn_admin.setToolTip("Khởi động lại ứng dụng với đầy đủ quyền Administrator")
+            btn_admin.clicked.connect(self._on_restart_admin)
+            header_row.addWidget(btn_admin)
+
         header_row.addWidget(btn_refresh)
 
         root.addLayout(header_row)
@@ -611,48 +630,77 @@ class ServiceContextDialog(QDialog):
     # Actions
     # ------------------------------------------------------------------
 
+    def _on_restart_admin(self):
+        reply = QMessageBox.question(
+            self,
+            "Khởi Động Lại Quyền Administrator",
+            "Ứng dụng sẽ tự động khởi động lại với đầy đủ quyền Administrator để bạn quản lý toàn diện dịch vụ và hệ thống.\n\n"
+            "👉 Bạn có muốn khởi động lại ngay không?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            ServiceOptimizer.restart_as_admin()
+
     def _on_toggle_service(self, service_name: str, target_type: str):
         if not NetworkOptimizer.is_admin():
-            QMessageBox.warning(
+            reply = QMessageBox.question(
                 self,
-                "Cần Quyền Administrator",
-                "Thay đổi trạng thái dịch vụ hệ thống yêu cầu quyền Administrator.\n"
-                "Vui lòng khởi động lại ứng dụng bằng 'Run as administrator'."
+                "Xác Nhận Đổi Trạng Thái Dịch Vụ",
+                f"Đổi trạng thái dịch vụ '{service_name}' sang {target_type.upper()} yêu cầu quyền Administrator.\n\n"
+                f"Bạn có muốn cấp quyền UAC (bấm 'Yes' khi Windows hỏi) để thực hiện ngay không?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
             )
-            return
+            if reply != QMessageBox.Yes:
+                return
 
-        ok, msg = ServiceOptimizer.apply_service_state(service_name, target_type, stop_if_running=True)
+        ok, msg = ServiceOptimizer.apply_service_state(service_name, target_type, stop_if_running=True, allow_elevation=True)
         if ok:
             QMessageBox.information(self, "Thành Công", msg)
             self._refresh_all_data()
         else:
-            QMessageBox.critical(self, "Lỗi", msg)
+            QMessageBox.warning(self, "Thông Báo", msg)
 
     def _on_1click_optimize_services(self):
         if not NetworkOptimizer.is_admin():
-            QMessageBox.warning(
+            reply = QMessageBox.question(
                 self,
-                "Cần Quyền Administrator",
-                "Tối ưu dịch vụ hệ thống tự động yêu cầu quyền Administrator.\n"
-                "Vui lòng chạy lại ứng dụng với quyền 'Run as administrator'."
+                "Xác Nhận Tối Ưu Dịch Vụ Hệ Thống",
+                "Tối ưu hóa các dịch vụ nền Windows yêu cầu quyền Administrator.\n\n"
+                "Ứng dụng sẽ gửi yêu cầu cấp quyền UAC tới Windows để tự động tối ưu 7 dịch vụ nền khuyên dùng.\n\n"
+                "👉 Bạn có muốn tiếp tục và bấm 'Yes' khi Windows hiển thị hộp thoại xác nhận không?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
             )
-            return
+            if reply != QMessageBox.Yes:
+                self.lbl_status.setText("● Đã hủy tối ưu dịch vụ.")
+                return
 
-        res = ServiceOptimizer.one_click_optimize()
-        if res.get("optimized_count", 0) > 0:
-            details_str = "\n".join(res.get("details", []))
-            QMessageBox.information(
-                self,
-                "Tối Ưu Dịch Vụ Hoàn Tất",
-                f"✨ {res.get('message')}\n\n{details_str}"
-            )
+        self.lbl_status.setText("⏳ Đang gửi yêu cầu UAC và tối ưu hóa dịch vụ...")
+        self.btn_optimize_services.setEnabled(False)
+        self.btn_optimize_services.setText("⏳ Đang Tối Ưu...")
+        QApplication.processEvents()
+
+        try:
+            res = ServiceOptimizer.one_click_optimize(allow_elevation=True)
+            if res.get("success", False):
+                details_str = "\n".join(res.get("details", []))
+                QMessageBox.information(
+                    self,
+                    "Tối Ưu Dịch Vụ Hoàn Tất",
+                    f"✨ {res.get('message')}\n\n{details_str}"
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Thông Báo",
+                    f"{res.get('message', 'Thao tác không thành công.')}"
+                )
+        finally:
+            self.btn_optimize_services.setEnabled(True)
+            self.btn_optimize_services.setText("🚀 1-Click Tối Ưu Dịch Vụ Khuyên Dùng")
             self._refresh_all_data()
-        else:
-            QMessageBox.information(
-                self,
-                "Đã Tối Ưu",
-                "Tất cả các dịch vụ khuyên dùng đều đã ở trạng thái tối ưu lý tưởng!"
-            )
 
     def _on_toggle_menu(self, item: ContextMenuItem, enable: bool):
         ok, msg = ContextMenuManager.toggle_item(item, enable)

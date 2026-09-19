@@ -297,18 +297,93 @@ class ServiceOptimizer:
         }
 
     @staticmethod
+    def _run_elevated_cmd(cmd_params: str, timeout_ms: int = 20000) -> Tuple[bool, str]:
+        """Thực thi lệnh cmd với quyền Administrator thông qua UAC RunAs."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class SHELLEXECUTEINFO(ctypes.Structure):
+                _fields_ = [
+                    ('cbSize', wintypes.DWORD),
+                    ('fMask', wintypes.ULONG),
+                    ('hwnd', wintypes.HWND),
+                    ('lpVerb', wintypes.LPCWSTR),
+                    ('lpFile', wintypes.LPCWSTR),
+                    ('lpParameters', wintypes.LPCWSTR),
+                    ('lpDirectory', wintypes.LPCWSTR),
+                    ('nShow', ctypes.c_int),
+                    ('hInstApp', wintypes.HINSTANCE),
+                    ('lpIDList', wintypes.LPVOID),
+                    ('lpClass', wintypes.LPCWSTR),
+                    ('hkeyClass', wintypes.HKEY),
+                    ('dwHotKey', wintypes.DWORD),
+                    ('hIconOrMonitor', wintypes.HANDLE),
+                    ('hProcess', wintypes.HANDLE)
+                ]
+
+            SEE_MASK_NOCLOSEPROCESS = 0x00000040
+            SW_HIDE = 0
+
+            sei = SHELLEXECUTEINFO()
+            sei.cbSize = ctypes.sizeof(SHELLEXECUTEINFO)
+            sei.fMask = SEE_MASK_NOCLOSEPROCESS
+            sei.hwnd = None
+            sei.lpVerb = "runas"
+            sei.lpFile = "cmd.exe"
+            sei.lpParameters = cmd_params
+            sei.lpDirectory = None
+            sei.nShow = SW_HIDE
+
+            success = ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei))
+            if success:
+                if sei.hProcess:
+                    ctypes.windll.kernel32.WaitForSingleObject(sei.hProcess, timeout_ms)
+                    ctypes.windll.kernel32.CloseHandle(sei.hProcess)
+                return True, "Thực thi thành công với quyền Administrator."
+            else:
+                err_code = ctypes.GetLastError()
+                if err_code == 1223:
+                    return False, "Người dùng đã hủy cấp quyền UAC."
+                return False, f"Không thể khởi chạy UAC (Mã lỗi: {err_code})."
+        except Exception as e:
+            return False, f"Lỗi thực thi UAC: {str(e)}"
+
+    @staticmethod
+    def restart_as_admin() -> bool:
+        """Khởi động lại toàn bộ ứng dụng với quyền Administrator."""
+        import sys
+        import os
+        import ctypes
+        try:
+            if getattr(sys, 'frozen', False):
+                exe_path = sys.executable
+                params = ""
+            else:
+                exe_path = sys.executable
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                main_py = os.path.join(base_dir, "main.py")
+                params = f'"{main_py}"'
+
+            ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe_path, params, None, 1)
+            if ret > 32:
+                sys.exit(0)
+                return True
+            return False
+        except Exception:
+            return False
+
+    @staticmethod
     def apply_service_state(
         service_name: str,
         target_start_type: str,
-        stop_if_running: bool = True
+        stop_if_running: bool = True,
+        allow_elevation: bool = True
     ) -> Tuple[bool, str]:
         """
         Thay đổi kiểu khởi động của dịch vụ (disabled / manual / auto).
-        Yêu cầu quyền Administrator.
+        Nếu chưa có quyền Admin và allow_elevation=True: yêu cầu UAC.
         """
-        if not NetworkOptimizer.is_admin():
-            return False, "Cần quyền Administrator để thay đổi trạng thái dịch vụ hệ thống."
-
         target = target_start_type.lower()
         sc_type_map = {
             "disabled": "disabled",
@@ -320,29 +395,133 @@ class ServiceOptimizer:
         if not sc_type:
             return False, f"Kiểu khởi động '{target_start_type}' không hợp lệ."
 
-        try:
-            # 1. Cấu hình kiểu khởi động
-            cmd_config = ["sc.exe", "config", service_name, f"start= {sc_type}"]
-            res1 = subprocess.run(cmd_config, capture_output=True, text=True, timeout=10)
-            if res1.returncode != 0:
-                err_msg = res1.stderr.strip() or res1.stdout.strip()
-                return False, f"Lỗi cấu hình service '{service_name}': {err_msg}"
+        if NetworkOptimizer.is_admin():
+            try:
+                # 1. Cấu hình kiểu khởi động
+                cmd_config = ["sc.exe", "config", service_name, f"start= {sc_type}"]
+                res1 = subprocess.run(cmd_config, capture_output=True, text=True, timeout=10)
+                if res1.returncode != 0:
+                    err_msg = res1.stderr.strip() or res1.stdout.strip()
+                    return False, f"Lỗi cấu hình service '{service_name}': {err_msg}"
 
-            # 2. Dừng dịch vụ nếu chọn disabled và dịch vụ đang chạy
+                # 2. Dừng dịch vụ nếu chọn disabled và dịch vụ đang chạy
+                if stop_if_running and target == "disabled":
+                    cmd_stop = ["sc.exe", "stop", service_name]
+                    subprocess.run(cmd_stop, capture_output=True, text=True, timeout=10)
+
+                return True, f"Đã chuyển dịch vụ '{service_name}' sang chế độ {target_start_type.upper()} thành công!"
+            except Exception as e:
+                return False, f"Lỗi thực thi: {str(e)}"
+        elif allow_elevation:
+            cmd = f'sc.exe config "{service_name}" start= {sc_type}'
             if stop_if_running and target == "disabled":
-                cmd_stop = ["sc.exe", "stop", service_name]
-                subprocess.run(cmd_stop, capture_output=True, text=True, timeout=10)
-
-            return True, f"Đã chuyển dịch vụ '{service_name}' sang chế độ {target_start_type.upper()} thành công!"
-        except Exception as e:
-            return False, f"Lỗi thực thi: {str(e)}"
+                cmd += f' & sc.exe stop "{service_name}"'
+            ok, msg = ServiceOptimizer._run_elevated_cmd(f'/c "{cmd}"')
+            if ok:
+                return True, f"Đã cấu hình dịch vụ '{service_name}' sang chế độ {target_start_type.upper()} (Admin)!"
+            return False, msg
+        else:
+            return False, "Cần quyền Administrator để thay đổi trạng thái dịch vụ hệ thống."
 
     @staticmethod
-    def one_click_optimize() -> Dict[str, Any]:
+    def one_click_optimize(allow_elevation: bool = True) -> Dict[str, Any]:
         """
         1-Click Tối ưu hóa toàn bộ các dịch vụ an toàn khuyên dùng.
+        Hỗ trợ tự động cấp quyền UAC một lần duy nhất cho toàn bộ nhóm dịch vụ nếu chạy ở Standard User.
         """
-        if not NetworkOptimizer.is_admin():
+        candidates = ServiceOptimizer.get_services(only_candidates=True)
+        if not candidates:
+            return {
+                "success": True,
+                "message": "Tất cả các dịch vụ khuyên dùng đều đã ở trạng thái tối ưu lý tưởng!",
+                "optimized_count": 0,
+                "failed_count": 0,
+                "details": [],
+            }
+
+        sc_type_map = {
+            "disabled": "disabled",
+            "manual": "demand",
+            "auto": "auto",
+        }
+
+        # Trường hợp 1: Ứng dụng đã chạy dưới quyền Administrator
+        if NetworkOptimizer.is_admin():
+            optimized_count = 0
+            failed_count = 0
+            details = []
+
+            for s in candidates:
+                if s.recommendation not in (RECOMMENDATION_SAFE_DISABLE, RECOMMENDATION_MANUAL):
+                    continue
+
+                target = s.target_start_type
+                if target == "keep":
+                    continue
+
+                ok, msg = ServiceOptimizer.apply_service_state(s.name, target, stop_if_running=True, allow_elevation=False)
+                if ok:
+                    optimized_count += 1
+                    details.append(f"✅ {s.name}: {s.start_type} → {target}")
+                else:
+                    failed_count += 1
+                    details.append(f"❌ {s.name}: {msg}")
+
+            return {
+                "success": optimized_count > 0 or failed_count == 0,
+                "optimized_count": optimized_count,
+                "failed_count": failed_count,
+                "message": f"Đã tối ưu hóa thành công {optimized_count} dịch vụ ({failed_count} thất bại).",
+                "details": details,
+            }
+
+        # Trường hợp 2: Đang chạy ở Standard User -> Yêu cầu UAC gom lệnh trong 1 lần xác nhận
+        elif allow_elevation:
+            batch_cmds = []
+            planned = []
+            for s in candidates:
+                if s.recommendation not in (RECOMMENDATION_SAFE_DISABLE, RECOMMENDATION_MANUAL):
+                    continue
+                target = s.target_start_type
+                if target == "keep":
+                    continue
+
+                sc_type = sc_type_map.get(target, "demand")
+                batch_cmds.append(f'sc.exe config "{s.name}" start= {sc_type}')
+                if target == "disabled":
+                    batch_cmds.append(f'sc.exe stop "{s.name}"')
+                planned.append((s.name, s.start_type, target))
+
+            if not batch_cmds:
+                return {
+                    "success": True,
+                    "message": "Không có dịch vụ nào cần tối ưu.",
+                    "optimized_count": 0,
+                    "failed_count": 0,
+                    "details": [],
+                }
+
+            chained = " & ".join(batch_cmds)
+            ok, msg = ServiceOptimizer._run_elevated_cmd(f'/c "{chained}"', timeout_ms=25000)
+            if not ok:
+                return {
+                    "success": False,
+                    "message": msg,
+                    "optimized_count": 0,
+                    "failed_count": len(planned),
+                    "details": [f"❌ {msg}"],
+                }
+
+            # Lấy lại trạng thái sau khi chạy elevated
+            details = [f"✅ {s_name}: Chuyển sang {target}" for s_name, old_type, target in planned]
+            return {
+                "success": True,
+                "optimized_count": len(planned),
+                "failed_count": 0,
+                "message": f"Đã áp dụng tối ưu {len(planned)} dịch vụ Windows với quyền Administrator!",
+                "details": details,
+            }
+        else:
             return {
                 "success": False,
                 "message": "Vui lòng chạy ứng dụng với quyền Administrator để tối ưu dịch vụ hệ thống.",
@@ -350,32 +529,3 @@ class ServiceOptimizer:
                 "failed_count": 0,
                 "details": [],
             }
-
-        candidates = ServiceOptimizer.get_services(only_candidates=True)
-        optimized_count = 0
-        failed_count = 0
-        details = []
-
-        for s in candidates:
-            if s.recommendation not in (RECOMMENDATION_SAFE_DISABLE, RECOMMENDATION_MANUAL):
-                continue
-
-            target = s.target_start_type
-            if target == "keep":
-                continue
-
-            ok, msg = ServiceOptimizer.apply_service_state(s.name, target, stop_if_running=True)
-            if ok:
-                optimized_count += 1
-                details.append(f"✅ {s.name}: {s.start_type} → {target}")
-            else:
-                failed_count += 1
-                details.append(f"❌ {s.name}: {msg}")
-
-        return {
-            "success": optimized_count > 0 or failed_count == 0,
-            "optimized_count": optimized_count,
-            "failed_count": failed_count,
-            "message": f"Đã tối ưu hóa thành công {optimized_count} dịch vụ ({failed_count} thất bại).",
-            "details": details,
-        }
