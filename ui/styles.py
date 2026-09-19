@@ -11,6 +11,37 @@ QWidget {
     font-size: 13px;
 }
 
+/* Dialogs & MessageBox Dark Mode */
+QDialog, QMessageBox {
+    background-color: #0f172a;
+    color: #f1f5f9;
+}
+
+QMessageBox QLabel {
+    color: #f1f5f9;
+    font-size: 13px;
+    background-color: transparent;
+}
+
+QMessageBox QPushButton {
+    background-color: #2563eb;
+    color: #ffffff;
+    font-weight: bold;
+    min-width: 80px;
+    padding: 8px 18px;
+    border-radius: 6px;
+    border: none;
+}
+
+QMessageBox QPushButton:hover {
+    background-color: #1d4ed8;
+}
+
+QMessageBox QPushButton:pressed {
+    background-color: #1e40af;
+}
+
+
 /* Tab Widget Styling */
 QTabWidget::pane {
     border: 1px solid #1e293b;

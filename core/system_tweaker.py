@@ -232,9 +232,10 @@ class SystemTweaker:
             "icon": "⚡",
             "description": "Mở khóa gói quản lý nguồn điện tối thượng ẩn của Windows 10/11. Giữ CPU chạy 100% xung nhịp không bị nghẽn giật.",
             "recommended": False,
-            "requires_admin": True,
+            "requires_admin": False,
             "type": "custom"
         },
+
         "speedup_menu_delay": {
             "id": "speedup_menu_delay",
             "category": CAT_PERF,
@@ -630,15 +631,46 @@ class SystemTweaker:
 
         # Ultimate Performance Power Plan
         elif tweak_id == "enable_ultimate_performance":
-            # Tạo hoặc lấy GUID Ultimate Performance
-            dup_cmd = "powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61"
-            self._run_elevated_cmd(dup_cmd)
-            # Áp dụng
-            set_cmd = "powercfg /setactive e9a42b02-d5df-448d-aa00-03f14749eb61"
-            res = self._run_elevated_cmd(set_cmd)
-            if res.get("success"):
-                return True, f"⚡ Đã kích hoạt chế độ nguồn Ultimate Performance."
-            return False, f"❌ Không thể đặt gói nguồn Ultimate Performance."
+            import re
+            target_guid = None
+            # 1. Kiểm tra xem trên máy đã có scheme Ultimate Performance chưa
+            list_res = self._run_cmd("powercfg /list")
+            if list_res.get("success"):
+                for line in list_res["stdout"].splitlines():
+                    if "ultimate performance" in line.lower() or "tối thượng" in line.lower():
+                        m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", line)
+                        if m:
+                            target_guid = m.group(1)
+                            break
+
+            # 2. Nếu chưa có, nhân bản từ scheme gốc (e9a42b02-d5df-448d-aa00-03f14749eb61)
+            if not target_guid:
+                dup_res = self._run_cmd("powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61")
+                m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", dup_res.get("stdout", ""))
+                if m:
+                    target_guid = m.group(1)
+                else:
+                    dup_res = self._run_elevated_cmd("powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61")
+                    m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", dup_res.get("stdout", ""))
+                    if m:
+                        target_guid = m.group(1)
+                    else:
+                        # Fallback sang High Performance (8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c) nếu Windows edition không có Ultimate
+                        dup_high = self._run_cmd("powercfg -duplicatescheme 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c")
+                        m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", dup_high.get("stdout", ""))
+                        if m:
+                            target_guid = m.group(1)
+
+            # 3. Kích hoạt scheme đã tìm thấy hoặc vừa nhân bản
+            if target_guid:
+                set_res = self._run_cmd(f"powercfg /setactive {target_guid}")
+                if not set_res.get("success"):
+                    set_res = self._run_elevated_cmd(f"powercfg /setactive {target_guid}")
+                if set_res.get("success"):
+                    return True, "⚡ Đã kích hoạt chế độ nguồn Ultimate Performance thành công!"
+
+            return False, "❌ Không thể tạo hoặc kích hoạt gói nguồn Ultimate Performance trên thiết bị này."
+
 
         # Hibernation off
         elif tweak_id == "disable_hibernation":
@@ -716,11 +748,25 @@ class SystemTweaker:
 
         # Ultimate Performance Power Plan -> Trả về Balanced (381b4222-f694-41f0-9685-ff5bb260df2e)
         elif tweak_id == "enable_ultimate_performance":
+            import re
             set_cmd = "powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e"
-            res = self._run_elevated_cmd(set_cmd)
+            res = self._run_cmd(set_cmd)
+            if not res.get("success"):
+                res = self._run_elevated_cmd(set_cmd)
+
+            # Dọn dẹp các scheme Ultimate Performance không còn active
+            list_res = self._run_cmd("powercfg /list")
+            if list_res.get("success"):
+                for line in list_res["stdout"].splitlines():
+                    if ("ultimate performance" in line.lower() or "tối thượng" in line.lower()) and "*" not in line:
+                        m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", line)
+                        if m:
+                            self._run_cmd(f"powercfg -delete {m.group(1)}")
+
             if res.get("success"):
                 return True, "🔄 Đã chuyển lại gói nguồn điện về Balanced (Cân bằng mặc định)."
             return False, "❌ Không thể đổi gói nguồn điện."
+
 
         # Hibernation on
         elif tweak_id == "disable_hibernation":
