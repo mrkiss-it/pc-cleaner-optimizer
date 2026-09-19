@@ -171,6 +171,35 @@ if init_status:
 
 print(f" [PASS] 19. System Tweaker & Privacy Shield: {stats['total']} tinh chinh (12 khuyen dung), Test Apply & Revert {test_key} hoan hao 100%!")
 
-print("\n>>> TAT CA 19 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM & WINDOWS TWEAKS DEU THANH CONG 100%! <<<")
+# 20. Test Hardware Sensors & Battery Health (v3.2 Pro)
+from core.hardware_monitor import HardwareMonitor
+from ui.hardware_dialog import HardwareMonitorDialog
+
+bat_info = HardwareMonitor.get_battery_info()
+assert "has_battery" in bat_info, "Battery info phai co has_battery"
+assert "health_percent" in bat_info, "Battery info phai co health_percent"
+assert "wear_level_percent" in bat_info, "Battery info phai co wear_level_percent"
+
+cpu_info = HardwareMonitor.get_cpu_details()
+assert cpu_info["physical_cores"] >= 1, "CPU phai co it nhat 1 nhan vat ly"
+assert cpu_info["logical_cores"] >= 1, "CPU phai co it nhat 1 luong logic"
+assert len(cpu_info["per_core_percent"]) == cpu_info["logical_cores"], "So luong phan tram per-core phai bang logical_cores"
+
+gpu_list = HardwareMonitor.get_gpu_details()
+assert isinstance(gpu_list, list) and len(gpu_list) >= 1, "Phai phat hien it nhat 1 card do hoa GPU"
+
+hw_dlg = HardwareMonitorDialog()
+assert hw_dlg.tabs.count() == 2, "HardwareMonitorDialog phai co 2 tabs"
+assert hasattr(win, "btn_hardware"), "MainWindow phai co nut btn_hardware"
+hw_dlg.close()
+
+if bat_info["has_battery"]:
+    bat_str = f"Laptop Battery Health: {bat_info['health_percent']}% (Chai: {bat_info['wear_level_percent']}%, {bat_info['cycle_count']} chu ky)"
+else:
+    bat_str = "Desktop PC (Nguon AC truc tiep)"
+
+print(f" [PASS] 20. Hardware Sensors & Battery Health: {bat_str} | CPU: {cpu_info['name']} ({cpu_info['core_summary']}) | GPU: {gpu_list[0]['name']} ({gpu_list[0]['vram']}).")
+
+print("\n>>> TAT CA 20 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE SENSORS & BATTERY HEALTH DEU THANH CONG 100%! <<<")
 
 

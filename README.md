@@ -1,12 +1,12 @@
-# ⚡ PC Auto Cleaner & System Optimizer Pro (v3.1)
+# ⚡ PC Auto Cleaner & System Optimizer Pro (v3.2)
 
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![PyQt5 Modern GUI](https://img.shields.io/badge/UI-PyQt5%20Fluent%20Dark-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://pypi.org/project/PyQt5/)
 [![Platform Windows](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://microsoft.com)
-[![Tests Passing](https://img.shields.io/badge/Tests-19%2F19%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com)
+[![Tests Passing](https://img.shields.io/badge/Tests-20%2F20%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com)
 [![License MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
 
-**Phần mềm toàn diện tối ưu hóa Windows, tự động dọn dẹp rác, giải phóng RAM, tăng tốc Gaming, đo tốc độ DNS song song, kiểm tra sức khỏe ổ cứng SSD S.M.A.R.T, dọn dẹp an toàn Registry, quét bảo mật hệ thống và bảo vệ quyền riêng tư (Windows Tweaks & Privacy Shield).**
+**Phần mềm toàn diện tối ưu hóa Windows, tự động dọn dẹp rác, giải phóng RAM, tăng tốc Gaming, đo tốc độ DNS song song, kiểm tra sức khỏe ổ cứng SSD S.M.A.R.T, đo độ chai pin laptop (Battery Health & Cycles), xuất báo cáo pin HTML Windows, giám sát CPU đa nhân thời gian thực, nhận diện GPU, dọn dẹp an toàn Registry, quét bảo mật hệ thống và bảo vệ quyền riêng tư (Windows Tweaks & Privacy Shield).**
 
 
 ---
@@ -130,6 +130,26 @@
 
 ---
 
+### 11. 🔋 Laptop Battery Health & Deep Hardware Sensors (Sức Khỏe Pin & Phần Cứng)
+- **Đo lường độ chai pin chuẩn xác 100%**:
+  - Trích xuất dữ liệu Telemetry chính thức của Microsoft Windows (`powercfg /batteryreport`).
+  - Dung lượng thiết kế chuẩn từ nhà máy (**Design Capacity** mWh).
+  - Dung lượng tích điện sạc đầy tối đa hiện tại (**Full Charge Capacity** mWh).
+  - Số chu kỳ sạc/xả tích lũy (**Cycle Count**).
+  - Tỉ lệ chai pin thực tế (**Wear Level %**) và điểm sức khỏe tổng thể (**Health %**).
+  - Đánh giá tình trạng cell pin và đưa ra **lời khuyên bảo dưỡng thông minh** (bật giới hạn sạc 80% trên Asus/Dell/Lenovo, tránh dùng cạn 0%).
+- **Xuất Báo Cáo Pin Windows Chuẩn 1-Click**:
+  - Tự động tạo tệp báo cáo chuyên sâu `Battery_Health_Report.html` và mở trực tiếp trên trình duyệt web với đồ thị sạc xả đầy đủ của Windows.
+- **Tự động nhận diện thiết bị thông minh**:
+  - Nhận diện chính xác máy tính để bàn (Desktop PC) dùng nguồn AC trực tiếp và hiển thị thẻ trạng thái nguồn thích hợp.
+- **Giám Sát CPU Đa Nhân (Multi-Core Visualizer)**:
+  - Nhận diện tên vi xử lý thương mại từ Windows Registry (ví dụ: `12th Gen Intel Core i5-12500H`, 12 nhân 16 luồng).
+  - Bảng trực quan mức tải thời gian thực trên từng luồng (Core 0 -> Core 15) với dải màu linh hoạt (xanh lục, cam, đỏ) và xung nhịp hiện tại / Max GHz.
+- **Nhận Diện Card Đồ Họa (GPU)**:
+  - Quét qua WMI/CIM hiển thị tên GPU (Intel Iris Xe, NVIDIA GeForce, AMD Radeon), phiên bản Driver và dung lượng bộ nhớ VRAM.
+
+---
+
 ## 🏗️ Cấu Trúc Mã Nguồn (Architecture)
 
 
@@ -144,7 +164,7 @@ pc_cleaner_optimizer/
 ├── create_shortcut.ps1         # PowerShell script tạo shortcut Desktop với icon đẹp mắt
 ├── start_cleaner.bat           # Script khởi chạy nhanh bằng Python
 ├── start_silent.vbs            # Script chạy ngầm im lặng vào khay hệ thống (System Tray)
-├── test_full_system.py         # Bộ kiểm thử tự động toàn diện 18/18 tiêu chí
+├── test_full_system.py         # Bộ kiểm thử tự động toàn diện 20/20 tiêu chí (100% PASS)
 ├── requirements.txt            # Danh sách thư viện phụ thuộc (PyQt5, psutil, Pillow)
 ├── config.json                 # Cấu hình mặc định của ứng dụng
 │
@@ -159,6 +179,7 @@ pc_cleaner_optimizer/
 │   ├── process_manager.py      # Giám sát, xếp hạng top RAM/CPU, bảo vệ tiến trình hệ thống
 │   ├── game_booster.py         # Chế độ Game Boost (ưu tiên CPU, dồn tài nguyên)
 │   ├── system_monitor.py       # Hub giám sát phần cứng RAM, CPU, Ổ đĩa thời gian thực
+│   ├── hardware_monitor.py     # Đo độ chai pin laptop, Windows battery report, CPU đa nhân, GPU
 │   ├── network_optimizer.py    # Đo tốc độ DNS song song, tối ưu TCP/IP, cấu hình Adapter
 │   ├── disk_health_optimizer.py# S.M.A.R.T NVMe/SSD Health, nhiệt độ & TRIM Optimizer
 │   ├── registry_cleaner.py     # Quét dọn Registry an toàn, tự động backup & rollback
@@ -175,6 +196,7 @@ pc_cleaner_optimizer/
     ├── main_window.py          # Cửa sổ trung tâm điều khiển 8 tab tích hợp
     ├── floating_widget.py      # Widget nổi Desktop kéo thả & điều chỉnh độ mờ
     ├── tray_icon.py            # Biểu tượng khay hệ thống với menu điều khiển nhanh
+    ├── hardware_dialog.py      # Hộp thoại Sức khỏe Pin Laptop & Cảm biến phần cứng CPU/GPU
     ├── network_dialog.py       # Hộp thoại đo tốc độ DNS & Tối ưu mạng
     ├── disk_registry_dialog.py # Hộp thoại Sức khỏe ổ đĩa & Dọn dẹp Registry
     ├── large_files_dialog.py   # Hộp thoại quét và quản lý tệp dung lượng lớn
@@ -182,6 +204,7 @@ pc_cleaner_optimizer/
     ├── widgets.py              # Các đồng hồ đo CircularGauge, thẻ thống kê StatCard
     └── styles.py               # Bộ phong cách thiết kế Dark Theme Fluent UI
 ```
+
 
 ---
 

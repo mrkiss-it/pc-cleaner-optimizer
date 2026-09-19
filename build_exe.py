@@ -55,6 +55,8 @@ def build():
         "--hidden-import=psutil",
         "--hidden-import=winreg",
         "--hidden-import=core.security_scanner",
+        "--hidden-import=core.hardware_monitor",
+        "--hidden-import=ui.hardware_dialog",
         main_script
     ]
 

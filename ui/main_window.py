@@ -24,6 +24,7 @@ from ui.large_files_dialog import LargeFilesDialog
 from ui.disk_analyzer_dialog import DiskAnalyzerDialog
 from ui.network_dialog import NetworkOptimizerDialog
 from ui.disk_registry_dialog import DiskRegistryDialog
+from ui.hardware_dialog import HardwareMonitorDialog
 from core.system_tweaker import SystemTweaker
 
 
@@ -301,9 +302,15 @@ class MainWindow(QMainWindow):
         self.btn_disk_analyzer.clicked.connect(self.open_disk_analyzer)
 
 
+        self.btn_hardware = QPushButton("🔋 Pin && Phần Cứng")
+        self.btn_hardware.setProperty("class", "btn-secondary")
+        self.btn_hardware.setCursor(Qt.PointingHandCursor)
+        self.btn_hardware.clicked.connect(self.open_hardware_dialog)
+
         btn_row2.addWidget(self.btn_network, stretch=1)
         btn_row2.addWidget(self.btn_game_boost, stretch=1)
         btn_row2.addWidget(self.btn_disk_reg, stretch=1)
+        btn_row2.addWidget(self.btn_hardware, stretch=1)
         btn_row2.addWidget(self.btn_tweaks, stretch=1)
         btn_row2.addWidget(self.btn_large_files, stretch=1)
         btn_row2.addWidget(self.btn_disk_analyzer, stretch=1)
@@ -1093,6 +1100,8 @@ class MainWindow(QMainWindow):
             self.btn_game_boost.setEnabled(enabled)
         if hasattr(self, "btn_disk_reg"):
             self.btn_disk_reg.setEnabled(enabled)
+        if hasattr(self, "btn_hardware"):
+            self.btn_hardware.setEnabled(enabled)
         if hasattr(self, "btn_tweaks"):
             self.btn_tweaks.setEnabled(enabled)
 
@@ -1114,6 +1123,11 @@ class MainWindow(QMainWindow):
     def open_disk_registry_dialog(self):
         """Mở hộp thoại Quản Lý Sức Khỏe Ổ Đĩa, SSD TRIM & Dọn Dẹp Registry."""
         dialog = DiskRegistryDialog(self)
+        dialog.exec_()
+
+    def open_hardware_dialog(self):
+        """Mở hộp thoại Quản Lý Sức Khỏe Pin Laptop & Cảm Biến Phần Cứng (v3.2 Pro)."""
+        dialog = HardwareMonitorDialog(self)
         dialog.exec_()
 
     def show_leak_alert(self, info: dict):

@@ -33,5 +33,11 @@
     "auto_best_dns_interval_hours": 2,
     "auto_security_scan_enabled": true,
     "auto_security_scan_interval_hours": 24,
-    "last_security_scan_result": {}
+    "last_security_scan_result": {
+        "overall": "SAFE",
+        "critical_count": 0,
+        "warning_count": 0,
+        "ok_count": 11,
+        "timestamp": "20/09/2026 01:42:48"
+    }
 }
