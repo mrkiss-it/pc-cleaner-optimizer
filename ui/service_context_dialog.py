@@ -692,10 +692,14 @@ class ServiceContextDialog(QDialog):
                     f"✨ {res.get('message')}\n\n{details_str}"
                 )
             else:
+                details_str = "\n".join(res.get("details", []))
+                msg_body = res.get('message', 'Thao tác không thành công.')
+                if details_str:
+                    msg_body += f"\n\nChi tiết lỗi:\n{details_str}"
                 QMessageBox.warning(
                     self,
                     "Thông Báo",
-                    f"{res.get('message', 'Thao tác không thành công.')}"
+                    msg_body
                 )
         finally:
             self.btn_optimize_services.setEnabled(True)

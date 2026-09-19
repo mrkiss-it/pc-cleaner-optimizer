@@ -397,17 +397,26 @@ class ServiceOptimizer:
 
         if NetworkOptimizer.is_admin():
             try:
-                # 1. Cấu hình kiểu khởi động
-                cmd_config = ["sc.exe", "config", service_name, f"start= {sc_type}"]
-                res1 = subprocess.run(cmd_config, capture_output=True, text=True, timeout=10)
+                # 1. Cấu hình kiểu khởi động (dùng shell=True để giữ nguyên cú pháp "start= <type>")
+                cmd_config = f'sc.exe config "{service_name}" start= {sc_type}'
+                res1 = subprocess.run(cmd_config, shell=True, capture_output=True, text=True, timeout=10)
                 if res1.returncode != 0:
-                    err_msg = res1.stderr.strip() or res1.stdout.strip()
-                    return False, f"Lỗi cấu hình service '{service_name}': {err_msg}"
+                    # Fallback qua PowerShell Set-Service nếu sc.exe gặp lỗi mã lệnh
+                    ps_type_map = {"disabled": "Disabled", "demand": "Manual", "auto": "Automatic"}
+                    ps_type = ps_type_map.get(sc_type, "Manual")
+                    res_ps = subprocess.run(
+                        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                         f"Set-Service -Name '{service_name}' -StartupType {ps_type}"],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    if res_ps.returncode != 0:
+                        err_msg = res1.stderr.strip() or res1.stdout.strip() or res_ps.stderr.strip()
+                        return False, f"Lỗi cấu hình service '{service_name}': {err_msg}"
 
                 # 2. Dừng dịch vụ nếu chọn disabled và dịch vụ đang chạy
                 if stop_if_running and target == "disabled":
-                    cmd_stop = ["sc.exe", "stop", service_name]
-                    subprocess.run(cmd_stop, capture_output=True, text=True, timeout=10)
+                    cmd_stop = f'sc.exe stop "{service_name}"'
+                    subprocess.run(cmd_stop, shell=True, capture_output=True, text=True, timeout=10)
 
                 return True, f"Đã chuyển dịch vụ '{service_name}' sang chế độ {target_start_type.upper()} thành công!"
             except Exception as e:
