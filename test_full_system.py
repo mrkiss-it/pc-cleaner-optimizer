@@ -269,10 +269,15 @@ card.action_triggered.emit("optimize_ram")
 assert "optimize_ram" in dispatched_actions, "Card phai trigger action qua signal"
 dlg_with_dispatcher.close()
 
+win._ai_action_dispatcher("open_security_dialog")
+assert win.tabs.currentWidget() == win.tab_security, "Dispatch open_security_dialog phai chuyen sang tab_security"
+win._ai_action_dispatcher("open_process_tab")
+assert win.tabs.currentWidget() == win.tab_performance, "Dispatch open_process_tab phai chuyen sang tab_performance"
+
 win._update_ai_badge()
 badge_text = win.btn_ai_advisor.text()
 assert "AI Gợi Ý" in badge_text, f"Button text phai chua 'AI Gợi Ý', hien tai: {badge_text}"
-print(f" [PASS] 24. Action Dispatcher & Badge: Action dispatch hoat dong chuan, Badge button cap nhat: '{badge_text}'.")
+print(f" [PASS] 24. Action Dispatcher & Badge: Action dispatch hoat dong chuan, Tab navigation chinh xac, Badge button cap nhat: '{badge_text}'.")
 
 print("\n>>> TAT CA 24 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE SENSORS, BATTERY & AI ADVISOR DEU THANH CONG 100%! <<<")
 

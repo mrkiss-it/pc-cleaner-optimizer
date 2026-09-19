@@ -1168,23 +1168,27 @@ class MainWindow(QMainWindow):
     def _ai_action_dispatcher(self, action_key: str):
         """Xử lý action từ AI Advisor khi user click 'Áp Dụng Ngay'."""
         try:
+            self.raise_()
+            self.activateWindow()
             if action_key == "optimize_ram":
-                self.optimize_ram_now()
+                self.tabs.setCurrentWidget(self.tab_dashboard)
+                self.optimize_ram_only()
             elif action_key == "clean_junk":
-                self.start_clean_only()
+                self.tabs.setCurrentWidget(self.tab_dashboard)
+                self.start_full_clean()
             elif action_key == "open_network_dialog":
                 self.open_network_dialog()
             elif action_key == "open_hardware_dialog":
                 self.open_hardware_dialog()
             elif action_key == "open_security_dialog":
-                # Chuyển sang tab bảo mật nếu có
-                if hasattr(self, "tab_targets"):
-                    self.tabs.setCurrentWidget(self.tab_targets)
+                if hasattr(self, "tab_security"):
+                    self.tabs.setCurrentWidget(self.tab_security)
             elif action_key == "open_process_tab":
                 if hasattr(self, "tab_performance"):
                     self.tabs.setCurrentWidget(self.tab_performance)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.error(f"[AI Advisor] Action dispatch error: {e}")
 
     def _update_ai_badge(self):
         """Cập nhật màu/text button AI theo số lượng suggestions nghiêm trọng."""

@@ -174,7 +174,7 @@ class SuggestionCard(QFrame):
                 }}
             """)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(lambda: self.action_triggered.emit(self._sug.action_key))
+            btn.clicked.connect(lambda checked=False, k=self._sug.action_key: self.action_triggered.emit(k))
             row3.addWidget(btn)
             root.addLayout(row3)
 
@@ -480,12 +480,14 @@ class AIAdvisorDialog(QDialog):
         layout.addWidget(msg2)
 
     def _dispatch_action(self, action_key: str):
-        """Gửi action_key tới MainWindow dispatcher."""
+        """Gửi action_key tới MainWindow dispatcher và đóng dialog để thực thi."""
+        self.accept()
         if self._dispatcher:
             try:
                 self._dispatcher(action_key)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.error(f"[AI Advisor] Lỗi dispatch action '{action_key}': {e}")
 
     def closeEvent(self, event):
         self._timer.stop()
