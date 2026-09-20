@@ -1734,7 +1734,66 @@ assert hasattr(win, "unlock_location_now")
 _WR.reset_state()
 print(" [PASS] 46. Wi-Fi flap detection, DHCP/SSID/power-save path, stability window, overlay rớt/yếu!")
 
-print("\n>>> TAT CA 46 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST, AI COPILOT/AUTO-PILOT APPLY, ASYNC GEMINI, SECRET STORAGE, MISSING-PING AUTO-FIX & WIFI DROP RECOVERY DEU THANH CONG 100%! <<<")
+# ------------------------------------------------------------------
+print("\n=== 47. GitHub Releases update check (UI wiring, no live network) ===")
+from config_manager import DEFAULT_CONFIG as _DC_UPD
+from core.update_checker import UpdateCheckResult as _UCR, ReleaseInfo as _RI, is_newer as _is_newer
+from app_meta import APP_VERSION as _APP_VER
+assert _DC_UPD.get("check_for_updates_enabled") is True
+assert _DC_UPD.get("github_owner") == "mrkiss-it"
+assert _DC_UPD.get("github_repo") == "pc-cleaner-optimizer"
+assert _APP_VER == "3.7.0"
+assert _is_newer("v3.8.0", _APP_VER) is True
+assert hasattr(win, "update_banner"), "MainWindow phai co banner cap nhat"
+assert hasattr(win, "btn_update_now") and hasattr(win, "btn_check_updates")
+assert hasattr(win, "chk_check_updates")
+assert hasattr(win, "apply_update_check_result")
+assert win._update_periodic_timer is None, "Khong tu goi GitHub khi chi khoi tao MainWindow trong test"
+assert win.update_banner.isHidden() is True
+
+fake_info = _RI(
+    tag="v9.9.9",
+    version="9.9.9",
+    name="Fake",
+    html_url="https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/tag/v9.9.9",
+    download_url="https://example.invalid/PCAutoCleaner_Setup.exe",
+    asset_name="PCAutoCleaner_Setup.exe",
+    notes="Ghi chu gia lap",
+    notes_snippet="Ghi chu gia lap de thu banner.",
+)
+win.apply_update_check_result(_UCR(
+    ok=True, update_available=True, current_version=_APP_VER,
+    latest=fake_info, message="Có bản mới v9.9.9",
+), interactive=True)
+assert win.update_banner.isHidden() is False, "Banner phai hien khi co ban moi"
+assert win.btn_update_now.isEnabled() is True
+assert "v9.9.9" in win.lbl_update_banner.text()
+assert "Cập nhật" in win.btn_update_now.text() or "Cập nhật" in win.btn_update_banner.text()
+win._dismiss_update_banner()
+assert win.update_banner.isHidden() is True
+assert win.config_manager.get("dismissed_update_tag") == "v9.9.9"
+assert win.btn_update_now.isEnabled() is True, "Dong banner van giu nut Cập nhật trong Settings"
+# dismissed tag must not re-show banner (settings button stays)
+win.apply_update_check_result(_UCR(
+    ok=True, update_available=True, current_version=_APP_VER,
+    latest=fake_info, message="Có bản mới v9.9.9",
+), interactive=True)
+assert win.update_banner.isHidden() is True, "Tag da dong khong hien banner lai"
+assert win.btn_update_now.isEnabled() is True
+from ui.tray_icon import SystemTrayManager as _STM
+_tray = _STM(config_manager=cfg)
+assert hasattr(_tray, "check_updates_requested")
+_tray.hide()
+try:
+    win.config_manager.set("dismissed_update_tag", "")
+    win._pending_update = None
+    win.update_banner.setVisible(False)
+    win.btn_update_now.setEnabled(False)
+except Exception:
+    pass
+print(" [PASS] 47. Update banner/settings/tray + fake newer tag, khong goi mang!")
+
+print("\n>>> TAT CA 47 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST, AI COPILOT/AUTO-PILOT APPLY, ASYNC GEMINI, SECRET STORAGE, MISSING-PING AUTO-FIX, WIFI DROP RECOVERY & GITHUB UPDATE CHECK DEU THANH CONG 100%! <<<")
 
 
 

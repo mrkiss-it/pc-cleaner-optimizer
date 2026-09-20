@@ -81,7 +81,16 @@ DEFAULT_CONFIG = {
     "ai_copilot_cloud_enabled": False,
     "ai_copilot_gemini_model": DEFAULT_GEMINI_MODEL,
     "ai_autopilot_enabled": True,
-    "ai_autopilot_mode": "auto"
+    "ai_autopilot_mode": "auto",
+    "check_for_updates_enabled": True,
+    "github_owner": "mrkiss-it",
+    "github_repo": "pc-cleaner-optimizer",
+    "update_check_interval_hours": 6,
+    "last_update_check_ts": 0.0,
+    "last_update_check_etag": "",
+    "last_update_check_status": 0,
+    "cached_release_payload": {},
+    "dismissed_update_tag": "",
 }
 
 # Keys that must never be written to tracked/shared config.json
