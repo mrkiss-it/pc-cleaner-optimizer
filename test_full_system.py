@@ -1759,12 +1759,13 @@ from app_meta import APP_VERSION as _APP_VER
 assert _DC_UPD.get("check_for_updates_enabled") is True
 assert _DC_UPD.get("github_owner") == "mrkiss-it"
 assert _DC_UPD.get("github_repo") == "pc-cleaner-optimizer"
-assert _APP_VER == "3.7.0"
-assert _is_newer("v3.8.0", _APP_VER) is True
+assert isinstance(_APP_VER, str) and _APP_VER
+assert _is_newer("v9.9.9", _APP_VER) is True
 assert hasattr(win, "update_banner"), "MainWindow phai co banner cap nhat"
 assert hasattr(win, "btn_update_now") and hasattr(win, "btn_check_updates")
 assert hasattr(win, "chk_check_updates")
 assert hasattr(win, "apply_update_check_result")
+assert hasattr(win, "progress_update_banner") and hasattr(win, "progress_update_settings")
 assert win._update_periodic_timer is None, "Khong tu goi GitHub khi chi khoi tao MainWindow trong test"
 assert win.update_banner.isHidden() is True
 
@@ -1801,6 +1802,45 @@ from ui.tray_icon import SystemTrayManager as _STM
 _tray = _STM(config_manager=cfg)
 assert hasattr(_tray, "check_updates_requested")
 _tray.hide()
+
+# Cập nhật click: có asset → tải (không mở trình duyệt); không asset → mở Releases
+import webbrowser as _wb
+_opened_urls = []
+_started_downloads = []
+_orig_wb_open = _wb.open
+_orig_start_dl = win._start_update_download
+_wb.open = lambda url, *a, **k: _opened_urls.append(url) or True
+win._start_update_download = lambda info, urlopen=None: _started_downloads.append(getattr(info, "asset_name", ""))
+try:
+    win.config_manager.set("dismissed_update_tag", "")
+    win.apply_update_check_result(_UCR(
+        ok=True, update_available=True, current_version=_APP_VER,
+        latest=fake_info, message="Có bản mới v9.9.9",
+    ), interactive=True)
+    win.open_available_update()
+    assert _started_downloads == ["PCAutoCleaner_Setup.exe"], "Co asset phai tai, khong chi mo browser"
+    assert _opened_urls == [], "Khong mo browser khi co Setup.exe"
+
+    no_asset = _RI(
+        tag="v9.9.9",
+        version="9.9.9",
+        name="Fake",
+        html_url="https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/tag/v9.9.9",
+        download_url="https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/tag/v9.9.9",
+        asset_name="",
+        notes="",
+        notes_snippet="Khong co file cai.",
+    )
+    _started_downloads.clear()
+    _opened_urls.clear()
+    win._pending_update = no_asset
+    win.open_available_update()
+    assert _started_downloads == [], "Khong tai khi thieu asset"
+    assert any("releases" in u for u in _opened_urls), "Thieu asset phai mo trang Releases"
+finally:
+    _wb.open = _orig_wb_open
+    win._start_update_download = _orig_start_dl
+
 try:
     win.config_manager.set("dismissed_update_tag", "")
     win._pending_update = None

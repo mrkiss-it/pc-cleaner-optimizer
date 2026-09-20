@@ -5,7 +5,8 @@ core/update_checker.py – Kiểm tra bản GitHub Release mới (không cài im
 - So sánh tag/version với phiên bản đang chạy.
 - Cache kết quả + ETag để tôn trọng rate limit.
 - Lỗi 403 / offline / JSON hỏng: thất bại im lặng.
-- Không ghi đè file .exe đang chạy — chỉ trả URL để UI mở trình duyệt.
+- Chọn asset tải (Setup.exe / zip) kèm size + digest; UI chỉ tải khi người dùng bấm Cập nhật.
+- Không ghi đè file .exe đang chạy từ đây — luồng cài nằm ở core/update_installer.py.
 """
 
 from __future__ import annotations
@@ -63,6 +64,15 @@ class FetchResult:
 
 
 @dataclass(frozen=True)
+class AssetPick:
+    """Kết quả chọn file trên GitHub Release. name rỗng = chỉ có trang web, không phải file."""
+    url: str
+    name: str
+    size: int = 0
+    digest: str = ""
+
+
+@dataclass(frozen=True)
 class ReleaseInfo:
     tag: str
     version: str
@@ -73,6 +83,8 @@ class ReleaseInfo:
     notes: str
     notes_snippet: str
     is_prerelease: bool = False
+    asset_size: int = 0
+    asset_digest: str = ""
 
 
 @dataclass
@@ -200,6 +212,99 @@ def snippet_release_notes(body: str, limit: int = 220) -> str:
     return joined
 
 
+_DOWNLOADABLE_EXTS = (".exe", ".msi", ".zip")
+
+
+def is_downloadable_asset(asset_name: str, url: str = "") -> bool:
+    """
+    True khi đây là file cài/portable công khai (browser_download_url), không phải trang HTML.
+    Không dùng URL API GitHub (có thể cần token).
+    """
+    name = (asset_name or "").strip()
+    if not name:
+        return False
+    lower = name.lower()
+    if "uninstall" in lower:
+        return False
+    if not lower.endswith(_DOWNLOADABLE_EXTS):
+        return False
+    u = (url or "").strip()
+    if not u:
+        return False
+    ul = u.lower()
+    if ul.startswith("https://api.github.com/") or ul.startswith("http://api.github.com/"):
+        return False
+    if "/releases/download/" in ul:
+        return True
+    if "/releases/tag/" in ul or ul.rstrip("/").endswith("/releases") or "/releases/latest" in ul:
+        return False
+    return True
+
+
+def pick_download_asset_info(
+    assets: Optional[List[Dict[str, Any]]],
+    html_url: str = "",
+    releases_page: str = "",
+) -> AssetPick:
+    """
+    Chọn file tải: ưu tiên PCAutoCleaner_Setup.exe, rồi .exe/.msi/.zip.
+    Chỉ lấy browser_download_url (release công khai, không cần token).
+    Không có asset → trang Releases; name rỗng.
+    """
+    fallback = html_url or releases_page
+    empty = AssetPick(url=fallback, name="", size=0, digest="")
+    items = [a for a in (assets or []) if isinstance(a, dict)]
+    if not items:
+        return empty
+
+    named: List[Tuple[str, str, int, str]] = []
+    for item in items:
+        name = str(item.get("name") or "").strip()
+        url = str(item.get("browser_download_url") or "").strip()
+        if not (name and url):
+            continue
+        try:
+            size = int(item.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        digest = str(item.get("digest") or "").strip()
+        named.append((name, url, max(0, size), digest))
+
+    if not named:
+        return empty
+
+    by_lower = {name.lower(): (name, url, size, digest) for name, url, size, digest in named}
+
+    def _pick(name: str, url: str, size: int, digest: str) -> AssetPick:
+        return AssetPick(url=url, name=name, size=size, digest=digest)
+
+    for preferred in ASSET_NAME_PRIORITY:
+        hit = by_lower.get(preferred)
+        if hit:
+            return _pick(*hit)
+
+    for name, url, size, digest in named:
+        lower = name.lower()
+        if "uninstall" in lower:
+            continue
+        if lower.endswith(".exe") and "setup" in lower:
+            return _pick(name, url, size, digest)
+
+    for name, url, size, digest in named:
+        lower = name.lower()
+        if "uninstall" in lower:
+            continue
+        if lower.endswith(".exe"):
+            return _pick(name, url, size, digest)
+
+    for name, url, size, digest in named:
+        lower = name.lower()
+        if lower.endswith(".msi") or lower.endswith(".zip"):
+            return _pick(name, url, size, digest)
+
+    return empty
+
+
 def pick_download_asset(
     assets: Optional[List[Dict[str, Any]]],
     html_url: str = "",
@@ -210,51 +315,8 @@ def pick_download_asset(
     Không có asset → trang Releases (html_url hoặc trang danh sách).
     Trả về (url, asset_name). asset_name rỗng nghĩa là mở trang web, không phải file.
     """
-    fallback = html_url or releases_page
-    items = [a for a in (assets or []) if isinstance(a, dict)]
-    if not items:
-        return fallback, ""
-
-    def _url(item: Dict[str, Any]) -> str:
-        return (
-            str(item.get("browser_download_url") or "").strip()
-            or str(item.get("url") or "").strip()
-        )
-
-    named: List[Tuple[str, str]] = []
-    for item in items:
-        name = str(item.get("name") or "").strip()
-        url = _url(item)
-        if name and url:
-            named.append((name, url))
-
-    by_lower = {name.lower(): (name, url) for name, url in named}
-
-    for preferred in ASSET_NAME_PRIORITY:
-        hit = by_lower.get(preferred)
-        if hit:
-            return hit[1], hit[0]
-
-    for name, url in named:
-        lower = name.lower()
-        if "uninstall" in lower:
-            continue
-        if lower.endswith(".exe") and "setup" in lower:
-            return url, name
-
-    for name, url in named:
-        lower = name.lower()
-        if "uninstall" in lower:
-            continue
-        if lower.endswith(".exe"):
-            return url, name
-
-    for name, url in named:
-        lower = name.lower()
-        if lower.endswith(".msi") or lower.endswith(".zip"):
-            return url, name
-
-    return fallback, ""
+    picked = pick_download_asset_info(assets, html_url=html_url, releases_page=releases_page)
+    return picked.url, picked.name
 
 
 def parse_release_payload(
@@ -272,7 +334,7 @@ def parse_release_payload(
         owner=owner, repo=repo
     )
     notes = str(data.get("body") or "")
-    download_url, asset_name = pick_download_asset(
+    picked = pick_download_asset_info(
         data.get("assets") if isinstance(data.get("assets"), list) else [],
         html_url=html_url,
         releases_page=GITHUB_RELEASES_PAGE.format(owner=owner, repo=repo),
@@ -284,11 +346,13 @@ def parse_release_payload(
         version=version_str,
         name=str(data.get("name") or tag).strip() or tag,
         html_url=html_url,
-        download_url=download_url or html_url,
-        asset_name=asset_name,
+        download_url=picked.url or html_url,
+        asset_name=picked.name,
         notes=notes,
         notes_snippet=snippet_release_notes(notes),
         is_prerelease=bool(data.get("prerelease")),
+        asset_size=int(picked.size or 0),
+        asset_digest=picked.digest,
     )
 
 
