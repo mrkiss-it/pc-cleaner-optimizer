@@ -73,6 +73,7 @@ Cài lại giữa hai lần. Kiểm **cả hai lối**.
 - [ ] Có Gemini API key (Copilot) → chat chạy, không crash
 - [ ] Wi-Fi yếu → thẻ/tip **Ổn định Wi-Fi** hiện; toast **không spam** (cooldown ~30 phút)
 - [ ] **Nhiệt laptop**: dashboard / Pin & Phần cứng hiện số khi có cảm biến; empty-state tiếng Việt nếu không (không bịa °C); Settings có ngưỡng ~90°C
+- [ ] Dashboard **Trước thi / họp**: bật → badge ĐANG TẬP TRUNG; tắt → khôi phục. Không đổi DNS/Wi-Fi
 
 ---
 

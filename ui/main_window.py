@@ -17,6 +17,7 @@ from core.system_monitor import SystemMonitor
 from core.cleaner import JunkCleaner
 from core.memory_optimizer import MemoryOptimizer
 from core.game_booster import GameBooster
+from core.exam_focus import ExamMeetingFocus
 from core.process_manager import ProcessManager
 from core.analytics_reporter import AnalyticsReporter
 from ui.widgets import CircularGauge, StatCard, CleanerTargetRow
@@ -33,7 +34,7 @@ from ui.uninstaller_dialog import UninstallerDialog
 from ui.winsxs_dialog import WinSxSDialog
 from core.ai_advisor import AIAdvisor
 from core.system_tweaker import SystemTweaker
-from app_meta import APP_VERSION
+from app_meta import APP_NAME, APP_VERSION
 from core.update_checker import (
     UpdateCheckResult,
     apply_cache_to_config,
@@ -495,6 +496,67 @@ class MainWindow(QMainWindow):
         gauge_layout.addStretch()
 
         layout.addLayout(gauge_layout)
+
+        # Exam / meeting focus — one primary toggle (reversible, like Game Boost)
+        card_exam = QFrame()
+        card_exam.setObjectName("ExamFocusCard")
+        card_exam.setStyleSheet("""
+            QFrame#ExamFocusCard {
+                background-color: #042f2e;
+                border: 1px solid #0f766e;
+                border-radius: 12px;
+            }
+        """)
+        layout_exam = QHBoxLayout(card_exam)
+        layout_exam.setContentsMargins(18, 14, 18, 14)
+        layout_exam.setSpacing(16)
+
+        info_exam = QVBoxLayout()
+        info_exam.setSpacing(4)
+        self.lbl_exam_focus_title = QLabel("📝 Trước thi / họp")
+        self.lbl_exam_focus_title.setStyleSheet(
+            "color: #f8fafc; font-size: 15px; font-weight: bold; background: transparent; border: none;"
+        )
+        self.lbl_exam_focus_sub = QLabel(
+            f"{APP_NAME} dọn rác nhẹ (temp), giảm thông báo của app, thu hồi RAM "
+            "và hạ tác vụ nền — tắt là khôi phục. Không đổi DNS hay Wi-Fi."
+        )
+        self.lbl_exam_focus_sub.setStyleSheet(
+            "color: #99f6e4; font-size: 11px; background: transparent; border: none;"
+        )
+        self.lbl_exam_focus_sub.setWordWrap(True)
+        info_exam.addWidget(self.lbl_exam_focus_title)
+        info_exam.addWidget(self.lbl_exam_focus_sub)
+
+        right_exam = QVBoxLayout()
+        right_exam.setAlignment(Qt.AlignCenter)
+        self.badge_exam_focus = QLabel("● Đang Tắt")
+        self.badge_exam_focus.setStyleSheet("""
+            background-color: #134e4a;
+            color: #99f6e4;
+            font-size: 11px;
+            font-weight: bold;
+            padding: 5px 14px;
+            border-radius: 12px;
+            border: 1px solid #0f766e;
+        """)
+        self.badge_exam_focus.setAlignment(Qt.AlignCenter)
+
+        self.btn_exam_focus = QPushButton("📝 Bật Trước thi / họp")
+        self.btn_exam_focus.setProperty("class", "btn-teal")
+        self.btn_exam_focus.setCursor(Qt.PointingHandCursor)
+        self.btn_exam_focus.setToolTip(
+            "Chuẩn bị máy cho buổi thi hoặc họp: dọn temp nhẹ, giảm thông báo, "
+            "thu hồi RAM. Tắt để khôi phục. Không đổi mạng."
+        )
+        self.btn_exam_focus.clicked.connect(self.toggle_exam_focus)
+
+        right_exam.addWidget(self.badge_exam_focus)
+        right_exam.addWidget(self.btn_exam_focus)
+
+        layout_exam.addLayout(info_exam, stretch=3)
+        layout_exam.addLayout(right_exam, stretch=1)
+        layout.addWidget(card_exam)
 
         # Row 2: Primary Quick Action Buttons
         btn_row1 = QHBoxLayout()
@@ -1786,6 +1848,8 @@ class MainWindow(QMainWindow):
             self.btn_network.setEnabled(enabled)
         if hasattr(self, "btn_game_boost"):
             self.btn_game_boost.setEnabled(enabled)
+        if hasattr(self, "btn_exam_focus"):
+            self.btn_exam_focus.setEnabled(enabled)
         if hasattr(self, "btn_disk_reg"):
             self.btn_disk_reg.setEnabled(enabled)
         if hasattr(self, "btn_hardware"):
@@ -1919,6 +1983,8 @@ class MainWindow(QMainWindow):
             elif action_key in ("enable_game_boost", "toggle_game_boost"):
                 # Copilot/Advisor labels say "Kích Hoạt" — enable only, never toggle off.
                 self.enable_game_boost()
+            elif action_key in ("enable_exam_focus", "toggle_exam_focus"):
+                self.enable_exam_focus()
             elif action_key in ("optimize_network", "repair_network_now"):
                 self.repair_network_now()
             elif action_key == "unlock_location":
@@ -2015,6 +2081,76 @@ class MainWindow(QMainWindow):
             self._sync_game_boost_ui()
             return
         self.toggle_game_boost()
+
+    def _sync_exam_focus_ui(self):
+        active = ExamMeetingFocus.is_active()
+        if hasattr(self, "btn_exam_focus"):
+            self.btn_exam_focus.setText(
+                "🛑 Tắt & khôi phục" if active else "📝 Bật Trước thi / họp"
+            )
+        if hasattr(self, "badge_exam_focus"):
+            if active:
+                self.badge_exam_focus.setText("● ĐANG TẬP TRUNG")
+                self.badge_exam_focus.setStyleSheet(
+                    "background-color: #065f46; color: #34d399; font-size: 11px; "
+                    "font-weight: bold; padding: 5px 14px; border-radius: 12px; "
+                    "border: 1px solid #059669;"
+                )
+            else:
+                self.badge_exam_focus.setText("● Đang Tắt")
+                self.badge_exam_focus.setStyleSheet(
+                    "background-color: #134e4a; color: #99f6e4; font-size: 11px; "
+                    "font-weight: bold; padding: 5px 14px; border-radius: 12px; "
+                    "border: 1px solid #0f766e;"
+                )
+
+    def enable_exam_focus(self):
+        """Bật chế độ Trước thi / họp nếu chưa bật — không tắt khi đã bật."""
+        if ExamMeetingFocus.is_active():
+            if hasattr(self, "lbl_status"):
+                self.lbl_status.setText("Chế độ Trước thi / họp đã đang bật.")
+            self._sync_exam_focus_ui()
+            return
+        self.toggle_exam_focus()
+
+    def toggle_exam_focus(self):
+        """Bật/tắt chế độ Trước thi / họp và đồng bộ badge + toast."""
+        whitelist = self.config_manager.get_whitelist_set() if self.config_manager else set()
+        if ExamMeetingFocus.is_active():
+            res = ExamMeetingFocus.disable()
+        else:
+            res = ExamMeetingFocus.enable(whitelist=whitelist)
+
+        self._sync_exam_focus_ui()
+        msg = res.get("message") or (
+            "Đã tắt chế độ Trước thi / họp." if not ExamMeetingFocus.is_active()
+            else "Đã bật chế độ Trước thi / họp."
+        )
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText(msg)
+
+        ok = bool(res.get("success", True))
+        already = res.get("already_active") or res.get("already_inactive")
+        level = "info" if already else ("success" if ok else "warning")
+        title = "📝 Trước thi / họp"
+        if ExamMeetingFocus.is_active():
+            title = "📝 Trước thi / họp: BẬT" if ok else "📝 Trước thi / họp: bật một phần"
+        else:
+            title = "📝 Trước thi / họp: ĐÃ TẮT" if ok else "📝 Trước thi / họp: tắt một phần"
+
+        if self.tray_manager:
+            self.tray_manager.notify(
+                title,
+                msg,
+                level=level,
+                icon="📝",
+                force=True,
+            )
+        elif not ok:
+            QMessageBox.warning(self, title, msg)
+
+        if self.monitor_hub:
+            self.monitor_hub.force_refresh()
 
     def enable_battery_saver(self):
         """Thu hồi RAM và chuyển gói nguồn Tiết Kiệm Pin nếu Windows cho phép."""

@@ -169,6 +169,18 @@ QPushButton.btn-purple:hover {
     background: #6d28d9;
 }
 
+QPushButton.btn-teal {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0f766e, stop:1 #14b8a6);
+    color: #ffffff;
+    font-weight: bold;
+    padding: 10px 16px;
+    border-radius: 8px;
+}
+
+QPushButton.btn-teal:hover {
+    background: #0d9488;
+}
+
 /* Checkboxes */
 QCheckBox {
     spacing: 10px;

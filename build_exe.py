@@ -64,6 +64,7 @@ def build():
         "--hidden-import=core.uninstaller_manager",
         "--hidden-import=core.winsxs_cleaner",
         "--hidden-import=core.predictive_ai",
+        "--hidden-import=core.exam_focus",
         "--hidden-import=core.ai_copilot",
         "--hidden-import=core.update_checker",
         "--hidden-import=core.update_installer",

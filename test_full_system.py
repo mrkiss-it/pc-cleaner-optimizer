@@ -79,6 +79,51 @@ gb_restore = GameBooster.disable_game_boost()
 print(f" [PASS] 4. GameBooster Tat: Da khoi phuc {gb_restore.get('restored_count', 0)} tien trinh.")
 assert GameBooster.is_active() == False, "GameBooster phai o trang thai Inactive"
 
+from core.exam_focus import ExamMeetingFocus, LIGHT_CLEAN_TARGETS, NETWORK_TIP
+ExamMeetingFocus.reset_for_tests()
+
+class _FocusCleaner:
+    @staticmethod
+    def clean(targets):
+        assert targets.get("user_temp") is True
+        assert targets.get("recycle_bin") is False
+        assert targets.get("windows_update") is False
+        return {"total_freed_mb": 3.0, "total_deleted_files": 2}
+
+class _FocusRam:
+    @staticmethod
+    def optimize_ram(whitelist=None):
+        return {"success": True, "freed_mb": 8.0, "processes_flushed": 1}
+
+class _FocusTweaker:
+    def is_applied(self, _id):
+        return True
+    def apply_tweak(self, _id):
+        return True, "ok"
+    def revert_tweak(self, _id):
+        return True, "ok"
+
+class _FocusBooster:
+    @staticmethod
+    def is_active():
+        return False
+
+focus_on = ExamMeetingFocus.enable(
+    cleaner=_FocusCleaner,
+    ram_optimizer=_FocusRam,
+    process_iter=lambda _a: [],
+    tweaker=_FocusTweaker(),
+    game_booster=_FocusBooster,
+)
+print(f" [PASS] 4a. ExamMeetingFocus Bat: {focus_on.get('freed_junk_mb')} MB rac nhe, RAM {focus_on.get('freed_ram_mb')} MB.")
+assert ExamMeetingFocus.is_active() is True
+assert focus_on.get("network_changed") is False
+assert NETWORK_TIP in focus_on.get("message", "")
+assert LIGHT_CLEAN_TARGETS["recycle_bin"] is False
+focus_off = ExamMeetingFocus.disable(tweaker=_FocusTweaker())
+print(f" [PASS] 4b. ExamMeetingFocus Tat: khoi phuc {focus_off.get('restored_count', 0)} tien trinh.")
+assert ExamMeetingFocus.is_active() is False
+
 # 4. Test Cleaner Targets
 targets = JunkCleaner.get_target_paths()
 print(f" [PASS] 5. JunkCleaner Targets: {len(targets)} danh muc:")
@@ -118,6 +163,9 @@ app = QApplication.instance() or QApplication(sys.argv)
 from ui.main_window import MainWindow
 win = MainWindow(cfg)
 assert win.tabs.count() == 8, f"MainWindow phai co 8 tabs, hien co {win.tabs.count()}"
+assert hasattr(win, "btn_exam_focus"), "Dashboard phai co nut Trước thi / họp"
+assert "Trước thi" in win.btn_exam_focus.text()
+assert APP_NAME in win.lbl_exam_focus_sub.text()
 for idx in range(win.tabs.count()):
     win.tabs.setCurrentIndex(idx)
 win._populate_whitelist()
@@ -841,6 +889,8 @@ def mock_pred_dispatcher(key):
 dlg_dispatch = AIAdvisorDialog(advisor=advisor, action_dispatcher=mock_pred_dispatcher)
 dlg_dispatch._dispatch_action("enable_game_boost")
 assert "enable_game_boost" in dispatched_actions, "Action dispatcher phai nhan duoc enable_game_boost"
+dlg_dispatch._dispatch_action("enable_exam_focus")
+assert "enable_exam_focus" in dispatched_actions, "Action dispatcher phai nhan duoc enable_exam_focus"
 
 dlg_dispatch._dispatch_action("whitelist_proc:test_mock_app.exe")
 assert "whitelist_proc:test_mock_app.exe" in dispatched_actions, "Action dispatcher phai nhan duoc whitelist_proc"
@@ -1355,6 +1405,37 @@ assert _GB.is_active() is True, "enable_game_boost phai bat Game Boost"
 win.enable_game_boost()
 assert _GB.is_active() is True, "enable_game_boost lan 2 khong duoc tat"
 _GB.disable_game_boost()
+
+# D2. Dispatcher enable_exam_focus does not toggle off (mocked — no real clean)
+from core.exam_focus import ExamMeetingFocus as _EF
+_EF.reset_for_tests()
+_ef_enables = {"n": 0}
+
+def _ef_enable(cls, *a, **k):
+    _ef_enables["n"] += 1
+    cls._is_active = True
+    cls._suppress_app_toasts = True
+    return {
+        "success": True,
+        "already_active": False,
+        "is_active": True,
+        "message": "on",
+        "network_changed": False,
+    }
+
+_orig_ef_enable = _EF.enable
+_EF.enable = classmethod(_ef_enable)
+try:
+    win.enable_exam_focus()
+    assert _EF.is_active() is True, "enable_exam_focus phai bat che do"
+    assert "ĐANG TẬP TRUNG" in win.badge_exam_focus.text()
+    win.enable_exam_focus()
+    assert _EF.is_active() is True, "enable_exam_focus lan 2 khong duoc tat"
+    assert _ef_enables["n"] == 1
+finally:
+    _EF.enable = _orig_ef_enable
+    _EF.reset_for_tests()
+    win._sync_exam_focus_ui()
 
 # E. Async worker class exists
 from ui.ai_copilot_widget import CopilotAskWorker
