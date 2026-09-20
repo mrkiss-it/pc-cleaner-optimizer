@@ -5,7 +5,7 @@ Sau đó: mở lại từ header / tab Tự Động / khay hệ thống (chỉ x
 
 Liên kết trong điều khoản:
 - Giấy phép đầy đủ → tệp LICENSE cạnh exe / bộ cài (nếu có), không thì GitHub blob.
-- Xin phép thương mại → trang GitHub của chủ sở hữu bản quyền.
+- Xin phép thương mại → mailto mặc định tới chủ sở hữu bản quyền.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import os
 import sys
 import webbrowser
 from typing import Iterable, Optional
+from urllib.parse import quote
 
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtGui import QDesktopServices
@@ -38,7 +39,16 @@ COMMERCIAL_LINK_HREF = "pccleaner://commercial"
 LICENSE_GITHUB_URL = (
     f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/blob/main/LICENSE"
 )
-COMMERCIAL_PERMISSION_URL = f"https://github.com/{GITHUB_OWNER}"
+COMMERCIAL_PERMISSION_EMAIL = "mrkiss.it@gmail.com"
+COMMERCIAL_PERMISSION_SUBJECT = "Xin phep thuong mai PCAutoCleaner"
+COMMERCIAL_PERMISSION_BODY = (
+    "Vui long cho biet: ten cong ty, muc dich su dung, pham vi (so may / thoi han)."
+)
+COMMERCIAL_PERMISSION_URL = (
+    f"mailto:{COMMERCIAL_PERMISSION_EMAIL}"
+    f"?subject={quote(COMMERCIAL_PERMISSION_SUBJECT, safe='')}"
+    f"&body={quote(COMMERCIAL_PERMISSION_BODY, safe='')}"
+)
 
 EULA_HTML = """
 <h2 style="color:#38bdf8; margin-top:0;">Điều khoản sử dụng (EULA)</h2>
@@ -78,13 +88,13 @@ The Software is provided “AS IS”, without warranty of any kind.</p>
 <a href="{license_href}" style="color:#38bdf8; text-decoration: underline;">Giấy phép đầy đủ</a>
  — tệp LICENSE trong bộ cài / kho mã nguồn.<br/>
 <a href="{commercial_href}" style="color:#38bdf8; text-decoration: underline;">Xin phép thương mại</a>
- — {commercial_url}</p>
+ — {commercial_email}</p>
 """.format(
     holder=COPYRIGHT_HOLDER,
     version=EULA_VERSION,
     license_href=LICENSE_LINK_HREF,
     commercial_href=COMMERCIAL_LINK_HREF,
-    commercial_url=COMMERCIAL_PERMISSION_URL,
+    commercial_email=COMMERCIAL_PERMISSION_EMAIL,
 )
 
 _LINK_BUTTON_STYLE = """
@@ -170,7 +180,7 @@ def open_full_license() -> bool:
 
 
 def open_commercial_permission() -> bool:
-    """Mở trang GitHub của chủ sở hữu bản quyền để xin phép thương mại."""
+    """Mở ứng dụng thư mặc định để xin phép thương mại."""
     return open_external_target(COMMERCIAL_PERMISSION_URL)
 
 
@@ -339,7 +349,7 @@ class EulaDialog(QDialog):
             self._open_commercial()
             return
         scheme = (url.scheme() or "").lower()
-        if scheme in ("http", "https", "file"):
+        if scheme in ("http", "https", "file", "mailto"):
             open_external_target(url.toString())
 
     def _open_full_license(self) -> None:
