@@ -1810,7 +1810,124 @@ except Exception:
     pass
 print(" [PASS] 47. Update banner/settings/tray + fake newer tag, khong goi mang!")
 
-print("\n>>> TAT CA 47 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST, AI COPILOT/AUTO-PILOT APPLY, ASYNC GEMINI, SECRET STORAGE, MISSING-PING AUTO-FIX, WIFI DROP RECOVERY & GITHUB UPDATE CHECK DEU THANH CONG 100%! <<<")
+# ------------------------------------------------------------------
+print("\n=== 48. Proprietary LICENSE + in-app EULA persistence ===")
+from config_manager import (
+    ConfigManager as _CMEula,
+    EULA_VERSION as _EULA_VER,
+    eula_file_path as _eula_path,
+    DEFAULT_CONFIG as _DC_EULA,
+)
+from ui.eula_dialog import EulaDialog, ensure_eula_accepted, EULA_HTML, COPYRIGHT_HOLDER
+
+assert _EULA_VER >= 1
+assert _DC_EULA.get("eula_accepted") is False
+assert COPYRIGHT_HOLDER == "mrkiss-it"
+assert "độc quyền" in EULA_HTML or "All Rights Reserved" in EULA_HTML
+assert "thương mại" in EULA_HTML.lower() or "commercially" in EULA_HTML.lower()
+
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "LICENSE"), "r", encoding="utf-8") as _lf:
+    _lic = _lf.read()
+assert "All Rights Reserved" in _lic
+assert "mrkiss-it" in _lic
+assert "MIT License" not in _lic.splitlines()[0]
+assert "không được phép" in _lic.lower() or "KHÔNG được phép" in _lic or "You may NOT" in _lic
+assert "thương mại" in _lic.lower() or "commercially" in _lic.lower()
+
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "README.md"), "r", encoding="utf-8") as _rf:
+    _readme = _rf.read()
+assert "MIT License" not in _readme
+assert "độc quyền" in _readme.lower() or "proprietary" in _readme.lower()
+
+# Isolated persist: AppData eula.json + local config, not memory-only
+fd_eula, tmp_eula = tempfile.mkstemp(suffix=".json")
+os.close(fd_eula)
+os.remove(tmp_eula)
+fd_cfg, tmp_eula_cfg = tempfile.mkstemp(suffix=".json")
+os.close(fd_cfg)
+os.environ["PCAUTOCLEANER_EULA_PATH"] = tmp_eula
+try:
+    with open(tmp_eula_cfg, "w", encoding="utf-8") as f:
+        _json.dump({}, f)
+    eula_mgr = _CMEula(config_path=tmp_eula_cfg)
+    assert _eula_path() == tmp_eula
+    assert eula_mgr.is_eula_accepted() is False, "Mac dinh chua chap nhan EULA"
+    assert eula_mgr.accept_eula() is True
+    assert eula_mgr.is_eula_accepted() is True
+    assert os.path.exists(tmp_eula), "Phai ghi eula.json (AppData/override)"
+    with open(tmp_eula, "r", encoding="utf-8") as f:
+        eula_disk = _json.load(f)
+    assert eula_disk.get("accepted") is True
+    assert int(eula_disk.get("version") or 0) == _EULA_VER
+    assert eula_disk.get("copyright_holder") == "mrkiss-it"
+    with open(tmp_eula_cfg, "r", encoding="utf-8") as f:
+        cfg_disk = _json.load(f)
+    assert cfg_disk.get("eula_accepted") is True
+    assert int(cfg_disk.get("eula_accepted_version") or 0) == _EULA_VER
+
+    # Reload from disk: must not ask again
+    eula_mgr2 = _CMEula(config_path=tmp_eula_cfg)
+    assert eula_mgr2.is_eula_accepted() is True
+    assert ensure_eula_accepted(eula_mgr2) is True, "Da chap nhan thi khong hoi lai"
+
+    # Stale version in file must require re-accept
+    with open(tmp_eula, "w", encoding="utf-8") as f:
+        _json.dump({"accepted": True, "version": 0}, f)
+    eula_mgr2.config["eula_accepted"] = False
+    eula_mgr2.config["eula_accepted_version"] = 0
+    eula_mgr2.save_config()
+    eula_mgr3 = _CMEula(config_path=tmp_eula_cfg)
+    assert eula_mgr3.is_eula_accepted() is False, "Version cu phai hoi lai EULA"
+finally:
+    os.environ.pop("PCAUTOCLEANER_EULA_PATH", None)
+    for _p in (tmp_eula, tmp_eula_cfg):
+        try:
+            os.remove(_p)
+        except Exception:
+            pass
+
+# UI: first-run dialog requires checkbox; settings view is read-only
+fd_eula2, tmp_eula2 = tempfile.mkstemp(suffix=".json")
+os.close(fd_eula2)
+os.remove(tmp_eula2)
+fd_cfg2, tmp_eula_cfg2 = tempfile.mkstemp(suffix=".json")
+os.close(fd_cfg2)
+os.environ["PCAUTOCLEANER_EULA_PATH"] = tmp_eula2
+try:
+    with open(tmp_eula_cfg2, "w", encoding="utf-8") as f:
+        _json.dump({}, f)
+    eula_ui_cfg = _CMEula(config_path=tmp_eula_cfg2)
+    dlg_first = EulaDialog(eula_ui_cfg, require_accept=True)
+    assert dlg_first.chk_agree.isHidden() is False
+    assert dlg_first.btn_accept is not None and dlg_first.btn_accept.isEnabled() is False
+    assert "Từ chối" in dlg_first.btn_decline.text()
+    dlg_first.chk_agree.setChecked(True)
+    assert dlg_first.btn_accept.isEnabled() is True
+    dlg_first._on_accept()
+    assert eula_ui_cfg.is_eula_accepted() is True
+    dlg_first.close()
+
+    dlg_view = EulaDialog(eula_ui_cfg, require_accept=False)
+    assert dlg_view.chk_agree.isHidden() is True
+    assert dlg_view.btn_accept is None
+    assert hasattr(dlg_view, "btn_close")
+    dlg_view.close()
+finally:
+    os.environ.pop("PCAUTOCLEANER_EULA_PATH", None)
+    for _p in (tmp_eula2, tmp_eula_cfg2):
+        try:
+            os.remove(_p)
+        except Exception:
+            pass
+
+assert hasattr(win, "btn_eula")
+assert hasattr(win, "btn_view_eula")
+assert hasattr(win, "open_eula_dialog")
+assert "Điều khoản" in win.btn_eula.text()
+assert hasattr(_tray, "show_eula_requested")
+print(" [PASS] 48. Proprietary LICENSE + EULA first-run persist (AppData/config) & Settings/header link!")
+
+print("\n>>> TAT CA 48 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST, AI COPILOT/AUTO-PILOT APPLY, ASYNC GEMINI, SECRET STORAGE, MISSING-PING AUTO-FIX, WIFI DROP RECOVERY, GITHUB UPDATE CHECK & EULA/PROPRIETARY LICENSE DEU THANH CONG 100%! <<<")
 
 
 

@@ -12,6 +12,7 @@ class SystemTrayManager(QSystemTrayIcon):
     toggle_window_requested = pyqtSignal()
     toggle_floating_widget_requested = pyqtSignal()
     check_updates_requested = pyqtSignal()
+    show_eula_requested = pyqtSignal()
     exit_requested = pyqtSignal()
 
     def __init__(self, parent=None, config_manager=None):
@@ -116,6 +117,10 @@ class SystemTrayManager(QSystemTrayIcon):
         action_updates = QAction("🔄 Kiểm Tra Cập Nhật", self)
         action_updates.triggered.connect(self.check_updates_requested.emit)
         menu.addAction(action_updates)
+
+        action_eula = QAction("📜 Điều khoản sử dụng", self)
+        action_eula.triggered.connect(self.show_eula_requested.emit)
+        menu.addAction(action_eula)
 
         menu.addSeparator()
 
