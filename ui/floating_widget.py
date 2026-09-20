@@ -200,10 +200,7 @@ class FloatingWidget(QWidget):
                 or getattr(NetworkOptimizer, "last_missing_ping_report", None)
                 or {}
             )
-            if det.get("unstable"):
-                wifi_status = str(det.get("cause") or "")
-            elif str(report.get("cause") or "") in ("reconnect_loop", "weak_link", "link_loss"):
-                wifi_status = str(report.get("cause") or "")
+            wifi_status = WifiRecovery.overlay_wifi_status(last_report=report)
             if report.get("cause_label"):
                 cause_tip = f"\nNguyên nhân: {report.get('cause_label')}"
             if report.get("applied_summary"):
@@ -216,7 +213,7 @@ class FloatingWidget(QWidget):
         ping_text = format_ping_overlay_text(ping_val, ping_measured, ping_status, wifi_status=wifi_status)
         if ping_val <= 0 or wifi_status:
             ping_color = "#64748b"   # Xám - không đo được / Wi-Fi rớt
-            if wifi_status in ("reconnect_loop", "link_loss", "wifi_drop"):
+            if wifi_status in ("reconnect_loop", "link_loss", "wifi_drop", "adapter_down"):
                 ping_color = "#f43f5e"
             elif wifi_status == "weak_link":
                 ping_color = "#fb923c"

@@ -1694,6 +1694,8 @@ from core.wifi_recovery import (
     parse_link_mbps as _plm,
     count_wlan_auth_flaps as _cwf,
     classify_wifi_cause as _cwc,
+    resolve_overlay_wifi_status as _ros,
+    overlay_word_for_cause as _owc,
 )
 from core.system_monitor import format_ping_overlay_text as _fpo
 _WR.reset_state()
@@ -1706,6 +1708,18 @@ cause_w, lab_w = _cwc({
 assert cause_w == "reconnect_loop"
 assert _fpo(28, True, "ok", wifi_status="reconnect_loop") == "rớt"
 assert _fpo(40, True, "ok", wifi_status="weak_link") == "yếu"
+# Connected low-rate, no flap: overlay yếu even if a stale report said link_loss
+cause_weak, _ = _cwc({
+    "is_wifi": True, "is_up": True, "state": "up", "ssid": "",
+    "link_mbps": 19, "status_flaps": 0, "wlan_flaps": 0, "link_loss": True,
+})
+assert cause_weak == "weak_link"
+assert _owc(cause_weak) == "yếu"
+assert _ros(
+    {"is_wifi": True, "is_up": True, "cause": "weak_link", "link_mbps": 19},
+    last_report={"cause": "link_loss"},
+) == "weak_link"
+assert _fpo(300, True, "ok", wifi_status="weak_link") == "yếu"
 assert _WR.should_trigger_wifi_drop_fix(True, True, 1000, 980, 300, 0, first_cooldown_sec=12) is True
 assert _WR.should_trigger_wifi_drop_fix(True, True, 9999, 0, 300, 2) is False
 assert "Disable-NetAdapter" in _WR.skipped_nic_toggle() or "tắt/bật" in _WR.skipped_nic_toggle()

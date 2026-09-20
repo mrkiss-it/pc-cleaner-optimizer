@@ -443,17 +443,17 @@ class NetworkOptimizerDialog(QDialog):
         try:
             from core.wifi_recovery import WifiRecovery
             det = getattr(WifiRecovery, "last_detect", None) or {}
-            if det.get("unstable"):
-                wifi_status = str(det.get("cause") or "")
-                wifi_label = str(det.get("cause_label") or "")
+            wifi_status = WifiRecovery.overlay_wifi_status()
+            wifi_label = str(det.get("cause_label") or "")
         except Exception:
             wifi_status = ""
         if wifi_status:
             from core.system_monitor import format_ping_overlay_text
             overlay = format_ping_overlay_text(ping, True, wifi_status, wifi_status=wifi_status)
+            color = "#fb923c" if wifi_status == "weak_link" or overlay == "yếu" else "#f43f5e"
             self.card_ping._lbl_val.setText(overlay)
-            self.card_ping._lbl_val.setStyleSheet("color: #f43f5e; font-size: 20px; font-weight: bold;")
-            self.card_ping._lbl_sub.setText(wifi_label or "Wi-Fi rớt / yếu")
+            self.card_ping._lbl_val.setStyleSheet(f"color: {color}; font-size: 20px; font-weight: bold;")
+            self.card_ping._lbl_sub.setText(wifi_label or ("Wi-Fi yếu" if overlay == "yếu" else "Wi-Fi rớt / yếu"))
         elif ping > 0:
             self.card_ping._lbl_val.setText(f"{ping:.1f} ms")
             if ping < 50:
@@ -482,8 +482,8 @@ class NetworkOptimizerDialog(QDialog):
                     or getattr(NetworkOptimizer, "last_missing_ping_report", None)
                     or {}
                 )
-                if det.get("unstable"):
-                    wifi_status = str(det.get("cause") or "")
+                if det:
+                    wifi_status = WifiRecovery.overlay_wifi_status(last_report=report)
                 if report.get("cause_label"):
                     cause_bit = f" • {report.get('cause_label')}"
                 elif det.get("cause_label"):

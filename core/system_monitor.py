@@ -309,13 +309,20 @@ def format_ping_overlay_text(
 ) -> str:
     """
     Text trên widget nổi: số ms khi đo được; 'timeout' / 'mất' / 'DNS' / 'rớt' / 'yếu'
-    khi đã đo nhưng thất bại hoặc Wi-Fi đang flap — không chỉ '--'.
+    khi đã đo nhưng thất bại hoặc Wi-Fi đang flap/yếu — không chỉ '--'.
     """
     wifi = str(wifi_status or "").lower()
-    if wifi in ("reconnect_loop", "wifi_drop", "link_loss"):
-        return "rớt"
-    if wifi in ("weak_link",):
-        return "yếu"
+    try:
+        from core.wifi_recovery import overlay_word_for_cause
+        wifi_word = overlay_word_for_cause(wifi)
+    except Exception:
+        wifi_word = ""
+        if wifi in ("reconnect_loop", "wifi_drop", "link_loss", "adapter_down"):
+            wifi_word = "rớt"
+        elif wifi in ("weak_link",):
+            wifi_word = "yếu"
+    if wifi_word:
+        return wifi_word
     try:
         val = float(ping_ms)
     except (TypeError, ValueError):
