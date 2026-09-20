@@ -275,16 +275,16 @@ def memory_answer(
     skills = load_skills(base_dir)
     note = latest_reflection(base_dir)
     lines = [
-        f"### 🌱 AI đồng hành — {stage.badge_vi()}",
+        f"🌱 AI đồng hành — {stage.badge_vi()}",
         stage.blurb_vi,
         "",
-        "**Nhật ký máy này:**",
+        "Nhật ký máy này:",
         digest,
         "",
-        "**Kỹ năng đã lưu:**",
+        "Kỹ năng đã lưu:",
         format_skills_context(skills),
         "",
-        "**Sổ tay:**",
+        "Sổ tay:",
         note or "Chưa có sổ tay. Bấm Ghi sổ tay hoặc đợi phản tỉnh buổi tối.",
         "",
         "Mình không tự huấn luyện mô hình; chỉ nhớ sự kiện local, riêng tư trên máy này.",

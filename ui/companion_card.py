@@ -86,6 +86,10 @@ class CompanionCard(QFrame):
         self.setStyleSheet(
             "QFrame#CompanionCard { background-color: #1e293b; border: 1px solid #334155; "
             "border-radius: 12px; }"
+            "QCheckBox { color: #cbd5e1; spacing: 8px; }"
+            "QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; "
+            "border: 1px solid #64748b; background: #0f172a; }"
+            "QCheckBox::indicator:checked { background: #7c3aed; border-color: #a78bfa; }"
         )
         self._build_ui()
         self.refresh()
