@@ -157,6 +157,9 @@ def test_config_strips_retired_ollama_keys():
             os.remove(path)
         except OSError:
             pass
+
+
+def test_canonicalize_helpers():
     assert canonicalize_copilot_provider("Tự động") == "auto"
     assert canonicalize_copilot_provider("gemini") == "gemini"
     assert canonicalize_copilot_provider("local") == "auto"

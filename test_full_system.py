@@ -1396,7 +1396,8 @@ class _CloudCfg:
         return default
 cloud_copilot = AICopilotEngine(config_manager=_CloudCfg(), predictive_engine=pred_engine)
 cloud_msg = cloud_copilot.ask("Kham suc khoe")
-assert "Cloud Gemini lỗi" in cloud_msg.content or "Cloud Gemini" in cloud_msg.content
+assert "API key" in cloud_msg.content or "cần mạng" in cloud_msg.content.lower()
+assert "Gemini" in cloud_msg.content
 assert "Offline" in cloud_msg.content or "Hồ Sơ" in cloud_msg.content or "sức khỏe" in cloud_msg.content.lower() or "RAM" in cloud_msg.content
 
 # C. Secrets never land in tracked config.json
