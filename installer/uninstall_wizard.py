@@ -701,7 +701,8 @@ class UninstallerDialog(QDialog):
         self._args = parse_uninstall_args([] if argv is None else argv)
         name = APP_DISPLAY_NAME
         self.setWindowTitle(f"Gỡ Cài Đặt – {name}")
-        self.resize(520, 360)
+        self.resize(540, 400)
+        self.setMinimumSize(500, 380)
         self.setStyleSheet(_dialog_qss())
         self._build_ui()
         if self._args.get("remove_user_data"):
@@ -743,8 +744,8 @@ class UninstallerDialog(QDialog):
             }}
         """)
         c_lay = QVBoxLayout(card)
-        c_lay.setContentsMargins(14, 12, 14, 12)
-        c_lay.setSpacing(8)
+        c_lay.setContentsMargins(16, 14, 16, 14)
+        c_lay.setSpacing(12)
 
         msg = QLabel(
             f"Bạn có chắc chắn muốn gỡ bỏ hoàn toàn {APP_DISPLAY_NAME} "
@@ -760,7 +761,7 @@ class UninstallerDialog(QDialog):
 
         self.chk_remove_data = QCheckBox("Xóa cả cấu hình / dữ liệu cá nhân")
         self.chk_remove_data.setChecked(False)
-        self.chk_remove_data.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 11px;")
+        self.chk_remove_data.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 12px;")
         self.chk_remove_data.setToolTip(
             "Bỏ chọn để giữ %APPDATA%\\PCAutoCleaner (cấu hình, lịch sử) khi cài lại sau này."
         )
