@@ -28,7 +28,7 @@ class FloatingWidget(QWidget):
             Qt.Tool
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.resize(400, 52)  # Rộng hơn để chứa thêm chỉ số PING
+        self.resize(420, 52)  # Rộng hơn để chứa Ping "N ms · yếu"
 
         self.ram_pct = 0.0
         self.cpu_pct = 0.0
@@ -100,7 +100,7 @@ class FloatingWidget(QWidget):
         self.lbl_ping_title = QLabel("PING")
         self.lbl_ping_title.setStyleSheet("color: #94a3b8; font-size: 10px; font-weight: bold; background: transparent;")
         self.lbl_ping_val = QLabel("-- ms")
-        self.lbl_ping_val.setStyleSheet("color: #34d399; font-size: 12px; font-weight: bold; background: transparent; min-width: 50px;")
+        self.lbl_ping_val.setStyleSheet("color: #34d399; font-size: 12px; font-weight: bold; background: transparent; min-width: 64px;")
         ping_box.addWidget(self.lbl_ping_title, alignment=Qt.AlignCenter)
         ping_box.addWidget(self.lbl_ping_val, alignment=Qt.AlignCenter)
 
@@ -211,48 +211,50 @@ class FloatingWidget(QWidget):
             cause_tip = ""
         self.ping_ms = ping_val
         ping_text = format_ping_overlay_text(ping_val, ping_measured, ping_status, wifi_status=wifi_status)
-        if ping_val <= 0 or wifi_status:
-            ping_color = "#64748b"   # Xám - không đo được / Wi-Fi rớt
-            if wifi_status in ("reconnect_loop", "link_loss", "wifi_drop", "adapter_down"):
+        weak_hint = ping_val > 0 and wifi_status == "weak_link"
+        drop_no_ping = ping_val <= 0 and wifi_status in (
+            "reconnect_loop", "link_loss", "wifi_drop", "adapter_down",
+        )
+        if ping_val > 0:
+            if ping_val < 40 and not weak_hint:
+                ping_color = "#34d399"   # Xanh lá - cực nhanh
+            elif ping_val < 80 and not weak_hint:
+                ping_color = "#86efac"   # Xanh nhạt - tốt
+            elif ping_val < 150 and not weak_hint:
+                ping_color = "#fbbf24"   # Vàng - trung bình
+            elif weak_hint or ping_val < 250:
+                ping_color = "#fb923c"   # Cam - yếu / cao
+            else:
+                ping_color = "#f43f5e"   # Đỏ - rất cao
+            if weak_hint:
+                self.lbl_ping_title.setText("PING")
+                self.lbl_ping_title.setToolTip(f"Ping {ping_val:.0f} ms · Wi-Fi yếu.{cause_tip}")
+                self.lbl_ping_val.setToolTip(f"Ping {ping_val:.0f} ms · Wi-Fi yếu.{cause_tip}")
+            else:
+                self.lbl_ping_title.setText("PING")
+                self.lbl_ping_title.setToolTip(f"Ping {ping_val:.0f} ms")
+                self.lbl_ping_val.setToolTip(f"Ping {ping_val:.0f} ms")
+        else:
+            self.lbl_ping_title.setText("PING")
+            ping_color = "#64748b"   # Xám - không đo được
+            if drop_no_ping:
                 ping_color = "#f43f5e"
-            elif wifi_status == "weak_link":
-                ping_color = "#fb923c"
             if ping_measured or wifi_status:
                 err = net_info.get("ping_error") or ping_status or wifi_status or "timeout"
-                self.lbl_ping_title.setToolTip(
-                    f"Ping không đo được ({err}).{cause_tip}" if ping_val <= 0 else f"Wi-Fi: {wifi_status}.{cause_tip}"
-                )
-                self.lbl_ping_val.setToolTip(
-                    f"Lỗi đo Ping: {err}.{cause_tip}" if ping_val <= 0 else f"Wi-Fi: {wifi_status}.{cause_tip}"
-                )
+                self.lbl_ping_title.setToolTip(f"Ping không đo được ({err}).{cause_tip}")
+                self.lbl_ping_val.setToolTip(f"Lỗi đo Ping: {err}.{cause_tip}")
             else:
                 self.lbl_ping_title.setToolTip("Đang đo Ping...")
                 self.lbl_ping_val.setToolTip("Đang đo Ping...")
-        elif ping_val < 40:
-            ping_color = "#34d399"   # Xanh lá - cực nhanh
-        elif ping_val < 80:
-            ping_color = "#86efac"   # Xanh nhạt - tốt
-        elif ping_val < 150:
-            ping_color = "#fbbf24"   # Vàng - trung bình
-        elif ping_val < 250:
-            ping_color = "#fb923c"   # Cam - cao
-        else:
-            ping_color = "#f43f5e"   # Đỏ - rất cao
-
-        if ping_val > 0 and not wifi_status:
-            self.lbl_ping_title.setToolTip(f"Ping {ping_val:.0f} ms")
-            self.lbl_ping_val.setToolTip(f"Ping {ping_val:.0f} ms")
 
         self.lbl_ping_val.setText(ping_text)
         self.lbl_ping_val.setStyleSheet(
-            f"color: {ping_color}; font-size: 12px; font-weight: bold; background: transparent; min-width: 50px;"
+            f"color: {ping_color}; font-size: 12px; font-weight: bold; background: transparent; min-width: 64px;"
         )
 
         # Tooltip chi tiết khi rê chuột
         ram_info = stats.get("ram", {})
-        ping_str = format_ping_overlay_text(ping_val, ping_measured, ping_status, wifi_status=wifi_status)
-        if ping_val > 0 and not wifi_status:
-            ping_str = f"{ping_val:.0f}ms"
+        ping_str = ping_text
         repair_line = cause_tip
         ram_detail = (
             f"RAM: {self.ram_pct:.1f}% ({ram_info.get('used_gb', 0):.1f}/{ram_info.get('total_gb', 0):.1f} GB)\n"

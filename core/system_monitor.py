@@ -308,9 +308,20 @@ def format_ping_overlay_text(
     wifi_status: str = "",
 ) -> str:
     """
-    Text trên widget nổi: số ms khi đo được; 'timeout' / 'mất' / 'DNS' / 'rớt' / 'yếu'
-    khi đã đo nhưng thất bại hoặc Wi-Fi đang flap/yếu — không chỉ '--'.
+    Text trên widget nổi / thẻ Ping.
+
+    Ưu tiên:
+      1. ping_ms > 0 → luôn hiện số ("N ms"). Weak-link thêm gợi ý " · yếu".
+         Không thay số bằng chỉ "yếu" hay "rớt".
+      2. Không đo được + reconnect flap / mất link / adapter Down → "rớt"
+      3. Không đo được + chỉ weak_link (vẫn kết nối) → timeout/DNS/mất
+         (không gọi là rớt).
+      4. Không đo được khác → timeout / mất / DNS / offline như cũ.
     """
+    try:
+        val = float(ping_ms)
+    except (TypeError, ValueError):
+        val = -1.0
     wifi = str(wifi_status or "").lower()
     try:
         from core.wifi_recovery import overlay_word_for_cause
@@ -321,24 +332,20 @@ def format_ping_overlay_text(
             wifi_word = "rớt"
         elif wifi in ("weak_link",):
             wifi_word = "yếu"
-    if wifi_word:
-        return wifi_word
-    try:
-        val = float(ping_ms)
-    except (TypeError, ValueError):
-        val = -1.0
-    if val > 0 and not wifi:
-        return f"{val:.0f} ms"
+
     if val > 0:
+        if wifi_word == "yếu":
+            return f"{val:.0f} ms · yếu"
         return f"{val:.0f} ms"
     if not ping_measured:
         return "-- ms"
+    # No reading: rớt only for a genuine drop, never for weak_link alone.
+    if wifi_word == "rớt":
+        return "rớt"
     status = str(ping_status or "timeout").lower()
     if status in ("reconnect_loop", "wifi_drop", "link_loss"):
         return "rớt"
-    if status in ("weak_link",):
-        return "yếu"
-    if status in ("timeout", "meter_timeout"):
+    if status in ("timeout", "meter_timeout", "weak_link"):
         return "timeout"
     if status in ("unreachable", "no_connectivity", "tcp_fail", "firewall_or_no_route"):
         return "mất"

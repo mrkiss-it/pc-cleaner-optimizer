@@ -165,11 +165,16 @@ def test_classify_and_filtering_dns():
 
 
 def test_overlay_wifi_words():
-    assert format_ping_overlay_text(28, True, "ok", wifi_status="reconnect_loop") == "rớt"
-    assert format_ping_overlay_text(-1, True, "link_loss") == "rớt"
-    assert format_ping_overlay_text(40, True, "ok", wifi_status="weak_link") == "yếu"
+    # Have a ping reading → always keep the number (never replace with only yếu/rớt).
+    assert format_ping_overlay_text(28, True, "ok", wifi_status="reconnect_loop") == "28 ms"
+    assert format_ping_overlay_text(40, True, "ok", wifi_status="weak_link") == "40 ms · yếu"
     assert format_ping_overlay_text(28, True, "ok") == "28 ms"
-    assert format_ping_overlay_text(300, True, "ok", wifi_status="adapter_down") == "rớt"
+    assert format_ping_overlay_text(300, True, "ok", wifi_status="adapter_down") == "300 ms"
+    assert "rớt" not in format_ping_overlay_text(300, True, "ok", wifi_status="weak_link")
+    # No ping + genuine drop → rớt. No ping + only weak → timeout, not rớt.
+    assert format_ping_overlay_text(-1, True, "ok", wifi_status="reconnect_loop") == "rớt"
+    assert format_ping_overlay_text(-1, True, "link_loss") == "rớt"
+    assert format_ping_overlay_text(-1, True, "timeout", wifi_status="weak_link") == "timeout"
     assert overlay_word_for_cause("link_loss") == "rớt"
     assert overlay_word_for_cause("weak_link") == "yếu"
     assert overlay_word_for_cause("ok") == ""
@@ -186,7 +191,8 @@ def test_classify_connected_low_rate_is_weak_not_link_loss():
     assert "yếu" in label or "thấp" in label
     assert is_genuine_link_loss(weak_snap) is False
     assert overlay_word_for_cause(cause) == "yếu"
-    assert format_ping_overlay_text(300, True, "ok", wifi_status=cause) == "yếu"
+    assert format_ping_overlay_text(300, True, "ok", wifi_status=cause) == "300 ms · yếu"
+    assert "rớt" not in format_ping_overlay_text(300, True, "ok", wifi_status=cause)
 
     # Empty SSID + adapter Status "up" + usable PHY (netsh gap) is NOT link_loss.
     gap = _wifi_snap(
@@ -228,7 +234,7 @@ def test_overlay_priority_flap_beats_weak_and_stale_report():
     assert WifiRecovery.overlay_wifi_status(last_report=stale) == "weak_link"
     assert format_ping_overlay_text(
         300, True, "ok", wifi_status=WifiRecovery.overlay_wifi_status(last_report=stale)
-    ) == "yếu"
+    ) == "300 ms · yếu"
 
     flap = WifiRecovery.detect_wifi_instability(
         snapshot=_wifi_snap(status_flaps=4, wlan_flaps=5, link_mbps=13.0),
@@ -237,7 +243,8 @@ def test_overlay_priority_flap_beats_weak_and_stale_report():
     assert flap["cause"] == "reconnect_loop"
     assert flap["overlay"] == "rớt"
     assert resolve_overlay_wifi_status(flap) == "reconnect_loop"
-    assert format_ping_overlay_text(28, True, "ok", wifi_status="reconnect_loop") == "rớt"
+    assert format_ping_overlay_text(28, True, "ok", wifi_status="reconnect_loop") == "28 ms"
+    assert format_ping_overlay_text(-1, True, "ok", wifi_status="reconnect_loop") == "rớt"
 
     down = WifiRecovery.detect_wifi_instability(
         snapshot=_wifi_snap(

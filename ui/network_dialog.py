@@ -447,16 +447,18 @@ class NetworkOptimizerDialog(QDialog):
             wifi_label = str(det.get("cause_label") or "")
         except Exception:
             wifi_status = ""
-        if wifi_status:
+        drop_no_ping = ping <= 0 and wifi_status in (
+            "reconnect_loop", "link_loss", "wifi_drop", "adapter_down",
+        )
+        weak_with_ping = ping > 0 and wifi_status == "weak_link"
+        if ping > 0:
             from core.system_monitor import format_ping_overlay_text
-            overlay = format_ping_overlay_text(ping, True, wifi_status, wifi_status=wifi_status)
-            color = "#fb923c" if wifi_status == "weak_link" or overlay == "yếu" else "#f43f5e"
+            overlay = format_ping_overlay_text(ping, True, "ok", wifi_status=wifi_status)
             self.card_ping._lbl_val.setText(overlay)
-            self.card_ping._lbl_val.setStyleSheet(f"color: {color}; font-size: 20px; font-weight: bold;")
-            self.card_ping._lbl_sub.setText(wifi_label or ("Wi-Fi yếu" if overlay == "yếu" else "Wi-Fi rớt / yếu"))
-        elif ping > 0:
-            self.card_ping._lbl_val.setText(f"{ping:.1f} ms")
-            if ping < 50:
+            if weak_with_ping:
+                self.card_ping._lbl_val.setStyleSheet("color: #fb923c; font-size: 20px; font-weight: bold;")
+                self.card_ping._lbl_sub.setText(wifi_label or "Wi-Fi yếu — vẫn đo được Ping")
+            elif ping < 50:
                 self.card_ping._lbl_val.setStyleSheet("color: #34d399; font-size: 20px; font-weight: bold;")
                 self.card_ping._lbl_sub.setText("Độ trễ thấp • Rất mượt 🟢")
             elif ping < 100:
@@ -465,6 +467,12 @@ class NetworkOptimizerDialog(QDialog):
             else:
                 self.card_ping._lbl_val.setStyleSheet("color: #f43f5e; font-size: 20px; font-weight: bold;")
                 self.card_ping._lbl_sub.setText("Độ trễ cao 🔴")
+        elif drop_no_ping:
+            from core.system_monitor import format_ping_overlay_text
+            overlay = format_ping_overlay_text(ping, True, wifi_status, wifi_status=wifi_status)
+            self.card_ping._lbl_val.setText(overlay)
+            self.card_ping._lbl_val.setStyleSheet("color: #f43f5e; font-size: 20px; font-weight: bold;")
+            self.card_ping._lbl_sub.setText(wifi_label or "Wi-Fi rớt")
         elif not net.get("ping_measured"):
             self.card_ping._lbl_val.setText("-- ms")
             self.card_ping._lbl_sub.setText("Đang đo...")

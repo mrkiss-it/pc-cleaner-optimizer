@@ -5,9 +5,9 @@ Phát hiện: adapter tắt, mất link, tốc độ liên kết yếu (< 50 Mbp
 Up/Down flap, cụm sự kiện WLAN-AutoConfig (11000/11001/8002/8003/11010).
 
 Phân loại badge Ping (cùng thứ tự với cause= trong log):
-  1. flap / adapter Down / mất association thật → overlay "rớt"
-  2. adapter vẫn Up/kết nối nhưng Mbps/RSSI yếu → overlay "yếu"
-  3. Ping timeout khi Wi-Fi khỏe → timeout/DNS (không đè rớt)
+  1. Có ping_ms > 0 → luôn hiện số ms (weak-link thêm " · yếu", không thay bằng rớt)
+  2. Không ping + flap / adapter Down / mất association thật → overlay "rớt"
+  3. Không ping + adapter vẫn Up chỉ yếu → timeout/DNS (không gọi rớt)
 
 Sửa theo bậc (không dừng vì một lần Ping may mắn khi đang flap/yếu):
   1. Flush DNS + ARP
@@ -221,12 +221,15 @@ def resolve_overlay_wifi_status(
     last_report: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
-    Cause token for the Ping overlay (format_ping_overlay_text maps it to yếu/rớt).
+    Cause token for the Ping overlay.
 
     Priority (when both weak radio AND flap/loss are present, the higher row wins):
-      1. Active reconnect flap / adapter Down / genuine link loss → rớt
-      2. Adapter still Up/associated with sustained low Mbps or weak RSSI → yếu
-      3. No Wi-Fi override → caller keeps timeout / DNS / ms
+      1. ping_ms > 0 → format_ping_overlay_text always keeps the number;
+         this token only adds a weak hint (weak_link) or is ignored for drops.
+      2. No ping + active reconnect flap / adapter Down / genuine link loss → rớt
+      3. No ping + adapter still Up/associated, low Mbps or weak RSSI → weak_link
+         (timeout/missing wording, not rớt)
+      4. No Wi-Fi override → timeout / DNS / ms
     A stale last_wifi_drop_report must not keep showing rớt after the current
     snapshot is a connected weak link (or healthy).
     """
@@ -343,14 +346,16 @@ def classify_wifi_cause(
     """
     Nguyên nhân chính (tiếng Việt) — cùng thứ tự với badge Ping overlay:
 
-      1. adapter_down          → rớt   (card không Up)
-      2. reconnect_loop        → rớt   (Up↔Down flap hoặc cụm WLAN disconnect)
-      3. genuine link_loss     → rớt   (association thật sự mất; không phải netsh thiếu SSID)
-      4. weak_link             → yếu   (adapter vẫn Up/kết nối, Mbps thấp / RSSI yếu)
-      5. gateway / DNS / TCP   → không đè overlay Wi-Fi (timeout/DNS/mất như cũ)
+      1. adapter_down          → rớt khi không đo được ping (card không Up)
+      2. reconnect_loop        → rớt khi không đo được ping (Up↔Down / WLAN flap)
+      3. genuine link_loss     → rớt khi không đo được ping (association thật sự mất)
+      4. weak_link             → yếu (adapter vẫn Up/kết nối, Mbps thấp / RSSI yếu).
+                                 Có ping → hiện số ms + gợi ý yếu; không ping → timeout,
+                                 không gọi là rớt.
+      5. gateway / DNS / TCP   → timeout/DNS/mất như cũ
       6. ok
 
-    Khi vừa yếu vừa đang flap: bước 2/3 thắng (rớt). Chỉ yếu, không flap: yếu.
+    Khi vừa yếu vừa đang flap: bước 2/3 thắng (rớt nếu mất ping). Chỉ yếu, không flap: yếu.
     """
     health = health or {}
     issues = list(health.get("issues") or [])

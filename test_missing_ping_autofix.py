@@ -131,7 +131,8 @@ def test_overlay_shows_timeout_not_dash():
     assert format_ping_overlay_text(-1, True, "unreachable") == "mất"
     assert format_ping_overlay_text(-1, True, "dns_fail") == "DNS"
     assert format_ping_overlay_text(-1, True, "reconnect_loop") == "rớt"
-    assert format_ping_overlay_text(26, True, "ok", wifi_status="weak_link") == "yếu"
+    assert format_ping_overlay_text(26, True, "ok", wifi_status="weak_link") == "26 ms · yếu"
+    assert format_ping_overlay_text(-1, True, "timeout", wifi_status="weak_link") == "timeout"
 
 
 def test_diagnosis_labels():

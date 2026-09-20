@@ -1706,8 +1706,9 @@ cause_w, lab_w = _cwc({
     "link_mbps": 26, "status_flaps": 4, "wlan_flaps": 5, "link_loss": False,
 })
 assert cause_w == "reconnect_loop"
-assert _fpo(28, True, "ok", wifi_status="reconnect_loop") == "rớt"
-assert _fpo(40, True, "ok", wifi_status="weak_link") == "yếu"
+assert _fpo(28, True, "ok", wifi_status="reconnect_loop") == "28 ms"
+assert _fpo(-1, True, "ok", wifi_status="reconnect_loop") == "rớt"
+assert _fpo(40, True, "ok", wifi_status="weak_link") == "40 ms · yếu"
 # Connected low-rate, no flap: overlay yếu even if a stale report said link_loss
 cause_weak, _ = _cwc({
     "is_wifi": True, "is_up": True, "state": "up", "ssid": "",
@@ -1719,7 +1720,9 @@ assert _ros(
     {"is_wifi": True, "is_up": True, "cause": "weak_link", "link_mbps": 19},
     last_report={"cause": "link_loss"},
 ) == "weak_link"
-assert _fpo(300, True, "ok", wifi_status="weak_link") == "yếu"
+assert _fpo(300, True, "ok", wifi_status="weak_link") == "300 ms · yếu"
+assert "rớt" not in _fpo(300, True, "ok", wifi_status="weak_link")
+assert _fpo(-1, True, "timeout", wifi_status="weak_link") == "timeout"
 assert _WR.should_trigger_wifi_drop_fix(True, True, 1000, 980, 300, 0, first_cooldown_sec=12) is True
 assert _WR.should_trigger_wifi_drop_fix(True, True, 9999, 0, 300, 2) is False
 assert "Disable-NetAdapter" in _WR.skipped_nic_toggle() or "tắt/bật" in _WR.skipped_nic_toggle()
