@@ -1291,12 +1291,12 @@ class AICopilotEngine:
     def _init_welcome_message(self):
         """Tin nhắn chào mừng ban đầu."""
         welcome_text = (
-            f"👋 **Xin chào! Tôi là AI Copilot của {APP_NAME}.**\n\n"
+            f"Xin chào! Tôi là AI Copilot của {APP_NAME}.\n\n"
             "Hybrid: Google Gemini khi có mạng + API key; Ollama trên máy khi offline "
             "(không giả lập LLM nếu Ollama chưa cài).\n\n"
-            "🌱 **AI đồng hành:** nhật ký local trên máy này, lớn dần theo ngày dùng — "
+            "AI đồng hành: nhật ký local trên máy này, lớn dần theo ngày dùng — "
             "không phải AGI, không tự huấn luyện mô hình. Nhật ký trống nếu đây là lần đầu.\n\n"
-            "💡 *Hỏi về máy tính, hoặc bấm câu hỏi nhanh bên dưới.*"
+            "Hỏi về máy tính, hoặc bấm câu hỏi nhanh bên dưới."
         )
         actions = [
             CopilotAction(key="auto_optimize_all", label="✨ Khám Sức Khỏe & Tối Ưu", icon="✨"),
