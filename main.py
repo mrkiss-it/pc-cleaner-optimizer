@@ -107,7 +107,7 @@ def main():
     logger.info("Đã khởi tạo SystemMonitorHub điều phối dữ liệu thời gian thực.")
 
     # Initialize System Tray
-    tray_mgr = SystemTrayManager()
+    tray_mgr = SystemTrayManager(config_manager=config_mgr)
     tray_mgr.show()
     logger.info("Đã khởi tạo System Tray Icon.")
 
@@ -144,10 +144,14 @@ def main():
         main_win.refresh_history_table()
         monitor_hub.force_refresh()
 
-        if config_mgr.get("show_notifications", True):
+        if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
             tray_mgr.notify(
-                "PC Auto Cleaner: Đã dọn nhanh",
-                f"Đã giải phóng {junk_mb:.1f} MB rác và {ram_mb:.1f} MB RAM!"
+                "PC Auto Cleaner: Đã Dọn Nhanh",
+                f"Đã giải phóng {junk_mb:.1f} MB rác và {ram_mb:.1f} MB RAM!",
+                level="success",
+                icon="🗑️",
+                action_text="📊 Xem Nhật Ký",
+                action_callback=lambda: (force_activate_window(main_win), main_win.tabs.setCurrentIndex(1))
             )
 
     def on_optimize_ram():
@@ -161,10 +165,14 @@ def main():
         main_win.refresh_history_table()
         monitor_hub.force_refresh()
 
-        if config_mgr.get("show_notifications", True):
+        if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
             tray_mgr.notify(
-                "PC Auto Cleaner: Tối ưu RAM",
-                f"Đã giải phóng {freed:.1f} MB RAM. Mức sử dụng hiện tại: {p_after:.1f}%"
+                "PC Auto Cleaner: Tối Ưu RAM",
+                f"Đã giải phóng {freed:.1f} MB RAM. Mức sử dụng hiện tại: {p_after:.1f}%",
+                level="success",
+                icon="⚡",
+                action_text="📈 Xem Tiến Trình",
+                action_callback=lambda: (force_activate_window(main_win), main_win.tabs.setCurrentIndex(0))
             )
 
     def on_toggle_window():
@@ -185,10 +193,14 @@ def main():
         from core.network_optimizer import NetworkOptimizer
         res = NetworkOptimizer.full_optimize()
         main_win.lbl_status.setText("🌐 Đã tối ưu hóa mạng: Làm mới DNS & TCP stack")
-        if config_mgr.get("show_notifications", True):
+        if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
             tray_mgr.notify(
                 "Tối Ưu Hóa Mạng Thành Công",
-                "Đã xóa sạch bộ nhớ đệm DNS và tối ưu TCP stack!"
+                "Đã xóa sạch bộ nhớ đệm DNS và tối ưu TCP stack!",
+                level="success",
+                icon="🌐",
+                action_text="📶 Thử Nghiệm Mạng",
+                action_callback=main_win.open_network_dialog
             )
 
     tray_mgr.quick_clean_requested.connect(on_quick_clean)
@@ -216,27 +228,39 @@ def main():
     def on_scheduled_clean_done(info):
         main_win.refresh_history_table()
         monitor_hub.force_refresh()
-        if config_mgr.get("show_notifications", True):
+        if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
             tray_mgr.notify(
                 "Tự Động Dọn Dẹp Định Kỳ",
-                f"Hệ thống đã tự động giải phóng {info['junk_freed_mb']:.1f} MB rác và {info['ram_freed_mb']:.1f} MB RAM."
+                f"Hệ thống đã tự động giải phóng {info['junk_freed_mb']:.1f} MB rác và {info['ram_freed_mb']:.1f} MB RAM.",
+                level="success",
+                icon="🗑️",
+                action_text="📊 Xem Nhật Ký",
+                action_callback=lambda: (force_activate_window(main_win), main_win.tabs.setCurrentIndex(1))
             )
 
     def on_ram_threshold_boost_done(info):
         main_win.refresh_history_table()
         monitor_hub.force_refresh()
-        if config_mgr.get("show_notifications", True):
+        if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
             tray_mgr.notify(
-                "Tự Động Giải Phóng RAM Quá Tải",
-                f"Phát hiện RAM cao. Đã tự động thu hồi {info['freed_mb']:.1f} MB RAM để máy chạy mượt hơn."
+                "⚡ Tự Động Thu Hồi RAM Quá Tải",
+                f"Phát hiện RAM cao. Đã tự động thu hồi {info['freed_mb']:.1f} MB RAM để máy chạy mượt hơn.",
+                level="warning",
+                icon="⚡",
+                action_text="📈 Bảng Điều Khiển",
+                action_callback=lambda: (force_activate_window(main_win), main_win.tabs.setCurrentIndex(0))
             )
 
     def on_auto_network_optimized(info):
         main_win.lbl_status.setText(f"🌐 {info.get('message', 'Đã tự động tối ưu mạng')}")
-        if config_mgr.get("show_notifications", True):
+        if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
             tray_mgr.notify(
                 "Tự Động Tối Ưu Mạng",
-                info.get("message", "Đã tự động dọn sạch DNS và làm mới TCP stack khi phát hiện độ trễ cao.")
+                info.get("message", "Đã tự động dọn sạch DNS và làm mới TCP stack khi phát hiện độ trễ cao."),
+                level="info",
+                icon="🌐",
+                action_text="📶 Xem Mạng",
+                action_callback=main_win.open_network_dialog
             )
 
     scheduler.clean_completed.connect(on_scheduled_clean_done)
@@ -253,10 +277,12 @@ def main():
             else:
                 main_win.lbl_dns_status.setText(f"⚠️ {msg}")
                 main_win.lbl_dns_status.setStyleSheet("color: #f87171; font-size: 11px;")
-        if config_mgr.get("show_notifications", True) and info.get("success"):
+        if (config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True)) and info.get("success"):
             tray_mgr.notify(
                 "🌐 Đã Tự Động Chuyển DNS Tốt Nhất",
-                msg
+                msg,
+                level="success",
+                icon="🌐"
             )
 
     scheduler.dns_switched.connect(on_auto_dns_switched)
@@ -271,11 +297,15 @@ def main():
         if info.get("results") and hasattr(main_win, "update_security_tab_result"):
             main_win.update_security_tab_result(info)
         # Chỉ thông báo khi phát hiện vấn đề
-        if config_mgr.get("show_notifications", True) and (critical_count > 0 or warning_count > 0):
+        if (config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True)) and (critical_count > 0 or warning_count > 0):
             icon_map = {"CRITICAL": "🔴", "WARNING": "🟡", "SAFE": "🟢"}
             tray_mgr.notify(
                 f"{icon_map.get(overall, '🔒')} Cảnh Báo Bảo Mật",
-                msg
+                msg,
+                level="danger" if critical_count > 0 else "warning",
+                icon="🛡️",
+                action_text="🛡️ Xem Rà Soát",
+                action_callback=lambda: (force_activate_window(main_win), main_win.tabs.setCurrentIndex(4))
             )
 
     scheduler.security_scan_completed.connect(on_auto_security_scan_done)

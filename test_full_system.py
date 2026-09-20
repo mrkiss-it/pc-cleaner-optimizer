@@ -671,7 +671,100 @@ assert wizard.lbl_preserve_badge is not None, "Badge bao luu phai duoc khoi tao"
 
 print(" [PASS] 41. Settings Persistence: Deep Merge cau hinh, Window Geometry/Tab Memory & Real-time Auto-saving hoat dong hoan hao 100%!")
 
-print("\n>>> TAT CA 41 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI & SETTINGS PERSISTENCE DEU THANH CONG 100%! <<<")
+# 42. Test On-Screen HUD Toast Notification System (ToastNotification, ToastManager, Stacking & Actions)
+from PyQt5.QtCore import Qt
+from ui.toast_notification import (
+    ToastNotification, ToastManager,
+    LEVEL_INFO, LEVEL_SUCCESS, LEVEL_WARNING, LEVEL_DANGER, _LEVEL_CONFIG
+)
+
+# A. Test Level Configuration
+for lvl in (LEVEL_INFO, LEVEL_SUCCESS, LEVEL_WARNING, LEVEL_DANGER):
+    assert lvl in _LEVEL_CONFIG, f"Level {lvl} phai ton tai trong _LEVEL_CONFIG"
+    assert "border" in _LEVEL_CONFIG[lvl] and "btn_bg" in _LEVEL_CONFIG[lvl]
+
+# B. Test ToastNotification UI & Action callback
+toast_action_fired = []
+def mock_toast_action():
+    toast_action_fired.append(True)
+
+toast = ToastNotification(
+    title="Test Toast Title",
+    message="This is a test notification message",
+    level=LEVEL_WARNING,
+    icon_str="⚡",
+    action_text="Thu Hồi RAM",
+    action_callback=mock_toast_action,
+    duration_ms=3000
+)
+assert toast.windowFlags() & Qt.FramelessWindowHint, "Toast phai la Frameless"
+assert toast.windowFlags() & Qt.WindowStaysOnTopHint, "Toast phai StaysOnTop"
+assert toast.windowFlags() & Qt.WindowDoesNotAcceptFocus, "Toast khong duoc chiem keyboard focus"
+assert toast.btn_action is not None, "Toast phai co action button"
+assert toast.btn_action.text() == "Thu Hồi RAM", "Action text phai khop"
+
+# Trigger action
+toast._on_action_clicked()
+assert len(toast_action_fired) == 1, "Action callback phai duoc kich hoat khi click action"
+
+# Test hover pause and resume
+toast.enterEvent(None)
+assert toast.is_paused is True, "is_paused phai la True khi hover vao"
+toast.leaveEvent(None)
+assert toast.is_paused is False, "is_paused phai la False khi roi chuot ra"
+
+toast.dismiss()
+
+# C. Test ToastManager Singleton & Stacking
+mgr = ToastManager.get_instance()
+assert mgr is not None, "ToastManager phai la singleton instance hop le"
+
+# Call static API show_toast
+ToastManager.show_toast(
+    title="Static Toast Test",
+    message="Message content",
+    level=LEVEL_SUCCESS,
+    icon="✅",
+    action_text="Action Test",
+    action_callback=None,
+    duration_ms=2500,
+    play_sound=False
+)
+QApplication.processEvents()
+assert len(mgr.active_toasts) > 0, "Toast phai duoc them vao danh sach active_toasts cua ToastManager"
+
+# Clean up active toasts
+for t in list(mgr.active_toasts):
+    t.dismiss()
+QApplication.processEvents()
+
+# D. Test MainWindow Toast Controls & Auto-save
+assert hasattr(win, "chk_instant_screen_notif"), "MainWindow phai co chk_instant_screen_notif"
+assert hasattr(win, "chk_notif_sound"), "MainWindow phai co chk_notif_sound"
+assert hasattr(win, "btn_test_toast"), "MainWindow phai co btn_test_toast"
+assert hasattr(win, "_test_screen_toast"), "MainWindow phai co phuong thuc _test_screen_toast"
+
+# Test toggle and auto-save
+win.chk_instant_screen_notif.setChecked(True)
+win.chk_notif_sound.setChecked(True)
+win._auto_save_automation_settings()
+assert cfg.get("instant_screen_notifications_enabled") is True, "Config phai luu instant_screen_notifications_enabled = True"
+assert cfg.get("notification_sound_enabled") is True, "Config phai luu notification_sound_enabled = True"
+
+# Test trigger test toast from UI
+win._test_screen_toast()
+QApplication.processEvents()
+assert len(mgr.active_toasts) > 0, "Nhan nut thu thong bao phai tao thanh cong toast tren man hinh"
+
+# Clean up
+for t in list(mgr.active_toasts):
+    t.dismiss()
+QApplication.processEvents()
+
+print(" [PASS] 42. On-Screen HUD Toast Notifications: Floating Acrylic Frame, Animated Stacking, Hover Pause, 1-Click Action & Config Integration hoat dong xuat sac 100%!")
+
+print("\n>>> TAT CA 42 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE & HUD TOAST NOTIFICATIONS DEU THANH CONG 100%! <<<")
+
 
 
 

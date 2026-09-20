@@ -7,6 +7,9 @@
     "run_on_startup": false,
     "minimize_to_tray_on_close": true,
     "show_notifications": true,
+    "instant_screen_notifications_enabled": true,
+    "notification_sound_enabled": false,
+    "notification_duration_ms": 4500,
     "targets": {
         "user_temp": true,
         "system_temp": true,
@@ -38,7 +41,7 @@
         "critical_count": 0,
         "warning_count": 0,
         "ok_count": 11,
-        "timestamp": "20/09/2026 09:15:38"
+        "timestamp": "20/09/2026 09:30:00"
     },
     "window_geometry": {
         "x": 120,
@@ -63,13 +66,28 @@
             "ts": 1789870424.9257693,
             "free_gb": 52.67,
             "total_gb": 274.39
+        },
+        {
+            "ts": 1789871258.7789707,
+            "free_gb": 52.66,
+            "total_gb": 274.39
+        },
+        {
+            "ts": 1789871338.6274335,
+            "free_gb": 52.72,
+            "total_gb": 274.39
+        },
+        {
+            "ts": 1789871411.3654478,
+            "free_gb": 52.63,
+            "total_gb": 274.39
         }
     ],
     "predictive_habits_profile": {
         "morning": {
-            "cpu_sum": 2800.0,
-            "ram_sum": 5800.0,
-            "samples": 65,
+            "cpu_sum": 5040.0,
+            "ram_sum": 10440.0,
+            "samples": 117,
             "gaming_hits": 0
         },
         "afternoon": {

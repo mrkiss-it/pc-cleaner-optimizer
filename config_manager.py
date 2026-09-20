@@ -13,6 +13,9 @@ DEFAULT_CONFIG = {
     "run_on_startup": False,
     "minimize_to_tray_on_close": True,
     "show_notifications": True,
+    "instant_screen_notifications_enabled": True,
+    "notification_sound_enabled": False,
+    "notification_duration_ms": 4500,
     "targets": {
         "user_temp": True,
         "system_temp": True,

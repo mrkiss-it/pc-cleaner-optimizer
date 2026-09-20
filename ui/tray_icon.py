@@ -1,3 +1,4 @@
+from typing import Optional, Callable
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor, QBrush, QPen
 from PyQt5.QtWidgets import QSystemTrayIcon, QMenu, QAction
@@ -12,8 +13,9 @@ class SystemTrayManager(QSystemTrayIcon):
     toggle_floating_widget_requested = pyqtSignal()
     exit_requested = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config_manager=None):
         super().__init__(parent)
+        self.config_manager = config_manager
         self.setIcon(self.create_default_icon())
         self.setToolTip("PC Auto Cleaner & RAM Optimizer\nĐang chạy ngầm bảo vệ hệ thống")
 
@@ -121,12 +123,54 @@ class SystemTrayManager(QSystemTrayIcon):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self.toggle_window_requested.emit()
 
-    def notify(self, title: str, message: str, is_warning: bool = False):
+    def notify(
+        self,
+        title: str,
+        message: str,
+        is_warning: bool = False,
+        level: str = "info",
+        icon: Optional[str] = None,
+        action_text: Optional[str] = None,
+        action_callback: Optional[Callable] = None,
+        duration_ms: int = 4500
+    ):
         """
-        Hiển thị thông báo Windows Balloon
+        Phát thông báo đa phương thức:
+        1. On-Screen HUD Toast banner nổi trực tiếp trên màn hình desktop.
+        2. Windows Tray Balloon tiêu chuẩn nếu được cấu hình.
         """
-        icon = QSystemTrayIcon.Warning if is_warning else QSystemTrayIcon.Information
-        self.showMessage(title, message, icon, 4000)
+        cfg = self.config_manager
+        screen_enabled = True
+        sound_enabled = False
+        tray_enabled = True
+        if cfg:
+            screen_enabled = cfg.get("instant_screen_notifications_enabled", True)
+            sound_enabled = cfg.get("notification_sound_enabled", False)
+            tray_enabled = cfg.get("show_notifications", True)
+
+        actual_level = "warning" if is_warning and level == "info" else level
+
+        # 1. On-Screen Instant HUD Toast
+        if screen_enabled:
+            try:
+                from ui.toast_notification import ToastManager
+                ToastManager.show_toast(
+                    title=title,
+                    message=message,
+                    level=actual_level,
+                    icon=icon,
+                    action_text=action_text,
+                    action_callback=action_callback,
+                    duration_ms=duration_ms,
+                    play_sound=sound_enabled
+                )
+            except Exception as e:
+                print(f"[SystemTrayManager] Không thể hiển thị Toast: {e}")
+
+        # 2. Windows Tray Balloon
+        if tray_enabled:
+            tray_icon = QSystemTrayIcon.Warning if (is_warning or actual_level in ("warning", "danger")) else QSystemTrayIcon.Information
+            self.showMessage(title, message, tray_icon, duration_ms)
 
     def update_tooltip(self, ram_pct: float, cpu_pct: float, net_str: str = ""):
         tip = f"PC Auto Cleaner & RAM Optimizer\nRAM: {ram_pct:.1f}% | CPU: {cpu_pct:.1f}%"

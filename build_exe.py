@@ -67,6 +67,7 @@ def build():
         "--hidden-import=ui.service_context_dialog",
         "--hidden-import=ui.uninstaller_dialog",
         "--hidden-import=ui.winsxs_dialog",
+        "--hidden-import=ui.toast_notification",
         main_script
     ]
 

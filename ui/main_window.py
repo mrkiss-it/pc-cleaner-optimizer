@@ -109,6 +109,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config_manager = config_manager
         self.tray_manager = tray_manager
+        if self.tray_manager and hasattr(self.tray_manager, "config_manager"):
+            self.tray_manager.config_manager = self.config_manager
         self.monitor_hub = monitor_hub
         self.worker = None
         self.first_minimize_notified = False
@@ -692,15 +694,27 @@ class MainWindow(QMainWindow):
 
         self.chk_startup = QCheckBox("Tự động khởi động cùng Windows (Run on Windows Startup)")
         self.chk_minimize_tray = QCheckBox("Thu nhỏ xuống khay hệ thống khi bấm nút đóng [X] (Không tắt ứng dụng)")
-        self.chk_notifications = QCheckBox("Hiển thị thông báo Windows sau khi dọn dẹp ngầm thành công")
+        self.chk_instant_screen_notif = QCheckBox("🔔 Hiển thị thông báo tức thì trên màn hình (On-Screen HUD Toast – Nổi trên mọi cửa sổ/game)")
+        self.chk_notif_sound = QCheckBox("🔊 Phát âm thanh chuông nhẹ khi có sự kiện cảnh báo hệ thống")
+        self.chk_notifications = QCheckBox("Hiển thị thông báo Windows khay hệ thống (Tray Balloon)")
         self.chk_floating_widget = QCheckBox("Hiển thị Widget mini nổi trên màn hình Desktop (Kéo thả & Tối ưu RAM nhanh)")
         self.chk_leak_detection = QCheckBox("Bật phát hiện rò rỉ bộ nhớ RAM (Memory Leak Detection – giám sát mỗi 30 giây)")
 
         layout_system.addWidget(self.chk_startup)
         layout_system.addWidget(self.chk_minimize_tray)
+        layout_system.addWidget(self.chk_instant_screen_notif)
+        layout_system.addWidget(self.chk_notif_sound)
         layout_system.addWidget(self.chk_notifications)
         layout_system.addWidget(self.chk_floating_widget)
         layout_system.addWidget(self.chk_leak_detection)
+
+        # Nút Thử Thông Báo Màn Hình
+        self.btn_test_toast = QPushButton("🔔 Thử Ngay Thông Báo Màn Hình (Test HUD Toast)")
+        self.btn_test_toast.setProperty("class", "btn-secondary")
+        self.btn_test_toast.setCursor(Qt.PointingHandCursor)
+        self.btn_test_toast.setStyleSheet("padding: 7px 14px; font-size: 11px; margin-top: 4px; font-weight: 600;")
+        self.btn_test_toast.clicked.connect(self._test_screen_toast)
+        layout_system.addWidget(self.btn_test_toast)
 
         # Widget Opacity Setting
         row_opacity = QHBoxLayout()
@@ -741,6 +755,8 @@ class MainWindow(QMainWindow):
         self.combo_sec_interval.currentIndexChanged.connect(self._auto_save_automation_settings)
         self.chk_startup.toggled.connect(self._auto_save_automation_settings)
         self.chk_minimize_tray.toggled.connect(self._auto_save_automation_settings)
+        self.chk_instant_screen_notif.toggled.connect(self._auto_save_automation_settings)
+        self.chk_notif_sound.toggled.connect(self._auto_save_automation_settings)
         self.chk_notifications.toggled.connect(self._auto_save_automation_settings)
         self.chk_floating_widget.toggled.connect(self._auto_save_automation_settings)
         self.chk_leak_detection.toggled.connect(self._auto_save_automation_settings)
@@ -832,6 +848,8 @@ class MainWindow(QMainWindow):
             self.spin_ram_threshold.setValue(cfg.get("ram_threshold_percent", 80))
             self.chk_minimize_tray.setChecked(cfg.get("minimize_to_tray_on_close", True))
             self.chk_notifications.setChecked(cfg.get("show_notifications", True))
+            self.chk_instant_screen_notif.setChecked(cfg.get("instant_screen_notifications_enabled", True))
+            self.chk_notif_sound.setChecked(cfg.get("notification_sound_enabled", False))
             self.chk_floating_widget.setChecked(cfg.get("floating_widget_enabled", True))
             self.chk_leak_detection.setChecked(cfg.get("memory_leak_detection_enabled", True))
             self.chk_auto_net.setChecked(cfg.get("auto_network_optimize_enabled", True))
@@ -893,6 +911,8 @@ class MainWindow(QMainWindow):
         self.config_manager.set("auto_security_scan_interval_hours", sec_interval_h)
         self.config_manager.set("minimize_to_tray_on_close", self.chk_minimize_tray.isChecked())
         self.config_manager.set("show_notifications", self.chk_notifications.isChecked())
+        self.config_manager.set("instant_screen_notifications_enabled", self.chk_instant_screen_notif.isChecked())
+        self.config_manager.set("notification_sound_enabled", self.chk_notif_sound.isChecked())
 
         fw_enabled = self.chk_floating_widget.isChecked()
         self.config_manager.set("floating_widget_enabled", fw_enabled)
@@ -904,6 +924,24 @@ class MainWindow(QMainWindow):
         startup_enabled = self.chk_startup.isChecked()
         StartupManager.set_startup(startup_enabled)
         self.config_manager.set("run_on_startup", startup_enabled)
+
+    def _test_screen_toast(self):
+        """Kích hoạt thông báo mẫu kiểm tra giao diện HUD Toast trên màn hình desktop."""
+        from ui.toast_notification import ToastManager, LEVEL_SUCCESS
+        ToastManager.show_toast(
+            title="PC Auto Cleaner & Optimizer",
+            message="Hệ thống thông báo tức thì đã sẵn sàng! Hiển thị nổi bật trên mọi cửa sổ & game.",
+            level=LEVEL_SUCCESS,
+            icon="🚀",
+            action_text="⚡ Tối Ưu RAM Ngay",
+            action_callback=self.optimize_ram_only,
+            duration_ms=4500,
+            play_sound=self.chk_notif_sound.isChecked()
+        )
+
+    def optimize_ram(self):
+        """Phương thức tiện ích gọi tối ưu RAM."""
+        return self.optimize_ram_only()
 
     def save_automation_settings(self):
         self._auto_save_automation_settings()
@@ -1191,8 +1229,15 @@ class MainWindow(QMainWindow):
             )
             self.lbl_status.setText(f"Đã giải phóng: {freed_junk_mb:.1f} MB rác và {freed_ram_mb:.1f} MB RAM")
             
-            if self.tray_manager and self.config_manager.get("show_notifications", True):
-                self.tray_manager.notify("PC Cleaner: Hoàn tất dọn dẹp", f"Đã giải phóng {freed_junk_mb:.1f} MB rác và {freed_ram_mb:.1f} MB RAM!")
+            if self.tray_manager and (self.config_manager.get("show_notifications", True) or self.config_manager.get("instant_screen_notifications_enabled", True)):
+                self.tray_manager.notify(
+                    "PC Cleaner: Hoàn Tất Dọn Dẹp",
+                    f"Đã giải phóng {freed_junk_mb:.1f} MB rác và {freed_ram_mb:.1f} MB RAM!",
+                    level="success",
+                    icon="🗑️",
+                    action_text="📊 Xem Nhật Ký",
+                    action_callback=lambda: self.tabs.setCurrentIndex(1)
+                )
             
             QMessageBox.information(self, "Thành Công", msg)
 
@@ -1346,10 +1391,14 @@ class MainWindow(QMainWindow):
             f"• Tăng liên tục: +{growth:.1f} MB trong {info.get('window_checks', 4)} lần kiểm tra\n\n"
             f"Gợi ý: Hãy vào tab 'Tiến Trình & Game Boost' để thu hồi hoặc khởi động lại tiến trình này."
         )
-        if self.tray_manager and self.config_manager.get("show_notifications", True):
+        if self.tray_manager and (self.config_manager.get("show_notifications", True) or self.config_manager.get("instant_screen_notifications_enabled", True)):
             self.tray_manager.notify(
-                f"⚠️ Cảnh Báo Rò Rỉ Bộ Nhớ",
-                f"{name} tăng liên tục +{growth:.1f} MB RAM. Click để xem chi tiết."
+                "⚠️ Cảnh Báo Rò Rỉ Bộ Nhớ",
+                f"{name} tăng liên tục +{growth:.1f} MB RAM.",
+                level="warning",
+                icon="⚠️",
+                action_text="📈 Xem Tiến Trình",
+                action_callback=lambda: self.tabs.setCurrentIndex(0)
             )
         self.lbl_status.setText(f"⚠️ Rò rỉ bộ nhớ: {name} tăng +{growth:.1f} MB")
 
@@ -1620,7 +1669,12 @@ class MainWindow(QMainWindow):
                 """)
             self.lbl_status.setText(f"Đã tắt Game Boost: Khôi phục {res.get('restored_count', 0)} tiến trình.")
             if self.tray_manager:
-                self.tray_manager.notify("Game Boost Đã Tắt", "Hệ thống đã khôi phục về trạng thái bình thường.")
+                self.tray_manager.notify(
+                    "Game Boost Đã Tắt",
+                    "Hệ thống đã khôi phục về trạng thái bình thường.",
+                    level="info",
+                    icon="🛑"
+                )
         else:
             whitelist = self.config_manager.get_whitelist_set()
             res = GameBooster.enable_game_boost(whitelist=whitelist)
@@ -1640,7 +1694,14 @@ class MainWindow(QMainWindow):
                 """)
             self.lbl_status.setText(f"🎮 Game Boost đã bật! Đã giải phóng {freed:.1f} MB RAM & tối ưu TCP mạng.")
             if self.tray_manager:
-                self.tray_manager.notify("🎮 Game Boost Đã Bật", f"Đã dồn 100% tài nguyên và giải phóng {freed:.1f} MB RAM & tối ưu mạng cho Gaming!")
+                self.tray_manager.notify(
+                    "🎮 Game Boost Đã Bật",
+                    f"Đã dồn 100% tài nguyên và giải phóng {freed:.1f} MB RAM & tối ưu mạng cho Gaming!",
+                    level="success",
+                    icon="🎮",
+                    action_text="🎮 Bảng Tăng Tốc",
+                    action_callback=lambda: self.tabs.setCurrentIndex(0)
+                )
 
             # Tự động tối ưu hóa mạng cho Gaming (giảm ping & jitter)
             try:
