@@ -196,10 +196,11 @@ class ChatBubbleWidget(QFrame):
 
         outer_lay.addLayout(hdr_lay)
 
-        # Message Content
+        # Message Content (PlainText: Gemini/HTML must not be interpreted as Qt rich text)
         lbl_content = QLabel(self.message.content)
         lbl_content.setFont(QFont("Segoe UI", 9))
         lbl_content.setWordWrap(True)
+        lbl_content.setTextFormat(Qt.PlainText)
         lbl_content.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lbl_content.setStyleSheet(f"color: {_TEXT_PRIMARY}; background: transparent; border: none; line-height: 1.4;")
         outer_lay.addWidget(lbl_content)

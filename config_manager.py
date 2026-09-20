@@ -47,6 +47,7 @@ DEFAULT_CONFIG = {
     "last_active_tab": 0,
     "ai_copilot_cloud_enabled": False,
     "ai_copilot_gemini_api_key": "",
+    "ai_copilot_gemini_model": "gemini-2.5-flash",
     "ai_autopilot_enabled": True,
     "ai_autopilot_mode": "auto"
 }

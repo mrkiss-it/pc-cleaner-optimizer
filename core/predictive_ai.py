@@ -419,9 +419,12 @@ class HabitLearner:
     Sáng, Chiều, Tối, Đêm. Tự động nhận diện nhu cầu làm việc hay chơi game.
     """
 
+    _SAVE_INTERVAL_SEC = 30.0  # avoid rewriting config.json on every 800ms poll
+
     def __init__(self, config_manager: Optional[Any] = None):
         self.config_manager = config_manager
         self._profiles: Dict[str, Dict[str, Any]] = self._load_profiles()
+        self._last_save_ts: float = 0.0
 
     def _load_profiles(self) -> Dict[str, Dict[str, Any]]:
         default_profiles = {
@@ -473,7 +476,10 @@ class HabitLearner:
             data["samples"] = int(data["samples"] / 2)
             data["gaming_hits"] = int(data["gaming_hits"] / 2)
 
-        self._save_profiles()
+        now = time.time()
+        if now - self._last_save_ts >= self._SAVE_INTERVAL_SEC:
+            self._save_profiles()
+            self._last_save_ts = now
 
     def analyze_current_habit(
         self,

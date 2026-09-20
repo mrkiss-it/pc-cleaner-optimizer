@@ -768,8 +768,8 @@ print(" [PASS] 42. On-Screen HUD Toast Notifications: Floating Acrylic Frame, An
 # ==============================================================================
 print("\n[TEST 43] Kiem tra AI Copilot & AI Health Score (0-100) & Auto-Pilot Engine...")
 
-from core.ai_copilot import AICopilotEngine, ChatMessage, CopilotAction, TelemetryCollector, OfflineExpertBrain
-from core.predictive_ai import AIHealthReport, AutoPilotState, MODE_GAMING, MODE_ECO, MODE_WORK, MODE_BALANCED
+from core.ai_copilot import AICopilotEngine, ChatMessage, CopilotAction, TelemetryCollector, OfflineExpertBrain, CloudAIBrain
+from core.predictive_ai import AIHealthReport, AutoPilotState, MODE_GAMING, MODE_ECO, MODE_WORK, MODE_BALANCED, HabitLearner
 from ui.ai_copilot_widget import AICopilotWidget, ChatBubbleWidget
 from ui.ai_advisor_dialog import AIAdvisorDialog
 
@@ -855,6 +855,49 @@ assert hasattr(adv_dlg._dashboard, "lbl_health_score"), "Dashboard phai co lbl_h
 adv_dlg._set_filter("COPILOT", adv_dlg._tab_btns["COPILOT"])
 assert not adv_dlg._copilot_widget.isHidden(), "Chuyen sang tab COPILOT thi _copilot_widget phai khong bi an"
 assert adv_dlg._scroll.isHidden(), "Chuyen sang tab COPILOT thi _scroll phai an"
+
+# F. Dashboard Auto-Pilot card must use AutoPilotState.label/description (not missing attrs)
+adv_dlg._set_filter(None, adv_dlg._tab_btns[None])
+adv_dlg._dashboard.update_data()
+KNOWN_AUTOPILOT_LABELS = {
+    "Chế Độ Game Thần Tốc (Game Boost)",
+    "Chế Độ Tiết Kiệm Pin Cơ Động (Eco Saver)",
+    "Chế Độ Làm Việc & Sáng Tạo (Workstation)",
+    "Chế Độ Ban Đêm Tĩnh Lặng (Quiet Night)",
+    "Chế Độ Cân Bằng Thông Minh (Balanced)",
+}
+assert adv_dlg._dashboard.lbl_habit_mode.text() in KNOWN_AUTOPILOT_LABELS, (
+    f"The Auto-Pilot card phai hien thi AutoPilotState.label, nhan duoc: "
+    f"{adv_dlg._dashboard.lbl_habit_mode.text()!r}"
+)
+
+# G. Habit learner must not rewrite config.json on every 800ms sample
+class _SaveCounter:
+    def __init__(self):
+        self.saves = 0
+        self.store = {}
+    def get(self, key, default=None):
+        return self.store.get(key, default)
+    def set(self, key, value):
+        self.store[key] = value
+        self.saves += 1
+
+save_cfg = _SaveCounter()
+habit_throttled = HabitLearner(config_manager=save_cfg)
+habit_throttled.feed_sample(10.0, 20.0)
+assert save_cfg.saves == 1, "Lan ghi dau tien sau khoi tao phai duoc luu"
+habit_throttled.feed_sample(12.0, 22.0)
+habit_throttled.feed_sample(8.0, 18.0)
+assert save_cfg.saves == 1, "Khong duoc ghi config.json lai o moi mau 800ms"
+
+# H. Cloud Gemini: model 1.5 da ngung, API key khong nam trong URL
+import inspect
+gemini_src = inspect.getsource(CloudAIBrain.query_gemini)
+assert 'model: str = "gemini-2.5-flash"' in gemini_src or 'models/{model}:generateContent' in gemini_src
+assert "models/gemini-1.5" not in gemini_src, "Khong duoc goi model Gemini 1.5 da shut down"
+assert "gemini-2.5-flash" in gemini_src, "Phai dung gemini-2.5-flash (hoac model cau hinh tuong duong)"
+assert "?key=" not in gemini_src, "API key khong duoc gan vao query string"
+assert "x-goog-api-key" in gemini_src, "API key phai gui qua header x-goog-api-key"
 
 adv_dlg.close()
 
