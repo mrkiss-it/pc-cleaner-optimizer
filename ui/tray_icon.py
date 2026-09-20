@@ -11,6 +11,7 @@ class SystemTrayManager(QSystemTrayIcon):
     game_boost_requested = pyqtSignal()
     toggle_window_requested = pyqtSignal()
     toggle_floating_widget_requested = pyqtSignal()
+    check_updates_requested = pyqtSignal()
     exit_requested = pyqtSignal()
 
     def __init__(self, parent=None, config_manager=None):
@@ -109,6 +110,12 @@ class SystemTrayManager(QSystemTrayIcon):
         action_net = QAction("🌐 Tối Ưu Mạng (Flush DNS)", self)
         action_net.triggered.connect(self.network_optimize_requested.emit)
         menu.addAction(action_net)
+
+        menu.addSeparator()
+
+        action_updates = QAction("🔄 Kiểm Tra Cập Nhật", self)
+        action_updates.triggered.connect(self.check_updates_requested.emit)
+        menu.addAction(action_updates)
 
         menu.addSeparator()
 

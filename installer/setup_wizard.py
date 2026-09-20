@@ -35,9 +35,15 @@ _SUCCESS     = "#3fb950"
 _WARNING     = "#d29922"
 _DANGER      = "#f85149"
 
-APP_NAME = "PC Auto Cleaner & Optimizer"
-APP_VERSION = "3.7.0"
-APP_PUBLISHER = "PC Cleaner Team"
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+try:
+    from app_meta import APP_NAME, APP_VERSION, APP_PUBLISHER
+except ImportError:
+    APP_NAME = "PC Auto Cleaner & Optimizer"
+    APP_VERSION = "3.7.0"
+    APP_PUBLISHER = "PC Cleaner Team"
 
 
 # ---------------------------------------------------------------------------

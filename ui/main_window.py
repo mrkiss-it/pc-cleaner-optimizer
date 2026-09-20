@@ -1,4 +1,5 @@
 import os
+import webbrowser
 from datetime import datetime
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QFont, QColor
@@ -31,6 +32,14 @@ from ui.uninstaller_dialog import UninstallerDialog
 from ui.winsxs_dialog import WinSxSDialog
 from core.ai_advisor import AIAdvisor
 from core.system_tweaker import SystemTweaker
+from app_meta import APP_VERSION
+from core.update_checker import (
+    UpdateCheckResult,
+    apply_cache_to_config,
+    cache_from_config,
+    check_for_update,
+    current_app_version,
+)
 
 
 # Worker Thread for Background Scan & Clean to keep GUI completely smooth
@@ -101,6 +110,38 @@ class ApplyBestDnsWorker(QThread):
             })
 
 
+class UpdateCheckWorker(QThread):
+    """Gọi GitHub Releases API ngoài UI thread. Kết quả: (UpdateCheckResult, cache_dict)."""
+    finished = pyqtSignal(object, object)
+
+    def __init__(self, config_snapshot: dict, force: bool = False, parent=None):
+        super().__init__(parent)
+        self._config = dict(config_snapshot or {})
+        self._force = bool(force)
+
+    def run(self):
+        cache = cache_from_config(self._config)
+        try:
+            ttl_h = float(self._config.get("update_check_interval_hours") or 6)
+            result = check_for_update(
+                config=self._config,
+                cache=cache,
+                force=self._force,
+                ttl_sec=max(0.0, ttl_h) * 3600.0,
+            )
+            self.finished.emit(result, cache)
+        except Exception:
+            self.finished.emit(
+                UpdateCheckResult(
+                    ok=False,
+                    update_available=False,
+                    current_version=current_app_version(),
+                    quiet_failure=True,
+                ),
+                cache,
+            )
+
+
 class MainWindow(QMainWindow):
     floating_widget_toggled = pyqtSignal(bool)
     floating_widget_opacity_changed = pyqtSignal(int)
@@ -116,6 +157,11 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.first_minimize_notified = False
         self.system_tweaker = SystemTweaker()
+        self._update_worker = None
+        self._pending_update = None
+        self._update_toast_tag = ""
+        self._update_check_interactive = False
+        self._update_periodic_timer = None
 
         # AI Advisor – khởi tạo rule engine
         self._ai_advisor = AIAdvisor(
@@ -191,6 +237,9 @@ class MainWindow(QMainWindow):
         # 1. Top Header Bar
         main_layout.addLayout(self.create_header())
 
+        # Banner bản GitHub Release mới (ẩn khi chưa có)
+        main_layout.addWidget(self._create_update_banner())
+
         # 2. Main Tab Widget
         self.tabs = QTabWidget()
         self.tab_dashboard = QWidget()
@@ -249,7 +298,9 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         lbl_app_title = QLabel("PC AUTO CLEANER & OPTIMIZER")
         lbl_app_title.setStyleSheet("color: #f8fafc; font-size: 18px; font-weight: 800; letter-spacing: 0.5px;")
-        lbl_app_sub = QLabel("Tự động dọn rác, giải phóng RAM và duy trì tốc độ tối đa cho Windows")
+        lbl_app_sub = QLabel(
+            f"Tự động dọn rác, giải phóng RAM và duy trì tốc độ tối đa cho Windows  •  v{current_app_version(APP_VERSION)}"
+        )
         lbl_app_sub.setStyleSheet("color: #94a3b8; font-size: 12px;")
         title_box.addWidget(lbl_app_title)
         title_box.addWidget(lbl_app_sub)
@@ -270,6 +321,46 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         layout.addWidget(self.badge_status)
         return layout
+
+    def _create_update_banner(self) -> QFrame:
+        """Thanh thông báo bản mới + nút Cập nhật (user-initiated)."""
+        banner = QFrame()
+        banner.setObjectName("UpdateBanner")
+        banner.setVisible(False)
+        banner.setStyleSheet("""
+            QFrame#UpdateBanner {
+                background-color: #0c4a6e;
+                border: 1px solid #0284c7;
+                border-radius: 10px;
+            }
+        """)
+        row = QHBoxLayout(banner)
+        row.setContentsMargins(14, 10, 14, 10)
+        row.setSpacing(12)
+
+        self.lbl_update_banner = QLabel("Có bản mới trên GitHub.")
+        self.lbl_update_banner.setWordWrap(True)
+        self.lbl_update_banner.setStyleSheet("color: #e0f2fe; font-size: 12px;")
+
+        self.btn_update_banner = QPushButton("Cập nhật")
+        self.btn_update_banner.setCursor(Qt.PointingHandCursor)
+        self.btn_update_banner.setProperty("class", "btn-success")
+        self.btn_update_banner.setStyleSheet(
+            "padding: 8px 18px; font-size: 13px; font-weight: 700; min-width: 110px;"
+        )
+        self.btn_update_banner.clicked.connect(self.open_available_update)
+
+        btn_dismiss = QPushButton("Đóng")
+        btn_dismiss.setCursor(Qt.PointingHandCursor)
+        btn_dismiss.setProperty("class", "btn-secondary")
+        btn_dismiss.setStyleSheet("padding: 8px 14px; font-size: 12px;")
+        btn_dismiss.clicked.connect(self._dismiss_update_banner)
+
+        row.addWidget(self.lbl_update_banner, stretch=1)
+        row.addWidget(self.btn_update_banner)
+        row.addWidget(btn_dismiss)
+        self.update_banner = banner
+        return banner
 
     def init_tab_dashboard(self):
         layout = QVBoxLayout(self.tab_dashboard)
@@ -793,6 +884,66 @@ class MainWindow(QMainWindow):
         layout_system.addWidget(self.btn_create_desktop_shortcut)
 
         layout.addWidget(card_system)
+
+        # Card: Kiểm tra cập nhật GitHub Releases
+        card_update = QFrame()
+        card_update.setObjectName("SettingCard")
+        card_update.setStyleSheet(card_style)
+        layout_upd = QVBoxLayout(card_update)
+        layout_upd.setContentsMargins(18, 16, 18, 16)
+        layout_upd.setSpacing(10)
+
+        lbl_upd_title = QLabel("🔄 Cập Nhật Phần Mềm (GitHub Releases)")
+        lbl_upd_title.setStyleSheet("font-weight: bold; font-size: 14px; color: #38bdf8;")
+        self.lbl_app_version_settings = QLabel(
+            f"Phiên bản đang chạy: v{current_app_version(APP_VERSION)}"
+        )
+        self.lbl_app_version_settings.setStyleSheet("color: #94a3b8; font-size: 12px;")
+
+        self.chk_check_updates = QCheckBox(
+            "Tự động kiểm tra bản mới khi khởi động và định kỳ (không tự cài)"
+        )
+        self.chk_check_updates.setStyleSheet("font-weight: bold; font-size: 13px;")
+        self.chk_check_updates.setChecked(
+            self.config_manager.get("check_for_updates_enabled", True)
+        )
+
+        lbl_upd_desc = QLabel(
+            "Ứng dụng hỏi GitHub Releases của mrkiss-it/pc-cleaner-optimizer (có thể đổi owner/repo trong config). "
+            "Nếu có bản mới, hiện nút Cập nhật để bạn tự tải PCAutoCleaner_Setup.exe hoặc mở trang Releases. "
+            "Không ghi đè file đang chạy."
+        )
+        lbl_upd_desc.setWordWrap(True)
+        lbl_upd_desc.setStyleSheet("color: #64748b; font-size: 11px;")
+
+        row_upd_btns = QHBoxLayout()
+        self.btn_check_updates = QPushButton("🔍 Kiểm Tra Cập Nhật")
+        self.btn_check_updates.setProperty("class", "btn-secondary")
+        self.btn_check_updates.setCursor(Qt.PointingHandCursor)
+        self.btn_check_updates.clicked.connect(lambda: self.check_for_updates(force=True, interactive=True))
+
+        self.btn_update_now = QPushButton("Cập nhật")
+        self.btn_update_now.setProperty("class", "btn-success")
+        self.btn_update_now.setCursor(Qt.PointingHandCursor)
+        self.btn_update_now.setEnabled(False)
+        self.btn_update_now.clicked.connect(self.open_available_update)
+
+        row_upd_btns.addWidget(self.btn_check_updates)
+        row_upd_btns.addWidget(self.btn_update_now)
+        row_upd_btns.addStretch()
+
+        self.lbl_update_status = QLabel("● Chưa kiểm tra trong phiên này")
+        self.lbl_update_status.setWordWrap(True)
+        self.lbl_update_status.setStyleSheet("color: #64748b; font-size: 11px;")
+
+        layout_upd.addWidget(lbl_upd_title)
+        layout_upd.addWidget(self.lbl_app_version_settings)
+        layout_upd.addWidget(self.chk_check_updates)
+        layout_upd.addWidget(lbl_upd_desc)
+        layout_upd.addLayout(row_upd_btns)
+        layout_upd.addWidget(self.lbl_update_status)
+        layout.addWidget(card_update)
+
         layout.addStretch()
         scroll.setWidget(scroll_content)
         outer_layout.addWidget(scroll, 1)
@@ -818,6 +969,7 @@ class MainWindow(QMainWindow):
         self.chk_notifications.toggled.connect(self._auto_save_automation_settings)
         self.chk_floating_widget.toggled.connect(self._auto_save_automation_settings)
         self.chk_leak_detection.toggled.connect(self._auto_save_automation_settings)
+        self.chk_check_updates.toggled.connect(self._auto_save_automation_settings)
 
         # Fixed Bottom Action Bar for Quick Apply
         bottom_bar = QHBoxLayout()
@@ -914,6 +1066,7 @@ class MainWindow(QMainWindow):
             self.chk_notif_sound.setChecked(cfg.get("notification_sound_enabled", False))
             self.chk_floating_widget.setChecked(cfg.get("floating_widget_enabled", True))
             self.chk_leak_detection.setChecked(cfg.get("memory_leak_detection_enabled", True))
+            self.chk_check_updates.setChecked(cfg.get("check_for_updates_enabled", True))
             self.chk_auto_net.setChecked(cfg.get("auto_network_optimize_enabled", True))
             self.chk_auto_ping_fix.setChecked(cfg.get("auto_network_ping_fix_enabled", True))
             self.spin_ping_threshold.setValue(cfg.get("auto_network_ping_threshold_ms", 180))
@@ -990,6 +1143,7 @@ class MainWindow(QMainWindow):
         self.floating_widget_toggled.emit(fw_enabled)
 
         self.config_manager.set("memory_leak_detection_enabled", self.chk_leak_detection.isChecked())
+        self.config_manager.set("check_for_updates_enabled", self.chk_check_updates.isChecked())
 
         # Update Windows Startup
         startup_enabled = self.chk_startup.isChecked()
@@ -2929,6 +3083,168 @@ class MainWindow(QMainWindow):
             self.lbl_status.setText("✅ Windows Explorer đã được khởi động lại.")
         else:
             QMessageBox.warning(self, "Lỗi", "Không thể khởi động lại Windows Explorer.")
+
+    def start_update_checker(self, delay_ms: int = 4000):
+        """
+        Bắt đầu kiểm tra GitHub Releases sau khi cửa sổ đã lên (gọi từ main.py).
+        Tests tạo MainWindow không gọi hàm này nên không đụng mạng.
+        """
+        if not self.config_manager.get("check_for_updates_enabled", True):
+            return
+        QTimer.singleShot(max(0, int(delay_ms)), lambda: self.check_for_updates(force=False, interactive=False))
+        hours = float(self.config_manager.get("update_check_interval_hours") or 6)
+        interval_ms = max(30 * 60 * 1000, int(hours * 3600 * 1000))
+        if self._update_periodic_timer is None:
+            self._update_periodic_timer = QTimer(self)
+            self._update_periodic_timer.timeout.connect(
+                lambda: self.check_for_updates(force=False, interactive=False)
+            )
+        self._update_periodic_timer.start(interval_ms)
+
+    def check_for_updates(self, force: bool = False, interactive: bool = False):
+        """Kiểm tra bản mới (nền). interactive=True khi người dùng bấm nút / tray."""
+        if self._update_worker is not None and self._update_worker.isRunning():
+            if interactive and hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText("● Đang kiểm tra bản mới…")
+            return
+
+        self._update_check_interactive = bool(interactive)
+        if interactive and hasattr(self, "lbl_update_status"):
+            self.lbl_update_status.setText("● Đang hỏi GitHub Releases…")
+            self.lbl_update_status.setStyleSheet("color: #38bdf8; font-size: 11px;")
+        if interactive and hasattr(self, "btn_check_updates"):
+            self.btn_check_updates.setEnabled(False)
+
+        snapshot = dict(self.config_manager.config)
+        self._update_worker = UpdateCheckWorker(snapshot, force=force, parent=self)
+        self._update_worker.finished.connect(self._on_update_check_finished)
+        self._update_worker.start()
+
+    def _on_update_check_finished(self, result, cache):
+        try:
+            apply_cache_to_config(self.config_manager, cache or {})
+        except Exception:
+            pass
+        if hasattr(self, "btn_check_updates"):
+            self.btn_check_updates.setEnabled(True)
+        interactive = bool(self._update_check_interactive)
+        self._update_check_interactive = False
+        self.apply_update_check_result(result, interactive=interactive)
+
+    def apply_update_check_result(self, result, interactive: bool = False):
+        """Cập nhật banner / settings / toast. Dùng được trong unit/UI tests với result giả."""
+        if result is None:
+            return
+        dismissed = str(self.config_manager.get("dismissed_update_tag") or "")
+        latest = getattr(result, "latest", None)
+        available = bool(getattr(result, "update_available", False) and latest is not None)
+        show_banner = bool(available and latest and latest.tag and latest.tag != dismissed)
+
+        if available:
+            self._pending_update = latest
+            snippet = latest.notes_snippet or "Xem ghi chú phát hành trên GitHub."
+            banner_text = (
+                f"⬆ Có bản mới <b>{latest.tag}</b> (đang dùng v{result.current_version}). "
+                f"{snippet}"
+            )
+            if hasattr(self, "lbl_update_banner"):
+                self.lbl_update_banner.setText(banner_text)
+            if hasattr(self, "update_banner"):
+                self.update_banner.setVisible(show_banner)
+            if hasattr(self, "btn_update_now"):
+                self.btn_update_now.setEnabled(True)
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(f"● {result.message}")
+                self.lbl_update_status.setStyleSheet("color: #34d399; font-size: 11px;")
+
+            if (
+                show_banner
+                and not interactive
+                and latest.tag
+                and latest.tag != self._update_toast_tag
+                and self.tray_manager
+            ):
+                self._update_toast_tag = latest.tag
+                try:
+                    self.tray_manager.notify(
+                        "Có bản cập nhật mới",
+                        f"{latest.tag}: {snippet}",
+                        level="info",
+                        icon="🔄",
+                        action_text="Cập nhật",
+                        action_callback=self.open_available_update,
+                        duration_ms=8000,
+                    )
+                except Exception:
+                    pass
+            return
+
+        self._pending_update = None
+        if hasattr(self, "update_banner"):
+            self.update_banner.setVisible(False)
+        if hasattr(self, "btn_update_now"):
+            self.btn_update_now.setEnabled(False)
+
+        if getattr(result, "quiet_failure", False):
+            if interactive and hasattr(self, "lbl_update_status"):
+                if result.message:
+                    text = result.message
+                elif int(getattr(result, "http_status", 0) or 0) == 404:
+                    text = "Chưa có bản phát hành trên GitHub."
+                else:
+                    text = "Không kiểm tra được (mạng hoặc GitHub tạm thời). Thử lại sau."
+                self.lbl_update_status.setText(f"● {text}")
+                self.lbl_update_status.setStyleSheet("color: #64748b; font-size: 11px;")
+            return
+
+        if hasattr(self, "lbl_update_status"):
+            msg = result.message or f"Bạn đang dùng phiên bản mới nhất (v{result.current_version})."
+            self.lbl_update_status.setText(f"● {msg}")
+            self.lbl_update_status.setStyleSheet("color: #94a3b8; font-size: 11px;")
+
+    def open_available_update(self):
+        """Mở URL tải / trang Releases. Không tự ghi đè exe đang chạy."""
+        info = self._pending_update
+        if info is None:
+            if getattr(self, "_update_check_interactive", False) is False:
+                self.check_for_updates(force=True, interactive=True)
+            return
+        url = (info.download_url or info.html_url or "").strip()
+        if not url:
+            return
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+        has_file = bool(info.asset_name)
+        if has_file:
+            body = (
+                f"Đã mở liên kết tải <b>{info.asset_name}</b> (bản {info.tag}).\n\n"
+                "Sau khi tải xong, chạy bộ cài rồi khởi động lại PC Auto Cleaner.\n"
+                "Ứng dụng hiện tại sẽ không tự ghi đè file đang chạy."
+            )
+        else:
+            body = (
+                f"Đã mở trang GitHub Releases (bản {info.tag}). "
+                "Chưa có file cài (PCAutoCleaner_Setup.exe) trên Release này — "
+                "hãy tải khi asset được đăng, rồi khởi động lại ứng dụng."
+            )
+        try:
+            QMessageBox.information(self, "Cập nhật phần mềm", body)
+        except Exception:
+            pass
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText(f"🔄 Đã mở liên kết cập nhật {info.tag}")
+
+    def _dismiss_update_banner(self):
+        if hasattr(self, "update_banner"):
+            self.update_banner.setVisible(False)
+        info = self._pending_update
+        if info is not None and info.tag:
+            try:
+                self.config_manager.set("dismissed_update_tag", info.tag)
+            except Exception:
+                pass
 
     def closeEvent(self, event):
         """

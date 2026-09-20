@@ -209,6 +209,9 @@ def main():
     tray_mgr.game_boost_requested.connect(main_win.toggle_game_boost)
     tray_mgr.toggle_window_requested.connect(on_toggle_window)
     tray_mgr.toggle_floating_widget_requested.connect(floating_widget.toggle_widget)
+    tray_mgr.check_updates_requested.connect(
+        lambda: main_win.check_for_updates(force=True, interactive=True)
+    )
     tray_mgr.exit_requested.connect(on_exit_app)
 
     # Connect Floating Widget Actions
@@ -335,6 +338,12 @@ def main():
             )
 
     scheduler.security_scan_completed.connect(on_auto_security_scan_done)
+
+    # Kiểm tra GitHub Releases (trễ vài giây, không chặn khởi động)
+    try:
+        main_win.start_update_checker(delay_ms=4500)
+    except Exception:
+        pass
 
     # Kết nối cảnh báo rò rỉ bộ nhớ (Phase 4)
     scheduler.leak_detected.connect(main_win.show_leak_alert)
