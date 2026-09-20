@@ -318,3 +318,31 @@ def format_skills_context(skills: List[CompanionSkill], empty_vi: str = "") -> s
     if not skills:
         return empty_vi or "Chưa có kỹ năng lưu cho máy này."
     return "\n".join(s.context_line() for s in skills)
+
+
+def format_skill_row(skill: Optional[CompanionSkill]) -> str:
+    if skill is None:
+        return ""
+    title = str(skill.title or "").strip()
+    suggest = str(skill.suggest or "").strip()
+    if title and suggest:
+        return f"{title} — {suggest}"
+    return title or suggest
+
+
+def delete_skill(skill_id: str, base_dir: Optional[str] = None) -> bool:
+    wanted = str(skill_id or "").strip()
+    if not wanted:
+        return False
+    skills = load_skills(base_dir)
+    kept = [s for s in skills if s.id != wanted]
+    if len(kept) == len(skills):
+        return False
+    save_skills(kept, base_dir=base_dir)
+    return True
+
+
+def clear_skills(base_dir: Optional[str] = None) -> int:
+    skills = load_skills(base_dir)
+    save_skills([], base_dir=base_dir)
+    return len(skills)
