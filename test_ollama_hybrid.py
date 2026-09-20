@@ -434,6 +434,79 @@ def test_system_instruction_uses_app_name():
     assert "Pro" not in text
 
 
+def test_extra_prompt_context_extension_point():
+    from core.ai_copilot import (
+        collect_extra_prompt_context,
+        copilot_system_instruction,
+        normalize_extra_prompt_context,
+    )
+    assert normalize_extra_prompt_context(None) == []
+    assert normalize_extra_prompt_context(["", "  "]) == []
+    assert normalize_extra_prompt_context("Giai đoạn: mầm") == ["Giai đoạn: mầm"]
+    assert normalize_extra_prompt_context(["Nhật ký: đã dọn rác", "", "Kỹ năng: RAM"]) == [
+        "Nhật ký: đã dọn rác",
+        "Kỹ năng: RAM",
+    ]
+    base = copilot_system_instruction(_TELEMETRY)
+    with_notes = copilot_system_instruction(
+        _TELEMETRY,
+        extra_context=["Giai đoạn: chồi", "Ghi chú: user thích tối ưu game"],
+    )
+    assert with_notes.startswith(base)
+    assert "Giai đoạn: chồi" in with_notes
+    assert "Ghi chú: user thích tối ưu game" in with_notes
+
+    def provider(*, user_prompt, telemetry, health_report):
+        assert user_prompt == "ping"
+        assert telemetry["ram"]["percent"] == 70.0
+        assert health_report is None
+        return ["Companion: reflection notes"]
+
+    merged = collect_extra_prompt_context(
+        ["one-shot"],
+        provider,
+        user_prompt="ping",
+        telemetry=_TELEMETRY,
+    )
+    assert merged == ["one-shot", "Companion: reflection notes"]
+
+    def boom(**_k):
+        raise RuntimeError("companion down")
+
+    assert collect_extra_prompt_context(provider=boom, user_prompt="x") == []
+
+
+def test_engine_extra_context_provider_reaches_ollama_payload():
+    _reset_ollama()
+    bodies = []
+
+    def provider(*, user_prompt, telemetry, health_report):
+        return [f"Diary:{user_prompt}", "Stage:seedling"]
+
+    def urlopen(req, timeout=None):
+        url = _req_url(req)
+        if url.endswith("/api/tags"):
+            return _tags_resp(["qwen2.5:3b"])
+        if url.endswith("/api/chat"):
+            bodies.append(req.data.decode("utf-8"))
+            return _chat_resp("OK extra")
+        raise AssertionError(url)
+
+    cfg = _MemCfg(ai_copilot_provider="ollama", ai_copilot_ollama_model="qwen2.5:3b")
+    engine = AICopilotEngine(config_manager=cfg, extra_context_provider=provider)
+    with patch.object(TelemetryCollector, "collect", return_value=_TELEMETRY):
+        with patch("urllib.request.urlopen", side_effect=urlopen):
+            msg = engine.ask("Tối ưu RAM", extra_context=["Skill:ram"])
+    assert msg.source == "local_ollama"
+    assert bodies
+    payload = json.loads(bodies[0])
+    system = payload["messages"][0]["content"]
+    assert "Diary:Tối ưu RAM" in system
+    assert "Stage:seedling" in system
+    assert "Skill:ram" in system
+    assert APP_NAME in system
+
+
 if __name__ == "__main__":
     tests = [
         test_canonicalize_helpers,
@@ -452,6 +525,8 @@ if __name__ == "__main__":
         test_provider_ollama_honest_when_daemon_down,
         test_auto_gemini_503_then_ollama_http,
         test_system_instruction_uses_app_name,
+        test_extra_prompt_context_extension_point,
+        test_engine_extra_context_provider_reaches_ollama_payload,
     ]
     for fn in tests:
         fn()

@@ -8,6 +8,7 @@ Trợ lý AI tương tác thông minh cho PC Auto Cleaner & Optimizer:
       2. Ollama localhost (offline) khi chọn local, hoặc khi Gemini không tới được.
       3. Offline Expert Brain: suy luận chuyên gia máy tính, siêu tốc, 100% riêng tư.
   - Không bịa câu trả lời LLM: nếu Ollama chưa cài / chưa kéo model thì hướng dẫn thật.
+  - Extension point: extra_context / extra_context_provider khi dựng prompt (companion sau này).
   - Sinh các nút tương tác 1-Click Actionable Buttons trực tiếp trong câu trả lời.
 """
 from __future__ import annotations
@@ -20,7 +21,7 @@ import time
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Callable
 
 import psutil
 
@@ -667,18 +668,100 @@ def format_gemini_http_error(code: int, body: str, reason: str = "") -> str:
 def copilot_system_instruction(
     telemetry: Dict[str, Any],
     health_report: Optional[AIHealthReport] = None,
+    extra_context: Optional[Any] = None,
 ) -> str:
-    """Shared Vietnamese system prompt for Gemini and Ollama, using APP_NAME."""
+    """Shared Vietnamese system prompt for Gemini and Ollama, using APP_NAME.
+
+    ``extra_context`` is an extension point for later layers (companion diary,
+    maturity stage, skills, reflection notes): a string, list of strings, or
+    the already-normalized list from :func:`collect_extra_prompt_context`.
+    Empty/None is a no-op so Hybrid routing stays unchanged.
+    """
     ram = telemetry.get("ram", {}) if isinstance(telemetry, dict) else {}
     cpu = telemetry.get("cpu", {}) if isinstance(telemetry, dict) else {}
     disk = telemetry.get("disk", {}) if isinstance(telemetry, dict) else {}
     score = health_report.score if health_report else 80
-    return (
+    text = (
         f"Bạn là một kỹ sư máy tính và trợ lý AI thông minh tích hợp trong phần mềm '{APP_NAME}'. "
         "Trả lời ngắn gọn, chuẩn xác bằng tiếng Việt, đưa ra giải thích kỹ thuật dễ hiểu và các bước hành động cụ thể.\n"
         f"Thông số PC hiện tại: RAM {ram.get('percent', 0)}%, CPU {cpu.get('percent', 0)}%, "
         f"Ổ C còn trống {disk.get('free_gb', 0)} GB, Điểm sức khỏe {score}/100."
     )
+    extra_lines = normalize_extra_prompt_context(extra_context)
+    if extra_lines:
+        text = text + "\n\n" + "\n".join(extra_lines)
+    return text
+
+
+def normalize_extra_prompt_context(extra_context: Optional[Any] = None) -> List[str]:
+    """Flatten optional companion notes into non-empty prompt strings."""
+    if extra_context is None:
+        return []
+    if isinstance(extra_context, str):
+        chunks: List[Any] = [extra_context]
+    elif isinstance(extra_context, (list, tuple)):
+        chunks = list(extra_context)
+    else:
+        text = str(extra_context).strip()
+        return [text] if text else []
+    out: List[str] = []
+    for item in chunks:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def call_extra_context_provider(
+    provider: Optional[Callable[..., Any]],
+    *,
+    user_prompt: str = "",
+    telemetry: Optional[Dict[str, Any]] = None,
+    health_report: Optional[AIHealthReport] = None,
+) -> List[str]:
+    """Run an optional extra-context callback; never raise into the chat path."""
+    if provider is None:
+        return []
+    result: Any = None
+    try:
+        result = provider(
+            user_prompt=user_prompt,
+            telemetry=telemetry if telemetry is not None else {},
+            health_report=health_report,
+        )
+    except TypeError:
+        try:
+            result = provider()
+        except Exception as e:
+            logger.debug(f"[Copilot] extra_context_provider() failed: {e}")
+            return []
+    except Exception as e:
+        logger.debug(f"[Copilot] extra_context_provider failed: {e}")
+        return []
+    return normalize_extra_prompt_context(result)
+
+
+def collect_extra_prompt_context(
+    extra_context: Optional[Any] = None,
+    provider: Optional[Callable[..., Any]] = None,
+    *,
+    user_prompt: str = "",
+    telemetry: Optional[Dict[str, Any]] = None,
+    health_report: Optional[AIHealthReport] = None,
+) -> List[str]:
+    """Merge one-shot extra strings with an optional companion callback."""
+    lines = normalize_extra_prompt_context(extra_context)
+    lines.extend(
+        call_extra_context_provider(
+            provider,
+            user_prompt=user_prompt,
+            telemetry=telemetry,
+            health_report=health_report,
+        )
+    )
+    return lines
 
 
 def resolve_copilot_provider(config_manager: Optional[Any] = None) -> str:
@@ -720,6 +803,7 @@ class CloudAIBrain:
         timeout: float = 8.0,
         model: str = DEFAULT_GEMINI_MODEL,
         persist_model: Optional[Any] = None,
+        extra_context: Optional[Any] = None,
     ) -> Optional[str]:
         cls.last_error = ""
         cls.last_error_short = ""
@@ -732,7 +816,9 @@ class CloudAIBrain:
         requested = normalize_gemini_model(model)
         chain = gemini_model_fallback_chain(requested)
 
-        system_instruction = copilot_system_instruction(telemetry, health_report)
+        system_instruction = copilot_system_instruction(
+            telemetry, health_report, extra_context=extra_context
+        )
 
         payload_bytes = json.dumps({
             "contents": [
@@ -958,6 +1044,7 @@ class OllamaAIBrain:
         base_url: str = DEFAULT_OLLAMA_BASE_URL,
         model: str = DEFAULT_OLLAMA_MODEL,
         probe_timeout: float = 1.2,
+        extra_context: Optional[Any] = None,
     ) -> Optional[str]:
         cls.last_error = ""
         cls.last_error_short = ""
@@ -995,7 +1082,9 @@ class OllamaAIBrain:
                 return None
             wanted = close
 
-        system_instruction = copilot_system_instruction(telemetry, health_report)
+        system_instruction = copilot_system_instruction(
+            telemetry, health_report, extra_context=extra_context
+        )
         payload_bytes = json.dumps({
             "model": wanted,
             "messages": [
@@ -1184,9 +1273,16 @@ class AICopilotEngine:
     - Gắn các nút hành động tương tác 1-click.
     """
 
-    def __init__(self, config_manager: Optional[Any] = None, predictive_engine: Optional[PredictiveAIEngine] = None):
+    def __init__(
+        self,
+        config_manager: Optional[Any] = None,
+        predictive_engine: Optional[PredictiveAIEngine] = None,
+        extra_context_provider: Optional[Callable[..., Any]] = None,
+    ):
         self.config_manager = config_manager
         self.predictive_engine = predictive_engine
+        # Optional companion hook: () or (user_prompt=, telemetry=, health_report=) → str | list[str]
+        self.extra_context_provider = extra_context_provider
         self.chat_history: List[ChatMessage] = []
         self._init_welcome_message()
 
@@ -1210,7 +1306,28 @@ class AICopilotEngine:
             telemetry_badge="Sẵn sàng hỗ trợ 24/7"
         ))
 
-    def ask(self, user_prompt: str, append_user: bool = True) -> ChatMessage:
+    def extra_prompt_context(
+        self,
+        user_prompt: str = "",
+        telemetry: Optional[Dict[str, Any]] = None,
+        health_report: Optional[AIHealthReport] = None,
+        extra_context: Optional[Any] = None,
+    ) -> List[str]:
+        """Collect extra LLM prompt strings (companion diary/stage/skills later)."""
+        return collect_extra_prompt_context(
+            extra_context,
+            self.extra_context_provider,
+            user_prompt=user_prompt,
+            telemetry=telemetry,
+            health_report=health_report,
+        )
+
+    def ask(
+        self,
+        user_prompt: str,
+        append_user: bool = True,
+        extra_context: Optional[Any] = None,
+    ) -> ChatMessage:
         """Gửi câu hỏi tới AI Copilot và nhận phản hồi kèm nút hành động."""
         user_prompt_clean = user_prompt.strip()
         if not user_prompt_clean:
@@ -1229,6 +1346,13 @@ class AICopilotEngine:
                 autopilot_state = self.predictive_engine.get_autopilot_state(current_stats=telemetry)
             except Exception:
                 pass
+
+        extra_prompt = self.extra_prompt_context(
+            user_prompt=user_prompt_clean,
+            telemetry=telemetry,
+            health_report=health_report,
+            extra_context=extra_context,
+        )
 
         cloud_reply = None
         ollama_reply = None
@@ -1273,6 +1397,7 @@ class AICopilotEngine:
                     health_report=health_report,
                     model=model or DEFAULT_GEMINI_MODEL,
                     persist_model=persist_cb,
+                    extra_context=extra_prompt,
                 )
             else:
                 CloudAIBrain.last_error = "Đã bật Cloud Gemini nhưng chưa nhập API Key."
@@ -1291,6 +1416,7 @@ class AICopilotEngine:
                     health_report=health_report,
                     base_url=ollama_base,
                     model=ollama_model,
+                    extra_context=extra_prompt,
                 )
             if ollama_reply:
                 source = "local_ollama"
