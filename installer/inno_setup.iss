@@ -1,8 +1,9 @@
 ; Inno Setup Script for PC Auto Cleaner & Optimizer
 ; Compile with Inno Setup Compiler (ISCC.exe)
+; MyAppName / MyAppVersion / MyAppPublisher MUST match app_meta.py (enforced by tests).
 
 #define MyAppName "PC Auto Cleaner & Optimizer"
-#define MyAppVersion "3.7.0"
+#define MyAppVersion "3.8.0"
 #define MyAppPublisher "PC Cleaner Team"
 #define MyAppURL "https://github.com/mrkiss-it/pc-cleaner-optimizer"
 #define MyAppExeName "PCAutoCleaner.exe"

@@ -1,15 +1,23 @@
 """
-installer/build_installer.py – Kịch bản tự động đóng gói Smart Setup Wizard Installer (v3.7 Pro).
+installer/build_installer.py – Kịch bản tự động đóng gói Smart Setup Wizard Installer.
 1. Biên dịch uninstall_wizard.py thành dist/PCAutoCleaner/uninstall.exe.
 2. Nén toàn bộ thư mục dist/PCAutoCleaner thành installer/app_bundle.zip.
 3. Biên dịch setup_wizard.py thành dist/PCAutoCleaner_Setup.exe (Single-file Setup Wizard).
+
+Phiên bản Setup Wizard lấy từ APP_VERSION (app_meta) nhờ --hidden-import=app_meta.
 """
 
 import os
+import re
 import sys
 import shutil
 import zipfile
 import subprocess
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+from app_meta import APP_NAME, APP_VERSION
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -39,7 +47,19 @@ def build():
 
     print("=" * 60)
     print("      PC AUTO CLEANER - BUILD SMART SETUP WIZARD       ")
+    print(f"      {APP_NAME} v{APP_VERSION}")
     print("=" * 60)
+
+    iss_path = os.path.join(installer_dir, "inno_setup.iss")
+    if os.path.exists(iss_path):
+        iss_text = open(iss_path, encoding="utf-8").read()
+        m = re.search(r'#define\s+MyAppVersion\s+"([^"]*)"', iss_text)
+        iss_ver = m.group(1) if m else ""
+        if iss_ver != APP_VERSION:
+            print(
+                f"[!] Cảnh báo: inno_setup.iss MyAppVersion={iss_ver!r} "
+                f"khác APP_VERSION={APP_VERSION!r}. Hãy đồng bộ trước khi compile Inno."
+            )
 
     # 1. Kiểm tra dist/PCAutoCleaner
     if not os.path.exists(app_dist) or not os.path.exists(os.path.join(app_dist, "PCAutoCleaner.exe")):
@@ -74,14 +94,18 @@ def build():
     # 4. Biên dịch Setup Wizard: setup_wizard.py -> dist/PCAutoCleaner_Setup.exe
     print("\n[3/3] Đóng gói Trình Cài Đặt Thông Minh (PCAutoCleaner_Setup.exe)...")
     setup_script = os.path.join(installer_dir, "setup_wizard.py")
+    app_meta_py = os.path.join(base_dir, "app_meta.py")
     cmd_setup = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--onefile",
         "--windowed",
         f"--icon={ico_path}",
+        f"--paths={base_dir}",
+        "--hidden-import=app_meta",
         f"--add-data={bundle_zip};.",
         f"--add-data={os.path.join(base_dir, 'assets')};assets",
+        f"--add-data={app_meta_py};.",
         f"--distpath={dist_dir}",
         f"--workpath={os.path.join(base_dir, 'build', 'setup_wizard')}",
         "--name=PCAutoCleaner_Setup",
@@ -97,6 +121,7 @@ def build():
         sz_mb = os.path.getsize(setup_exe) / (1024 * 1024)
         print("\n" + "=" * 60)
         print("[SUCCESS] ĐÃ TẠO THÀNH CÔNG BỘ CÀI ĐẶT THÔNG MINH!")
+        print(f"Sản phẩm: {APP_NAME} v{APP_VERSION}")
         print(f"File cài đặt: {setup_exe} ({sz_mb:.1f} MB)")
         print("=" * 60)
         return True
