@@ -169,6 +169,18 @@ def load_reflection_meta(base_dir: Optional[str] = None) -> Dict[str, Any]:
         return {}
 
 
+def clear_reflection(base_dir: Optional[str] = None) -> bool:
+    removed = False
+    for path in (note_path(base_dir), meta_path(base_dir)):
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+                removed = True
+        except Exception:
+            continue
+    return removed
+
+
 def save_reflection(
     note: str,
     *,

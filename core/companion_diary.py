@@ -11,7 +11,7 @@ import json
 import os
 import re
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from config_manager import companion_dir
 
@@ -275,3 +275,72 @@ def format_digest(
         summary = item.get("summary") or ""
         lines.append(f"- {ts}: {summary}")
     return "\n".join(lines)
+
+
+def event_identity(event: Optional[Dict[str, Any]]) -> Tuple[str, str, str]:
+    item = event if isinstance(event, dict) else {}
+    return (
+        str(item.get("ts") or ""),
+        str(item.get("kind") or "").lower(),
+        str(item.get("summary") or ""),
+    )
+
+
+def format_event_row(event: Optional[Dict[str, Any]]) -> str:
+    item = event if isinstance(event, dict) else {}
+    ts = str(item.get("ts") or "").replace("T", " ")[:16]
+    summary = str(item.get("summary") or "").strip()
+    if ts and summary:
+        return f"{ts}  {summary}"
+    return summary or ts or ""
+
+
+def write_events(events: List[Dict[str, Any]], base_dir: Optional[str] = None) -> None:
+    path = diary_path(base_dir)
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        for item in events:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "").lower()
+            if kind not in ALLOWED_KINDS:
+                continue
+            payload = {
+                "ts": str(item.get("ts") or ""),
+                "kind": kind,
+                "summary": sanitize_summary(item.get("summary") or ""),
+                "metrics": sanitize_metrics(item.get("metrics") if isinstance(item.get("metrics"), dict) else {}),
+                "source": sanitize_summary(item.get("source") or "app")[:32],
+            }
+            if not payload["summary"]:
+                continue
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+
+
+def delete_event(event: Dict[str, Any], base_dir: Optional[str] = None) -> bool:
+    """Remove the first diary row matching ts+kind+summary. Privacy-friendly."""
+    if not isinstance(event, dict):
+        return False
+    rows = read_events(base_dir=base_dir, limit=0)
+    target = event_identity(event)
+    kept: List[Dict[str, Any]] = []
+    removed = False
+    for item in rows:
+        if not removed and event_identity(item) == target:
+            removed = True
+            continue
+        kept.append(item)
+    if not removed:
+        return False
+    write_events(kept, base_dir=base_dir)
+    return True
+
+
+def clear_events(base_dir: Optional[str] = None) -> int:
+    rows = read_events(base_dir=base_dir, limit=0)
+    write_events([], base_dir=base_dir)
+    return len(rows)

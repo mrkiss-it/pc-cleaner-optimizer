@@ -14,6 +14,8 @@ from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QTextEdit,
@@ -22,17 +24,31 @@ from PyQt5.QtWidgets import (
 
 from app_meta import APP_NAME
 from core.companion import (
+    REFLECT_BUTTON_VI,
     accept_skill_offer,
+    clear_diary_memory,
+    clear_local_memory,
+    clear_reflection_memory,
+    clear_skills_memory,
+    confirm_clear_prompt,
     current_stage,
     decline_skill_offer,
+    delete_diary_entry,
+    delete_saved_skill,
     diary_digest,
     empty_states_vi,
+    format_event_row,
+    format_reflection_feedback,
+    format_skill_row,
     is_enabled,
     latest_reflection,
+    list_diary_rows,
+    list_skill_rows,
     load_reflection_meta,
     maybe_run_reflection,
     note_user_feedback,
     pending_skill_offer,
+    stage_legend_vi,
 )
 
 
@@ -54,7 +70,46 @@ _BTN_STYLE = """
         border: 1px solid #475569;
     }
     QPushButton:hover { background-color: #475569; border-color: #38bdf8; }
+    QPushButton:disabled { color: #64748b; border-color: #334155; }
 """
+
+_DANGER_BTN_STYLE = """
+    QPushButton {
+        background-color: #3f1d2e;
+        color: #fecdd3;
+        font-weight: 600;
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 11px;
+        border: 1px solid #9f1239;
+    }
+    QPushButton:hover { background-color: #4c1d32; border-color: #fb7185; }
+    QPushButton:disabled { color: #64748b; border-color: #334155; background: #1e293b; }
+"""
+
+_LIST_STYLE = """
+    QListWidget {
+        background: #0f172a;
+        color: #e2e8f0;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        font-size: 12px;
+        padding: 4px;
+    }
+    QListWidget::item { padding: 4px 6px; }
+    QListWidget::item:selected { background: #334155; color: #f8fafc; }
+"""
+
+
+def _confirm(parent, prompt: dict) -> bool:
+    reply = QMessageBox.question(
+        parent,
+        prompt.get("title") or "Xác nhận",
+        prompt.get("body") or "",
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.No,
+    )
+    return reply == QMessageBox.Yes
 
 
 class CompanionReflectWorker(QThread):
@@ -119,6 +174,11 @@ class CompanionCard(QFrame):
         self.lbl_blurb.setStyleSheet("color: #94a3b8; font-size: 12px; background: transparent; border: none;")
         layout.addWidget(self.lbl_blurb)
 
+        self.lbl_legend = QLabel(stage_legend_vi())
+        self.lbl_legend.setWordWrap(True)
+        self.lbl_legend.setStyleSheet("color: #64748b; font-size: 11px; background: transparent; border: none;")
+        layout.addWidget(self.lbl_legend)
+
         self.lbl_progress = QLabel("")
         self.lbl_progress.setStyleSheet("color: #cbd5e1; font-size: 11px; background: transparent; border: none;")
         layout.addWidget(self.lbl_progress)
@@ -143,7 +203,9 @@ class CompanionCard(QFrame):
         if not self.compact:
             self.chk_enabled = QCheckBox("Ghi nhật ký máy (local, không gửi đám mây)")
             self.chk_enabled.setStyleSheet("font-weight: bold; font-size: 13px; color: #c4b5fd;")
-            self.chk_reflect = QCheckBox("Phản tỉnh buổi tối / sổ tay (Gemini hoặc Ollama nếu đã bật; không thì chỉ số liệu)")
+            self.chk_reflect = QCheckBox(
+                "Phản tỉnh buổi tối / sổ tay (Gemini nếu đã bật; không thì chỉ số liệu)"
+            )
             self.chk_reflect.setStyleSheet("font-size: 12px; color: #cbd5e1;")
             self.chk_propose = QCheckBox(
                 "Cho phép đề xuất Dọn nhẹ / Trước thi khi đã lớn dần (không tự chạy, không WinSxS)"
@@ -183,14 +245,27 @@ class CompanionCard(QFrame):
         self.btn_meh = QPushButton("Chưa khớp")
         self.btn_meh.setStyleSheet(_BTN_STYLE)
         self.btn_meh.clicked.connect(lambda: self._feedback(False))
-        self.btn_reflect = QPushButton("Ghi sổ tay")
+        self.btn_reflect = QPushButton(REFLECT_BUTTON_VI)
         self.btn_reflect.setStyleSheet(_BTN_STYLE)
+        self.btn_reflect.setToolTip("Tóm tắt nhật ký máy này thành sổ tay. Không bịa kỷ niệm.")
         self.btn_reflect.clicked.connect(self._reflect_now)
+        self.btn_manage = QPushButton("Xem & xóa bộ nhớ")
+        self.btn_manage.setStyleSheet(_BTN_STYLE)
+        self.btn_manage.setToolTip("Xem nhật ký, kỹ năng và xóa dữ liệu local (có xác nhận).")
+        self.btn_manage.clicked.connect(self._open_manage)
         btns.addWidget(self.btn_helpful)
         btns.addWidget(self.btn_meh)
         btns.addWidget(self.btn_reflect)
+        btns.addWidget(self.btn_manage)
         btns.addStretch()
         layout.addLayout(btns)
+
+        self.lbl_reflect_status = QLabel("")
+        self.lbl_reflect_status.setWordWrap(True)
+        self.lbl_reflect_status.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; background: transparent; border: none;"
+        )
+        layout.addWidget(self.lbl_reflect_status)
 
         hint = QLabel(
             f"{APP_NAME} nhớ sự kiện trên máy này (AppData), không huấn luyện lại mô hình, "
@@ -208,6 +283,18 @@ class CompanionCard(QFrame):
         self.config_manager.set("companion_may_propose_actions", self.chk_propose.isChecked())
         self.refresh()
 
+    def _set_reflect_status(self, text: str, status: str = ""):
+        colors = {
+            "success": "#34d399",
+            "empty": "#fbbf24",
+            "error": "#f87171",
+        }
+        color = colors.get(status, "#94a3b8")
+        self.lbl_reflect_status.setText(text or "")
+        self.lbl_reflect_status.setStyleSheet(
+            f"color: {color}; font-size: 11px; background: transparent; border: none;"
+        )
+
     def refresh(self):
         empty = empty_states_vi()
         enabled = is_enabled(self.config_manager)
@@ -219,6 +306,7 @@ class CompanionCard(QFrame):
             f"padding: 4px 10px; border-radius: 10px; border: 1px solid {color};"
         )
         self.lbl_blurb.setText(stage.blurb_vi if enabled else "AI đồng hành đang tắt — không ghi nhật ký.")
+        self.lbl_legend.setText(stage_legend_vi())
         if stage.empty:
             self.lbl_progress.setText(empty["stage"])
         else:
@@ -257,8 +345,10 @@ class CompanionCard(QFrame):
             prefix = "Sổ tay: "
             if src == "template":
                 prefix = "Sổ tay (số liệu, không LLM): "
+            elif src == "gemini":
+                prefix = "Sổ tay (Gemini): "
             elif src:
-                prefix = f"Sổ tay ({src}): "
+                prefix = "Sổ tay: "
             preview = note.replace("\n", " ")
             if len(preview) > 220:
                 preview = preview[:219] + "…"
@@ -286,11 +376,17 @@ class CompanionCard(QFrame):
             pass
         self.refresh()
 
+    def _open_manage(self):
+        dlg = CompanionDialog(config_manager=self.config_manager, parent=self.window())
+        dlg.exec_()
+        self.refresh()
+
     def _reflect_now(self):
         if self._reflect_worker and self._reflect_worker.isRunning():
             return
         self.btn_reflect.setEnabled(False)
-        self.btn_reflect.setText("Đang ghi…")
+        self.btn_reflect.setText("Đang phản tỉnh…")
+        self._set_reflect_status("Đang viết sổ tay từ nhật ký máy này…")
         worker = CompanionReflectWorker(self.config_manager, parent=self)
         self._reflect_worker = worker
         worker.finished_ok.connect(self._on_reflect_done)
@@ -298,37 +394,225 @@ class CompanionCard(QFrame):
 
     def _on_reflect_done(self, result):
         self.btn_reflect.setEnabled(True)
-        self.btn_reflect.setText("Ghi sổ tay")
+        self.btn_reflect.setText(REFLECT_BUTTON_VI)
+        feedback = format_reflection_feedback(result)
+        self._set_reflect_status(feedback["body"], feedback["status"])
         self.refresh()
-        if isinstance(result, Exception):
-            QMessageBox.warning(self, "Sổ tay", f"Không ghi được sổ tay: {result}")
+        if feedback["status"] == "error":
+            QMessageBox.warning(self, feedback["title"], feedback["body"])
 
 
 class CompanionDialog(QDialog):
-    """Chi tiết nhật ký / sổ tay từ Copilot."""
+    """Xem nhật ký / kỹ năng / sổ tay và xóa bộ nhớ local (có xác nhận)."""
 
     def __init__(self, config_manager=None, parent=None):
         super().__init__(parent)
+        self.config_manager = config_manager
+        self._reflect_worker: Optional[CompanionReflectWorker] = None
         self.setWindowTitle(f"AI đồng hành — {APP_NAME}")
-        self.resize(520, 560)
+        self.resize(560, 640)
         self.setStyleSheet("QDialog { background: #0f172a; color: #e2e8f0; }")
         root = QVBoxLayout(self)
-        self.card = CompanionCard(config_manager=config_manager, parent=self, compact=False)
-        root.addWidget(self.card)
-        body = QTextEdit()
-        body.setReadOnly(True)
-        body.setStyleSheet(
+        root.setSpacing(10)
+
+        self.lbl_badge = QLabel("Giai đoạn 0 · Mới gặp")
+        self.lbl_badge.setStyleSheet("color: #c4b5fd; font-size: 14px; font-weight: 800;")
+        root.addWidget(self.lbl_badge)
+
+        self.lbl_blurb = QLabel("")
+        self.lbl_blurb.setWordWrap(True)
+        self.lbl_blurb.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        root.addWidget(self.lbl_blurb)
+
+        self.lbl_legend = QLabel(stage_legend_vi())
+        self.lbl_legend.setWordWrap(True)
+        self.lbl_legend.setStyleSheet("color: #64748b; font-size: 11px;")
+        root.addWidget(self.lbl_legend)
+
+        reflect_row = QHBoxLayout()
+        self.btn_reflect = QPushButton(REFLECT_BUTTON_VI)
+        self.btn_reflect.setStyleSheet(_BTN_STYLE)
+        self.btn_reflect.clicked.connect(self._reflect_now)
+        reflect_row.addWidget(self.btn_reflect)
+        reflect_row.addStretch()
+        root.addLayout(reflect_row)
+
+        self.lbl_reflect_status = QLabel("")
+        self.lbl_reflect_status.setWordWrap(True)
+        self.lbl_reflect_status.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        root.addWidget(self.lbl_reflect_status)
+
+        self.lbl_diary_empty = QLabel("")
+        self.lbl_diary_empty.setWordWrap(True)
+        self.lbl_diary_empty.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        root.addWidget(QLabel("Nhật ký gần đây"))
+        root.addWidget(self.lbl_diary_empty)
+        self.list_diary = QListWidget()
+        self.list_diary.setStyleSheet(_LIST_STYLE)
+        self.list_diary.setMaximumHeight(150)
+        root.addWidget(self.list_diary)
+
+        diary_btns = QHBoxLayout()
+        self.btn_delete_diary = QPushButton("Xóa mục đã chọn")
+        self.btn_delete_diary.setStyleSheet(_BTN_STYLE)
+        self.btn_delete_diary.clicked.connect(self._delete_diary_item)
+        self.btn_clear_diary = QPushButton("Xóa nhật ký…")
+        self.btn_clear_diary.setStyleSheet(_DANGER_BTN_STYLE)
+        self.btn_clear_diary.clicked.connect(self._clear_diary)
+        diary_btns.addWidget(self.btn_delete_diary)
+        diary_btns.addWidget(self.btn_clear_diary)
+        diary_btns.addStretch()
+        root.addLayout(diary_btns)
+
+        self.lbl_skills_empty = QLabel("")
+        self.lbl_skills_empty.setWordWrap(True)
+        self.lbl_skills_empty.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        root.addWidget(QLabel("Kỹ năng đã lưu"))
+        root.addWidget(self.lbl_skills_empty)
+        self.list_skills = QListWidget()
+        self.list_skills.setStyleSheet(_LIST_STYLE)
+        self.list_skills.setMaximumHeight(120)
+        root.addWidget(self.list_skills)
+
+        skill_btns = QHBoxLayout()
+        self.btn_delete_skill = QPushButton("Xóa kỹ năng đã chọn")
+        self.btn_delete_skill.setStyleSheet(_BTN_STYLE)
+        self.btn_delete_skill.clicked.connect(self._delete_skill_item)
+        self.btn_clear_skills = QPushButton("Xóa hết kỹ năng…")
+        self.btn_clear_skills.setStyleSheet(_DANGER_BTN_STYLE)
+        self.btn_clear_skills.clicked.connect(self._clear_skills)
+        skill_btns.addWidget(self.btn_delete_skill)
+        skill_btns.addWidget(self.btn_clear_skills)
+        skill_btns.addStretch()
+        root.addLayout(skill_btns)
+
+        root.addWidget(QLabel("Sổ tay"))
+        self.txt_note = QTextEdit()
+        self.txt_note.setReadOnly(True)
+        self.txt_note.setStyleSheet(
             "QTextEdit { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; "
             "border-radius: 8px; font-size: 12px; }"
         )
-        digest = diary_digest(limit=20, days=30)
-        note = latest_reflection() or "(chưa có sổ tay)"
-        body.setPlainText(f"Nhật ký:\n{digest}\n\n---\nSổ tay:\n{note}")
-        root.addWidget(body, stretch=1)
+        root.addWidget(self.txt_note, stretch=1)
+
+        foot = QHBoxLayout()
+        self.btn_clear_all = QPushButton("Xóa hết bộ nhớ local…")
+        self.btn_clear_all.setStyleSheet(_DANGER_BTN_STYLE)
+        self.btn_clear_all.clicked.connect(self._clear_all)
         close_btn = QPushButton("Đóng")
         close_btn.setStyleSheet(_BTN_STYLE)
         close_btn.clicked.connect(self.accept)
-        row = QHBoxLayout()
-        row.addStretch()
-        row.addWidget(close_btn)
-        root.addLayout(row)
+        foot.addWidget(self.btn_clear_all)
+        foot.addStretch()
+        foot.addWidget(close_btn)
+        root.addLayout(foot)
+
+        self.refresh()
+
+    def _set_reflect_status(self, text: str, status: str = ""):
+        colors = {
+            "success": "#34d399",
+            "empty": "#fbbf24",
+            "error": "#f87171",
+        }
+        color = colors.get(status, "#94a3b8")
+        self.lbl_reflect_status.setText(text or "")
+        self.lbl_reflect_status.setStyleSheet(f"color: {color}; font-size: 11px;")
+
+    def refresh(self):
+        empty = empty_states_vi()
+        stage = current_stage(config_manager=self.config_manager)
+        color = _STAGE_COLORS.get(stage.stage, "#94a3b8")
+        self.lbl_badge.setText(stage.badge_vi())
+        self.lbl_badge.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: 800;")
+        self.lbl_blurb.setText(stage.blurb_vi)
+        self.lbl_legend.setText(stage_legend_vi())
+
+        diary_rows = list_diary_rows(limit=20, days=30)
+        self.list_diary.clear()
+        if not diary_rows:
+            self.lbl_diary_empty.setText(empty["diary"])
+            self.lbl_diary_empty.show()
+        else:
+            self.lbl_diary_empty.hide()
+            for event in diary_rows:
+                item = QListWidgetItem(format_event_row(event))
+                item.setData(Qt.UserRole, event)
+                self.list_diary.addItem(item)
+
+        skills = list_skill_rows()
+        self.list_skills.clear()
+        if not skills:
+            self.lbl_skills_empty.setText(empty["skills"])
+            self.lbl_skills_empty.show()
+        else:
+            self.lbl_skills_empty.hide()
+            for skill in skills:
+                item = QListWidgetItem(format_skill_row(skill))
+                item.setData(Qt.UserRole, skill.id)
+                self.list_skills.addItem(item)
+
+        note = latest_reflection() or empty["reflection"]
+        self.txt_note.setPlainText(note)
+
+    def _reflect_now(self):
+        if self._reflect_worker and self._reflect_worker.isRunning():
+            return
+        self.btn_reflect.setEnabled(False)
+        self.btn_reflect.setText("Đang phản tỉnh…")
+        self._set_reflect_status("Đang viết sổ tay từ nhật ký máy này…")
+        worker = CompanionReflectWorker(self.config_manager, parent=self)
+        self._reflect_worker = worker
+        worker.finished_ok.connect(self._on_reflect_done)
+        worker.start()
+
+    def _on_reflect_done(self, result):
+        self.btn_reflect.setEnabled(True)
+        self.btn_reflect.setText(REFLECT_BUTTON_VI)
+        feedback = format_reflection_feedback(result)
+        self._set_reflect_status(feedback["body"], feedback["status"])
+        self.refresh()
+        if feedback["status"] == "error":
+            QMessageBox.warning(self, feedback["title"], feedback["body"])
+
+    def _delete_diary_item(self):
+        item = self.list_diary.currentItem()
+        if item is None:
+            QMessageBox.information(self, "Nhật ký", "Chọn một mục nhật ký để xóa.")
+            return
+        if not _confirm(self, confirm_clear_prompt("diary_item")):
+            return
+        event = item.data(Qt.UserRole)
+        if isinstance(event, dict):
+            delete_diary_entry(event)
+        self.refresh()
+
+    def _clear_diary(self):
+        if not _confirm(self, confirm_clear_prompt("diary")):
+            return
+        clear_diary_memory()
+        self.refresh()
+
+    def _delete_skill_item(self):
+        item = self.list_skills.currentItem()
+        if item is None:
+            QMessageBox.information(self, "Kỹ năng", "Chọn một kỹ năng để xóa.")
+            return
+        if not _confirm(self, confirm_clear_prompt("skill_item")):
+            return
+        skill_id = item.data(Qt.UserRole)
+        if skill_id:
+            delete_saved_skill(str(skill_id))
+        self.refresh()
+
+    def _clear_skills(self):
+        if not _confirm(self, confirm_clear_prompt("skills")):
+            return
+        clear_skills_memory()
+        self.refresh()
+
+    def _clear_all(self):
+        if not _confirm(self, confirm_clear_prompt("all")):
+            return
+        clear_local_memory()
+        self.refresh()
