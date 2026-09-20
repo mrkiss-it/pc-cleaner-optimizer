@@ -133,6 +133,9 @@ class NetworkOptimizerDialog(QDialog):
         header.addWidget(self.lbl_adapter_badge)
         main_layout.addLayout(header)
 
+        self.location_lock_banner = self._create_location_lock_banner()
+        main_layout.addWidget(self.location_lock_banner)
+
         # ── TABS ──
         self.tabs = QTabWidget()
         self.tab_boost = QWidget()
@@ -313,6 +316,121 @@ class NetworkOptimizerDialog(QDialog):
         card._lbl_sub = lbl_s
         return card
 
+    def _create_location_lock_banner(self) -> QFrame:
+        """Cảnh báo GPO Location + nút UAC một lần. Ẩn khi không bị khóa."""
+        banner = QFrame()
+        banner.setObjectName("LocationLockBanner")
+        banner.setStyleSheet("""
+            QFrame#LocationLockBanner {
+                background-color: #261d11;
+                border: 1px solid #d29922;
+                border-radius: 8px;
+            }
+            QLabel { background: transparent; border: none; }
+        """)
+        row = QHBoxLayout(banner)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(10)
+
+        self.lbl_location_lock = QLabel(
+            "📍 Location đang bị khóa bởi Group Policy — Settings → Privacy → Location bị xám, "
+            "reconnect SSID (netsh wlan) có thể thất bại."
+        )
+        self.lbl_location_lock.setWordWrap(True)
+        self.lbl_location_lock.setStyleSheet("color: #fbbf24; font-size: 11px;")
+        row.addWidget(self.lbl_location_lock, stretch=1)
+
+        self.btn_unlock_location = QPushButton("Gỡ khóa Location")
+        self.btn_unlock_location.setCursor(Qt.PointingHandCursor)
+        self.btn_unlock_location.setStyleSheet("""
+            QPushButton {
+                background-color: #9e6a03;
+                color: #ffffff;
+                font-weight: bold;
+                padding: 8px 14px;
+                border-radius: 6px;
+                font-size: 12px;
+                border: 1px solid #d29922;
+            }
+            QPushButton:hover { background-color: #bb8009; }
+            QPushButton:disabled {
+                background-color: #334155;
+                color: #64748b;
+                border: 1px solid #475569;
+            }
+        """)
+        self.btn_unlock_location.clicked.connect(self._on_unlock_location_clicked)
+        row.addWidget(self.btn_unlock_location)
+        banner.setVisible(False)
+        return banner
+
+    def _refresh_location_lock_banner(self):
+        try:
+            from core.windows_location import get_location_lock_status
+            status = get_location_lock_status()
+        except Exception:
+            status = {"locked": False}
+        locked = bool(status.get("locked"))
+        self.location_lock_banner.setVisible(locked)
+        if not hasattr(self, "lbl_footer_status"):
+            return
+        if locked:
+            names = ", ".join(status.get("locked_values") or ["DisableLocation"])
+            self.lbl_location_lock.setText(
+                f"📍 Location đang bị khóa bởi Group Policy ({names}=1). "
+                "Settings → Privacy → Location bị xám; reconnect SSID có thể thất bại. "
+                "Bấm «Gỡ khóa Location» — Windows sẽ hỏi quyền Administrator (UAC) một lần."
+            )
+            self.lbl_footer_status.setText("Location bị khóa bởi Group Policy — reconnect SSID có thể thất bại.")
+            self.lbl_footer_status.setStyleSheet("color: #fbbf24; font-size: 11px;")
+        else:
+            if "Location bị khóa" in (self.lbl_footer_status.text() or ""):
+                self.lbl_footer_status.setText("Trạng thái mạng: Bình thường")
+                self.lbl_footer_status.setStyleSheet("color: #64748b; font-size: 11px;")
+
+    def _on_unlock_location_clicked(self):
+        self.btn_unlock_location.setEnabled(False)
+        self.btn_unlock_location.setText("Đang gỡ khóa...")
+        try:
+            from core.windows_location import unlock_location_via_uac
+            result = unlock_location_via_uac()
+        except Exception as exc:
+            result = {
+                "success": False,
+                "cancelled": False,
+                "message": f"Không gỡ được khóa Location: {exc}",
+            }
+        self.btn_unlock_location.setEnabled(True)
+        self.btn_unlock_location.setText("Gỡ khóa Location")
+        self._refresh_location_lock_banner()
+        msg = str(result.get("message") or "Đã xong.")
+        try:
+            from ui.toast_notification import ToastManager, LEVEL_SUCCESS, LEVEL_WARNING, LEVEL_INFO
+            if result.get("cancelled"):
+                level = LEVEL_INFO
+                title = "Đã hủy UAC"
+            elif result.get("success"):
+                level = LEVEL_SUCCESS
+                title = "Đã gỡ khóa Location"
+            else:
+                level = LEVEL_WARNING
+                title = "Chưa gỡ được Location"
+            ToastManager.show_toast(
+                title=title,
+                message=msg,
+                level=level,
+                icon="📍",
+                duration_ms=5200,
+            )
+        except Exception:
+            pass
+        if result.get("cancelled"):
+            QMessageBox.information(self, "Đã hủy UAC", msg)
+        elif result.get("success"):
+            QMessageBox.information(self, "Đã gỡ khóa Location", msg)
+        else:
+            QMessageBox.warning(self, "Chưa gỡ được Location", msg)
+
     def _refresh_live_stats(self):
         """Cập nhật thông số mạng thời gian thực trên Tab 1."""
         net = SystemMonitor.get_network_info()
@@ -383,6 +501,7 @@ class NetworkOptimizerDialog(QDialog):
 
         adapter = net.get("adapter", "Wi-Fi")
         self.lbl_adapter_badge.setText(f"Card mạng: {adapter}")
+        self._refresh_location_lock_banner()
 
     def _run_network_optimization(self):
         self.btn_run_optimize.setEnabled(False)

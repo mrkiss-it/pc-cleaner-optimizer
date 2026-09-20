@@ -421,29 +421,51 @@ class OfflineExpertBrain:
                 )
                 actions.append(CopilotAction(key="repair_network_now", label="🛠️ Kiểm Tra & Sửa Mạng", icon="🛠️"))
                 actions.append(CopilotAction(key="switch_dns", label="🌐 Đổi DNS Siêu Tốc", icon="🌐"))
-            else:
-                wifi_note = ""
                 try:
-                    from core.wifi_recovery import WifiRecovery
-                    det = getattr(WifiRecovery, "last_detect", None) or {}
-                    if det.get("unstable"):
-                        wifi_note = (
-                            f"\n> ⚠️ **Wi-Fi:** {det.get('cause_label')}. "
-                            "Ping TCP vẫn có thể OK khi WLAN đang flap — nên sửa Wi-Fi (DHCP / reconnect SSID / tắt tiết kiệm pin)."
+                    from core.windows_location import is_location_gpo_locked
+                    if is_location_gpo_locked():
+                        reply_lines.append(
+                            "\n> 📍 **Location bị khóa bởi Group Policy** — reconnect SSID có thể thất bại "
+                            "cho đến khi gỡ khóa (UAC một lần, không tự chạy khi Wi-Fi rớt)."
                         )
+                        actions.append(CopilotAction(key="unlock_location", label="📍 Gỡ khóa Location", icon="📍"))
                 except Exception:
-                    wifi_note = ""
-                reply_lines.append(
-                    "\n**Giải pháp khắc phục giật lag mạng:**\n"
-                    "1. **Xóa DNS Cache (`ipconfig /flushdns`)**: Loại bỏ các bản ghi phân giải tên miền cũ hoặc bị lỗi.\n"
-                    "2. **Chuyển sang DNS Siêu Tốc (Cloudflare 1.1.1.1 hoặc Google 8.8.8.8)**: "
-                    "Tăng tốc độ tải trang web lên 20 - 40% và giảm hiện tượng nghẽn mạng giờ cao điểm."
-                    f"{wifi_note}"
-                )
-                if wifi_note:
-                    actions.append(CopilotAction(key="repair_network_now", label="🛠️ Sửa Wi-Fi Ngay", icon="🛠️"))
-                actions.append(CopilotAction(key="optimize_network", label="📶 Tối Ưu Mạng Ngay", icon="📶"))
-                actions.append(CopilotAction(key="switch_dns", label="🌐 Đổi DNS Siêu Tốc", icon="🌐"))
+                    pass
+                return CopilotResult(reply="\n".join(reply_lines), actions=actions, telemetry_summary=telemetry, source="offline_expert")
+
+            wifi_note = ""
+            try:
+                from core.wifi_recovery import WifiRecovery
+                det = getattr(WifiRecovery, "last_detect", None) or {}
+                if det.get("unstable"):
+                    wifi_note = (
+                        f"\n> ⚠️ **Wi-Fi:** {det.get('cause_label')}. "
+                        "Ping TCP vẫn có thể OK khi WLAN đang flap — nên sửa Wi-Fi (DHCP / reconnect SSID / tắt tiết kiệm pin)."
+                    )
+            except Exception:
+                wifi_note = ""
+            reply_lines.append(
+                "\n**Giải pháp khắc phục giật lag mạng:**\n"
+                "1. **Xóa DNS Cache (`ipconfig /flushdns`)**: Loại bỏ các bản ghi phân giải tên miền cũ hoặc bị lỗi.\n"
+                "2. **Chuyển sang DNS Siêu Tốc (Cloudflare 1.1.1.1 hoặc Google 8.8.8.8)**: "
+                "Tăng tốc độ tải trang web lên 20 - 40% và giảm hiện tượng nghẽn mạng giờ cao điểm."
+                f"{wifi_note}"
+            )
+            if wifi_note:
+                actions.append(CopilotAction(key="repair_network_now", label="🛠️ Sửa Wi-Fi Ngay", icon="🛠️"))
+            try:
+                from core.windows_location import is_location_gpo_locked
+                if is_location_gpo_locked():
+                    reply_lines.append(
+                        "\n> 📍 **Location bị khóa bởi Group Policy** — Settings → Privacy → Location bị xám, "
+                        "`netsh wlan show interfaces` có thể lỗi quyền Location nên reconnect SSID thất bại. "
+                        "Bấm **Gỡ khóa Location** (UAC một lần). Ứng dụng không tự gỡ khi Wi-Fi rớt."
+                    )
+                    actions.append(CopilotAction(key="unlock_location", label="📍 Gỡ khóa Location", icon="📍"))
+            except Exception:
+                pass
+            actions.append(CopilotAction(key="optimize_network", label="📶 Tối Ưu Mạng Ngay", icon="📶"))
+            actions.append(CopilotAction(key="switch_dns", label="🌐 Đổi DNS Siêu Tốc", icon="🌐"))
             return CopilotResult(reply="\n".join(reply_lines), actions=actions, telemetry_summary=telemetry, source="offline_expert")
 
         # ── 5. Câu hỏi về Nhiệt Độ / Quạt To / Nóng Máy / Pin ──

@@ -18,6 +18,7 @@ if sys.platform != "win32":
         _winreg.REG_DWORD = 4
         _winreg.REG_SZ = 1
         _winreg.REG_EXPAND_SZ = 2
+        _winreg.KEY_WOW64_64KEY = 0x0100
 
         class _WinregError(OSError):
             pass
@@ -1664,11 +1665,15 @@ assert int(_DC.get("auto_network_ping_fix_first_cooldown_seconds", 99)) <= 15
 assert int(_DC.get("auto_network_ping_fix_cooldown_seconds", 0)) >= 60
 assert hasattr(win, "chk_auto_ping_fix"), "Settings phai co checkbox auto ping-fix"
 assert hasattr(win, "repair_network_now"), "MainWindow phai co repair_network_now"
+assert hasattr(win, "unlock_location_now"), "MainWindow phai co unlock_location_now"
 
 # H. Dispatcher maps repair_network_now without crashing (busy-guard)
 win._network_repair_busy = True
 win._ai_action_dispatcher("repair_network_now")
 win._network_repair_busy = False
+win._location_unlock_busy = True
+win._ai_action_dispatcher("unlock_location")
+win._location_unlock_busy = False
 
 # I. Health score prescription when ping missing after a real measurement
 miss_health = pred_engine.calculate_health_score(
@@ -1717,6 +1722,15 @@ stable = _WR.wait_for_stable_link(
 )
 assert stable["stable"] is True
 assert clock["t"] >= 8
+from core.windows_location import (
+    looks_like_location_permission_error as _lle,
+    build_unlock_powershell as _bup,
+    is_location_gpo_locked as _ill,
+)
+assert _lle("Location permission is disabled. Please enable Location permission.") is True
+assert "DisableLocation" in _bup() and "lfsvc" in _bup() and "ConsentStore" in _bup()
+assert _ill() is False  # Linux CI / no GPO
+assert hasattr(win, "unlock_location_now")
 _WR.reset_state()
 print(" [PASS] 46. Wi-Fi flap detection, DHCP/SSID/power-save path, stability window, overlay rớt/yếu!")
 

@@ -1396,6 +1396,8 @@ class MainWindow(QMainWindow):
                 self.enable_game_boost()
             elif action_key in ("optimize_network", "repair_network_now"):
                 self.repair_network_now()
+            elif action_key == "unlock_location":
+                self.unlock_location_now()
             elif action_key == "switch_dns":
                 self.apply_fast_dns()
             elif action_key == "open_network_dialog":
@@ -1522,6 +1524,55 @@ class MainWindow(QMainWindow):
         if best.get("success"):
             QMessageBox.information(self, "Đổi DNS Siêu Tốc", msg)
 
+    def unlock_location_now(self):
+        """Gỡ khóa Location GPO một lần qua UAC — không chạy trong auto Wi-Fi repair."""
+        if getattr(self, "_location_unlock_busy", False):
+            if hasattr(self, "lbl_status"):
+                self.lbl_status.setText("📍 Đang gỡ khóa Location...")
+            return
+        self._location_unlock_busy = True
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText("📍 Đang gỡ khóa Location (Windows sẽ hỏi UAC)...")
+        try:
+            from core.windows_location import unlock_location_via_uac
+            result = unlock_location_via_uac()
+        except Exception as exc:
+            result = {
+                "success": False,
+                "cancelled": False,
+                "message": f"Không gỡ được khóa Location: {exc}",
+            }
+        self._location_unlock_busy = False
+        msg = str(result.get("message") or "Đã xong.")
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText(f"📍 {msg}")
+        if hasattr(self, "_ai_advisor"):
+            try:
+                self._ai_advisor.invalidate_cache()
+            except Exception:
+                pass
+        try:
+            from ui.toast_notification import ToastManager, LEVEL_SUCCESS, LEVEL_WARNING, LEVEL_INFO
+            if result.get("cancelled"):
+                title, level = "Đã hủy UAC", LEVEL_INFO
+            elif result.get("success"):
+                title, level = "Đã gỡ khóa Location", LEVEL_SUCCESS
+            else:
+                title, level = "Chưa gỡ được Location", LEVEL_WARNING
+            ToastManager.show_toast(
+                title=title,
+                message=msg,
+                level=level,
+                icon="📍",
+                action_text="📶 Xem Mạng",
+                action_callback=self.open_network_dialog,
+                duration_ms=5200,
+                play_sound=bool(self.config_manager.get("notification_sound_enabled", False)),
+            )
+        except Exception:
+            pass
+        return result
+
     def repair_network_now(self, apply_dns: bool = False):
         """Chẩn đoán mạng + sửa an toàn khi Ping không đo được (chạy nền, có thông báo)."""
         if getattr(self, "_network_repair_busy", False):
@@ -1566,10 +1617,14 @@ class MainWindow(QMainWindow):
             from ui.toast_notification import ToastManager, LEVEL_SUCCESS, LEVEL_WARNING
             recovered = bool(result.get("recovered"))
             needs_dns = bool(result.get("needs_dns_confirm"))
+            needs_loc = bool(result.get("needs_location_unlock") or result.get("location_gpo_locked"))
             is_wifi = str(result.get("type") or result.get("reason") or "") == "wifi_drop" or str(result.get("cause") or "") in (
                 "reconnect_loop", "weak_link", "link_loss",
             )
-            if needs_dns and not recovered:
+            if needs_loc and not recovered:
+                action_text = "📍 Gỡ khóa Location"
+                action_cb = self.unlock_location_now
+            elif needs_dns and not recovered:
                 action_text = "🌐 Đổi DNS Siêu Tốc"
                 action_cb = self.apply_fast_dns
             else:

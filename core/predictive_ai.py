@@ -1316,6 +1316,24 @@ class PredictiveAIEngine:
                     potential_gain += 4
             except Exception:
                 pass
+        try:
+            from core.windows_location import is_location_gpo_locked
+            if is_location_gpo_locked():
+                issues.append("Location bị khóa bởi Group Policy")
+                prescription.append({
+                    "title": "Gỡ khóa Location (Group Policy)",
+                    "desc": (
+                        "DisableLocation=1 đang khóa Settings → Privacy → Location. "
+                        "netsh wlan / reconnect SSID có thể thất bại. Gỡ một lần qua UAC — "
+                        "không tự sửa GPO khi Wi-Fi rớt."
+                    ),
+                    "action_key": "unlock_location",
+                    "action_label": "📍 Gỡ khóa Location",
+                    "points_gain": 3
+                })
+                potential_gain += 3
+        except Exception:
+            pass
         if ping_ms > 100:
             issues.append(f"Độ trễ mạng cao ({ping_ms:.0f}ms)")
             prescription.append({
