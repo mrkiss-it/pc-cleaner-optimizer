@@ -28,6 +28,23 @@ from core.predictive_ai import (
     STATUS_CRITICAL_DEPLETION, STATUS_WARNING_DEPLETION
 )
 
+# Gemini 2.5 Flash returns HTTP 404 for many new AI Studio keys (Sep 2026).
+# Prefer the documented Flash alias, then current stable Flash / Flash-Lite IDs.
+DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_FALLBACK_MODELS = (
+    "gemini-flash-latest",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+)
+GEMINI_KNOWN_MODELS = (
+    "gemini-flash-latest",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+)
+_GEMINI_MODEL_RE = re.compile(r"[A-Za-z0-9._-]+")
+_GEMINI_ERROR_MSG_MAX = 240
+
 
 # ---------------------------------------------------------------------------
 # Data Models
@@ -469,10 +486,69 @@ class OfflineExpertBrain:
 # Cloud Brain (Google Gemini API / OpenAI API Client)
 # ---------------------------------------------------------------------------
 
+def normalize_gemini_model(model: Optional[str]) -> str:
+    """Sanitize a Gemini model id; strip models/ prefix; fall back to the default."""
+    raw = (model or "").strip()
+    if raw.lower().startswith("models/"):
+        raw = raw[7:]
+    if not raw or not _GEMINI_MODEL_RE.fullmatch(raw):
+        return DEFAULT_GEMINI_MODEL
+    return raw
+
+
+def gemini_model_fallback_chain(preferred: Optional[str] = None) -> List[str]:
+    """Configured model first, then documented Flash aliases that still work for new keys."""
+    ordered: List[str] = []
+    seen = set()
+    for candidate in (preferred, *GEMINI_FALLBACK_MODELS):
+        model = normalize_gemini_model(candidate)
+        key = model.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(model)
+    return ordered
+
+
+def parse_gemini_error_message(body: str) -> str:
+    """Extract Google's JSON error.message (or a compact fallback) from an HTTP body."""
+    raw = (body or "").strip()
+    if not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = None
+    message = ""
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            message = str(err.get("message") or "").strip()
+        elif isinstance(err, str):
+            message = err.strip()
+        if not message:
+            message = str(data.get("message") or "").strip()
+    if not message:
+        message = re.sub(r"\s+", " ", raw)
+    message = re.sub(r"\s+", " ", message).strip()
+    if len(message) > _GEMINI_ERROR_MSG_MAX:
+        message = message[: _GEMINI_ERROR_MSG_MAX - 1].rstrip() + "…"
+    return message
+
+
+def format_gemini_http_error(code: int, body: str, reason: str = "") -> str:
+    """Human-readable HTTP error: parsed Google message instead of truncated JSON."""
+    detail = parse_gemini_error_message(body) or (reason or "").strip()
+    if detail:
+        return f"HTTP {code}: {detail}"
+    return f"HTTP {code}"
+
+
 class CloudAIBrain:
     """Kết nối mô hình ngôn ngữ lớn trên đám mây (Google Gemini Flash)."""
 
     last_error: str = ""
+    last_working_model: str = ""
 
     @classmethod
     def query_gemini(
@@ -482,23 +558,21 @@ class CloudAIBrain:
         telemetry: Dict[str, Any],
         health_report: Optional[AIHealthReport] = None,
         timeout: float = 8.0,
-        model: str = "gemini-2.5-flash",
+        model: str = DEFAULT_GEMINI_MODEL,
+        persist_model: Optional[Any] = None,
     ) -> Optional[str]:
         cls.last_error = ""
+        cls.last_working_model = ""
         if not api_key:
             cls.last_error = "Chưa có Gemini API Key."
             return None
 
-        # Gemini 1.5 Flash has been shut down. Send the key in a header so it is
-        # not written to proxy/access logs as a query parameter.
-        model = (model or "gemini-2.5-flash").strip()
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
-            model = "gemini-2.5-flash"
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        requested = normalize_gemini_model(model)
+        chain = gemini_model_fallback_chain(requested)
 
-        ram = telemetry.get("ram", {})
-        cpu = telemetry.get("cpu", {})
-        disk = telemetry.get("disk", {})
+        ram = telemetry.get("ram", {}) if isinstance(telemetry, dict) else {}
+        cpu = telemetry.get("cpu", {}) if isinstance(telemetry, dict) else {}
+        disk = telemetry.get("disk", {}) if isinstance(telemetry, dict) else {}
         score = health_report.score if health_report else 80
 
         system_instruction = (
@@ -508,7 +582,7 @@ class CloudAIBrain:
             f"Ổ C còn trống {disk.get('free_gb', 0)} GB, Điểm sức khỏe {score}/100."
         )
 
-        payload = {
+        payload_bytes = json.dumps({
             "contents": [
                 {
                     "parts": [
@@ -520,54 +594,89 @@ class CloudAIBrain:
                 "temperature": 0.4,
                 "maxOutputTokens": 600,
             }
-        }
+        }).encode("utf-8")
 
-        try:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "x-goog-api-key": api_key,
-                },
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                raw = response.read().decode("utf-8")
-                if response.status != 200:
-                    cls.last_error = f"HTTP {response.status}"
-                    logger.debug(f"[CloudAI] Gemini HTTP {response.status}: {raw[:200]}")
-                    return None
-                resp_data = json.loads(raw)
-                candidates = resp_data.get("candidates", [])
-                if not candidates:
-                    prompt_fb = (resp_data.get("promptFeedback") or {}).get("blockReason")
-                    cls.last_error = f"Gemini không trả lời ({prompt_fb or 'phản hồi rỗng'})."
-                    return None
-                finish = candidates[0].get("finishReason") or ""
-                parts = candidates[0].get("content", {}).get("parts", [])
-                text = parts[0].get("text", "") if parts else ""
-                if text:
-                    cls.last_error = ""
-                    return text
-                cls.last_error = f"Gemini trả về rỗng ({finish or 'no text'})."
-                return None
-        except urllib.error.HTTPError as e:
-            body = ""
+        tried: List[str] = []
+        last_http_detail = ""
+
+        for candidate in chain:
+            tried.append(candidate)
+            # API key is sent in a header so it is not written to proxy/access logs.
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{candidate}:generateContent"
             try:
-                body = e.read().decode("utf-8", errors="replace")[:180]
-            except Exception:
-                pass
-            cls.last_error = f"HTTP {e.code}: {body or e.reason}"
-            logger.debug(f"[CloudAI] Gemini HTTPError: {cls.last_error}")
-        except urllib.error.URLError as e:
-            cls.last_error = f"Lỗi mạng: {getattr(e, 'reason', e)}"
-            logger.debug(f"[CloudAI] Gemini URLError: {e}")
-        except Exception as e:
-            cls.last_error = f"{type(e).__name__}: {e}"
-            logger.debug(f"[CloudAI] Gemini API error: {e}")
+                req = urllib.request.Request(
+                    url,
+                    data=payload_bytes,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-goog-api-key": api_key,
+                    },
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    raw = response.read().decode("utf-8")
+                    if getattr(response, "status", 200) != 200:
+                        last_http_detail = format_gemini_http_error(response.status, raw)
+                        logger.debug(f"[CloudAI] Gemini HTTP {response.status} model={candidate}: {last_http_detail}")
+                        if int(response.status) == 404:
+                            continue
+                        cls.last_error = last_http_detail
+                        return None
+                    resp_data = json.loads(raw)
+                    candidates = resp_data.get("candidates", [])
+                    if not candidates:
+                        prompt_fb = (resp_data.get("promptFeedback") or {}).get("blockReason")
+                        cls.last_error = f"Gemini không trả lời ({prompt_fb or 'phản hồi rỗng'})."
+                        return None
+                    finish = candidates[0].get("finishReason") or ""
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    text = parts[0].get("text", "") if parts else ""
+                    if text:
+                        cls.last_error = ""
+                        cls.last_working_model = candidate
+                        cls._persist_working_model(persist_model, requested, candidate)
+                        return text
+                    cls.last_error = f"Gemini trả về rỗng ({finish or 'no text'})."
+                    return None
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = e.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                last_http_detail = format_gemini_http_error(e.code, body, reason=str(getattr(e, "reason", "") or ""))
+                logger.debug(f"[CloudAI] Gemini HTTPError model={candidate}: {last_http_detail}")
+                if int(e.code) == 404:
+                    continue
+                cls.last_error = last_http_detail
+                return None
+            except urllib.error.URLError as e:
+                cls.last_error = f"Lỗi mạng: {getattr(e, 'reason', e)}"
+                logger.debug(f"[CloudAI] Gemini URLError: {e}")
+                return None
+            except Exception as e:
+                cls.last_error = f"{type(e).__name__}: {e}"
+                logger.debug(f"[CloudAI] Gemini API error: {e}")
+                return None
 
+        models_tried = ", ".join(tried) if tried else requested
+        detail = last_http_detail
+        cls.last_error = (
+            f"Không tìm thấy mô hình Gemini khả dụng cho API key này (đã thử: {models_tried}). "
+            "Hãy chọn mô hình khác trong Cấu Hình AI hoặc kiểm tra quyền truy cập tại Google AI Studio."
+        )
+        if detail:
+            cls.last_error = f"{cls.last_error} Chi tiết: {detail}"
         return None
+
+    @staticmethod
+    def _persist_working_model(persist_model: Optional[Any], requested: str, working: str) -> None:
+        if not persist_model or not working or working == requested:
+            return
+        try:
+            persist_model(working)
+        except Exception as e:
+            logger.debug(f"[CloudAI] Không lưu được mô hình Gemini {working}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -637,13 +746,25 @@ class AICopilotEngine:
             api_key = str(self.config_manager.get("ai_copilot_gemini_api_key", "")).strip()
 
         if is_cloud_enabled and api_key:
-            model = str(self.config_manager.get("ai_copilot_gemini_model", "gemini-2.5-flash")).strip()
+            model = str(self.config_manager.get("ai_copilot_gemini_model", DEFAULT_GEMINI_MODEL)).strip()
+            persist_cb = None
+            if hasattr(self.config_manager, "set"):
+                cm = self.config_manager
+
+                def _persist_working(working: str, _cm=cm) -> None:
+                    current = str(_cm.get("ai_copilot_gemini_model", "")).strip()
+                    if working and working != current:
+                        _cm.set("ai_copilot_gemini_model", working)
+
+                persist_cb = _persist_working
+
             cloud_reply = CloudAIBrain.query_gemini(
                 api_key=api_key,
                 user_prompt=user_prompt_clean,
                 telemetry=telemetry,
                 health_report=health_report,
-                model=model or "gemini-2.5-flash",
+                model=model or DEFAULT_GEMINI_MODEL,
+                persist_model=persist_cb,
             )
             cloud_failed = not bool(cloud_reply)
         elif is_cloud_enabled and not api_key:

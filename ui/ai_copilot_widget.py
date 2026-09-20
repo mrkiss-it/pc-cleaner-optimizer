@@ -13,14 +13,17 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QCursor
+from PyQt5.QtGui import QColor, QFont, QCursor, QFontMetrics
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QScrollArea, QFrame, QSizePolicy, QDialog,
     QCheckBox, QMessageBox, QComboBox
 )
 
-from core.ai_copilot import AICopilotEngine, ChatMessage, CopilotAction, QUICK_PROMPTS, CloudAIBrain
+from core.ai_copilot import (
+    AICopilotEngine, ChatMessage, CopilotAction, QUICK_PROMPTS, CloudAIBrain,
+    DEFAULT_GEMINI_MODEL, GEMINI_KNOWN_MODELS, normalize_gemini_model,
+)
 from core.predictive_ai import PredictiveAIEngine, AIHealthReport, AutoPilotState
 
 
@@ -49,7 +52,7 @@ class APIConfigDialog(QDialog):
         super().__init__(parent)
         self.config_manager = config_manager
         self.setWindowTitle("⚙️ Cấu Hình Trí Tuệ Nhân Tạo (AI Engine Settings)")
-        self.resize(480, 240)
+        self.resize(480, 320)
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: {_SURFACE};
@@ -57,7 +60,7 @@ class APIConfigDialog(QDialog):
                 font-family: 'Segoe UI', sans-serif;
             }}
             QLabel {{ color: {_TEXT_PRIMARY}; font-size: 13px; }}
-            QLineEdit {{
+            QLineEdit, QComboBox {{
                 background-color: {_CARD_BG};
                 border: 1px solid {_CARD_BORDER};
                 border-radius: 6px;
@@ -65,8 +68,17 @@ class APIConfigDialog(QDialog):
                 color: {_TEXT_PRIMARY};
                 font-size: 13px;
             }}
-            QLineEdit:focus {{
+            QLineEdit:focus, QComboBox:focus {{
                 border: 1px solid {_ACCENT_BLUE};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 22px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {_CARD_BG};
+                color: {_TEXT_PRIMARY};
+                selection-background-color: #21262d;
             }}
             QPushButton {{
                 background-color: #21262d;
@@ -115,6 +127,32 @@ class APIConfigDialog(QDialog):
         self.txt_api_key.setText(key_val)
         layout.addWidget(self.txt_api_key)
 
+        model_row = QHBoxLayout()
+        lbl_model = QLabel("Mô hình Gemini:")
+        lbl_model.setStyleSheet(f"color: {_TEXT_MUTED};")
+        self.combo_model = QComboBox()
+        self.combo_model.setEditable(True)
+        self.combo_model.setInsertPolicy(QComboBox.NoInsert)
+        for mid in GEMINI_KNOWN_MODELS:
+            self.combo_model.addItem(mid)
+        cur_model = DEFAULT_GEMINI_MODEL
+        if self.config_manager:
+            cur_model = normalize_gemini_model(
+                str(self.config_manager.get("ai_copilot_gemini_model", DEFAULT_GEMINI_MODEL))
+            )
+        idx = self.combo_model.findText(cur_model)
+        if idx >= 0:
+            self.combo_model.setCurrentIndex(idx)
+        else:
+            self.combo_model.insertItem(0, cur_model)
+            self.combo_model.setCurrentIndex(0)
+        self.combo_model.setToolTip(
+            "gemini-flash-latest tự trỏ tới Flash mới nhất. Nếu API trả 404, ứng dụng sẽ thử các mô hình dự phòng."
+        )
+        model_row.addWidget(lbl_model)
+        model_row.addWidget(self.combo_model, stretch=1)
+        layout.addLayout(model_row)
+
         self.chk_autopilot = QCheckBox("Bật AI Auto-Pilot (tự bật/tắt Game Boost an toàn, có hoàn tác)")
         ap_on = bool(self.config_manager.get("ai_autopilot_enabled", True)) if self.config_manager else True
         self.chk_autopilot.setChecked(ap_on)
@@ -159,6 +197,8 @@ class APIConfigDialog(QDialog):
         if self.config_manager:
             self.config_manager.set("ai_copilot_cloud_enabled", self.chk_cloud.isChecked())
             self.config_manager.set("ai_copilot_gemini_api_key", self.txt_api_key.text().strip())
+            chosen_model = normalize_gemini_model(self.combo_model.currentText())
+            self.config_manager.set("ai_copilot_gemini_model", chosen_model)
             self.config_manager.set("ai_autopilot_enabled", self.chk_autopilot.isChecked())
             idx = self.combo_ap_mode.currentIndex()
             mode = self._ap_mode_values[idx] if 0 <= idx < len(self._ap_mode_values) else "auto"
@@ -352,9 +392,9 @@ class AICopilotWidget(QWidget):
         self.lbl_busy = QLabel("")
         self.lbl_busy.setFont(QFont("Segoe UI", 8))
         self.lbl_busy.setStyleSheet("color: #e3b341; border: none; background: transparent;")
-        hdr_lay.addWidget(self.lbl_busy)
-
-        hdr_lay.addStretch(1)
+        self.lbl_busy.setWordWrap(False)
+        self.lbl_busy.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        hdr_lay.addWidget(self.lbl_busy, stretch=1)
 
         # Settings button
         btn_cfg = QPushButton("⚙️ Cấu Hình AI")
@@ -550,7 +590,23 @@ class AICopilotWidget(QWidget):
         self.btn_send.setEnabled(not busy)
         self.btn_send.setText("…" if busy else "Gửi 🚀")
         if hasattr(self, "lbl_busy"):
-            self.lbl_busy.setText(status if busy else "")
+            self._set_status_text(status if busy else "", is_error=False)
+
+    def _set_status_text(self, text: str, is_error: bool = False):
+        if not hasattr(self, "lbl_busy"):
+            return
+        full = (text or "").strip()
+        self.lbl_busy.setToolTip(full)
+        color = "#f85149" if is_error else "#e3b341"
+        self.lbl_busy.setStyleSheet(f"color: {color}; border: none; background: transparent;")
+        if not full:
+            self.lbl_busy.setText("")
+            return
+        if is_error and not full.startswith("⚠️"):
+            full = f"⚠️ {full}"
+        metrics = QFontMetrics(self.lbl_busy.font())
+        width = max(int(self.lbl_busy.width() or 0), 220)
+        self.lbl_busy.setText(metrics.elidedText(full, Qt.ElideRight, width))
 
     def _send_user_text(self, text: str):
         if self._ask_worker and self._ask_worker.isRunning():
@@ -582,8 +638,7 @@ class AICopilotWidget(QWidget):
         if CloudAIBrain.last_error and hasattr(self, "lbl_busy"):
             # Keep a non-blocking hint if cloud failed but offline replied
             if "Cloud Gemini lỗi" in (self.copilot_engine.chat_history[-1].content if self.copilot_engine.chat_history else ""):
-                self.lbl_busy.setText(f"⚠️ {CloudAIBrain.last_error}")
-                self.lbl_busy.setStyleSheet("color: #f85149; border: none; background: transparent;")
+                self._set_status_text(CloudAIBrain.last_error, is_error=True)
 
     def _refresh_chat_display(self):
         # Xóa các widget cũ trong chat_lay (trừ spacer cuối)
