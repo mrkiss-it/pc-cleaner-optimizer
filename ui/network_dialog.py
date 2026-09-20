@@ -335,10 +335,20 @@ class NetworkOptimizerDialog(QDialog):
             self.card_ping._lbl_val.setText("-- ms")
             self.card_ping._lbl_sub.setText("Đang đo...")
         else:
-            self.card_ping._lbl_val.setText("-- ms")
+            from core.system_monitor import format_ping_overlay_text
+            status = net.get("ping_status") or net.get("ping_error") or "timeout"
+            overlay = format_ping_overlay_text(-1, True, status)
+            self.card_ping._lbl_val.setText(overlay)
             self.card_ping._lbl_val.setStyleSheet("color: #94a3b8; font-size: 20px; font-weight: bold;")
-            status = net.get("ping_status") or "timeout"
-            self.card_ping._lbl_sub.setText(f"Không đo được ({status}) • kiểm tra mạng")
+            cause_bit = ""
+            try:
+                from core.network_optimizer import NetworkOptimizer
+                report = getattr(NetworkOptimizer, "last_missing_ping_report", None) or {}
+                if report.get("cause_label"):
+                    cause_bit = f" • {report.get('cause_label')}"
+            except Exception:
+                cause_bit = ""
+            self.card_ping._lbl_sub.setText(f"Không đo được ({status}){cause_bit}")
 
         tot_mb = net.get("total_recv_mb", 0) + net.get("total_sent_mb", 0)
         self.card_total._lbl_val.setText(f"{tot_mb:.1f} MB")

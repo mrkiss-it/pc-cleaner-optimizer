@@ -1267,9 +1267,24 @@ class PredictiveAIEngine:
 
         if ping_measured and ping_ms <= 0:
             issues.append("Không đo được Ping (timeout / mất kết nối)")
+            desc = (
+                "Chẩn đoán nguyên nhân (timeout meter, DNS, gateway, TCP) rồi sửa ngay: "
+                "đo lại timeout dài hơn, flush DNS, ARP, đổi DNS tốt nhất nếu vẫn lỗi."
+            )
+            try:
+                from core.network_optimizer import NetworkOptimizer
+                report = getattr(NetworkOptimizer, "last_missing_ping_report", None) or {}
+                if report.get("cause_label"):
+                    desc = (
+                        f"Nguyên nhân: {report.get('cause_label')}. "
+                        f"Đã sửa: {report.get('applied_summary') or 'chưa có'}. "
+                        "Bấm để chạy lại kiểm tra & sửa."
+                    )
+            except Exception:
+                pass
             prescription.append({
                 "title": "Kiểm Tra & Sửa Mạng",
-                "desc": "Chẩn đoán card mạng, DNS, gateway rồi làm mới DNS cache (an toàn, không reset Winsock).",
+                "desc": desc,
                 "action_key": "repair_network_now",
                 "action_label": "🛠️ Sửa Mạng Ngay",
                 "points_gain": 4

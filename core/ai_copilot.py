@@ -390,14 +390,28 @@ class OfflineExpertBrain:
                 "Hệ thống tự động kiểm tra độ trễ mạng Internet, DNS, gateway và card mạng.",
             ]
             if ping_measured and ping_ms <= 0:
+                cause_line = ""
+                applied_line = ""
+                try:
+                    from core.network_optimizer import NetworkOptimizer
+                    report = getattr(NetworkOptimizer, "last_missing_ping_report", None) or {}
+                    if report.get("cause_label"):
+                        cause_line = f"\n> 🔍 **Nguyên nhân:** {report.get('cause_label')}."
+                    if report.get("applied_summary"):
+                        applied_line = f"\n> 🛠️ **Đã sửa:** {report.get('applied_summary')}."
+                except Exception:
+                    cause_line = ""
+                    applied_line = ""
                 reply_lines.append(
-                    "\n> ⚠️ **Ping không có:** Tôi sẽ kiểm tra mạng rồi làm mới DNS cache / ARP "
-                    "(không reset Winsock, không restart card)."
+                    "\n> ⚠️ **Ping không có:** Tôi sẽ chẩn đoán rồi sửa ngay "
+                    "(đo lại timeout dài hơn → flush DNS → ARP → đổi DNS nếu vẫn lỗi; "
+                    "không reset Winsock, không restart card)."
+                    f"{cause_line}{applied_line}"
                 )
                 reply_lines.append(
                     "\n**Các bước an toàn:**\n"
-                    "1. **Kiểm tra & sửa ngay**: flush DNS + làm mới ARP, báo cáo gateway/DNS.\n"
-                    "2. **Đổi DNS Siêu Tốc** nếu phân giải tên miền vẫn lỗi (Cloudflare/Google)."
+                    "1. **Kiểm tra & sửa ngay**: chẩn đoán nguyên nhân + flush DNS / ARP / DNS siêu tốc.\n"
+                    "2. **Đổi DNS Siêu Tốc** nếu Windows hỏi quyền Administrator (UAC)."
                 )
                 actions.append(CopilotAction(key="repair_network_now", label="🛠️ Kiểm Tra & Sửa Mạng", icon="🛠️"))
                 actions.append(CopilotAction(key="switch_dns", label="🌐 Đổi DNS Siêu Tốc", icon="🌐"))
@@ -832,7 +846,8 @@ class AICopilotEngine:
         if ping_ms > 0:
             badge += f" • Ping {ping_ms:.0f}ms"
         elif telemetry.get("net", {}).get("ping_measured"):
-            badge += " • Ping --"
+            status = telemetry.get("net", {}).get("ping_status") or "timeout"
+            badge += f" • Ping {status}"
         if cloud_failed:
             badge = f"Cloud lỗi • {badge}"
 

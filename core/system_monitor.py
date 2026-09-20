@@ -1,18 +1,26 @@
 import os
 import time
+import socket
 import threading
 import psutil
 from typing import Dict, Any, Tuple
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 # TCP probes used as a lightweight "ping" (ICMP is often blocked / needs admin).
+# Extra HTTPS / CDN targets help when port 53 is filtered but traffic still works.
 PING_TARGETS: Tuple[Tuple[str, int], ...] = (
     ("8.8.8.8", 53),
+    ("8.8.8.8", 443),
     ("1.1.1.1", 53),
     ("1.1.1.1", 443),
+    ("9.9.9.9", 53),
+    ("104.16.1.1", 443),  # Cloudflare CDN anycast
 )
 PING_REFRESH_SEC = 4.0
-PING_SOCKET_TIMEOUT = 0.45
+# 0.45s was too tight under load (probes of 72–333ms in a bare shell still
+# timed out inside the app). Repair uses an even longer timeout.
+PING_SOCKET_TIMEOUT = 1.6
+PING_REPAIR_TIMEOUT = 2.0
 
 class SystemMonitor:
     _last_cpu_time = 0.0
@@ -29,7 +37,7 @@ class SystemMonitor:
     _ping_measured = False
     _ping_fail_streak = 0
     _ping_status = "unknown"   # unknown | ok | timeout | unreachable
-    _last_ping_error = "timeout"
+    _last_ping_error = ""
     _ping_thread_running = False
     _ping_lock = threading.Lock()
 
@@ -107,13 +115,37 @@ class SystemMonitor:
             return f"{bps / (1024 * 1024):.2f} MB/s"
 
     @staticmethod
+    def _classify_socket_error(exc: BaseException) -> str:
+        """Map OS/socket errors to a short status used by the overlay / repair."""
+        if isinstance(exc, (socket.timeout, TimeoutError)):
+            return "timeout"
+        text = str(exc).lower()
+        errno = getattr(exc, "errno", None)
+        # WinError 10051 (network unreachable), 10065 (host unreachable),
+        # 10061 (connection refused), Linux ENETUNREACH / EHOSTUNREACH / EPERM.
+        if errno in (10051, 10065, 101, 113, 1) or any(
+            token in text
+            for token in (
+                "no route",
+                "network is unreachable",
+                "host is unreachable",
+                "forbidden",
+                "permission denied",
+                "firewall",
+            )
+        ):
+            return "unreachable"
+        if isinstance(exc, OSError):
+            return "unreachable"
+        return "unreachable"
+
+    @staticmethod
     def _measure_quick_ping(timeout: float = PING_SOCKET_TIMEOUT) -> float:
         """
         Đo độ trễ TCP tới vài máy chủ công cộng. Trả về ms của lần thành công
         đầu tiên, hoặc -1 nếu tất cả đều timeout / không tới được.
         Không dùng ICMP để tránh cần raw socket / quyền admin.
         """
-        import socket
         last_error = "timeout"
         for host, port in PING_TARGETS:
             s = None
@@ -122,20 +154,20 @@ class SystemMonitor:
                 s.settimeout(timeout)
                 t0 = time.time()
                 s.connect((host, port))
+                SystemMonitor._last_ping_error = ""
                 return round((time.time() - t0) * 1000, 1)
-            except (socket.timeout, TimeoutError):
-                last_error = "timeout"
-            except OSError:
-                last_error = "unreachable"
-            except Exception:
-                last_error = "unreachable"
+            except (socket.timeout, TimeoutError) as e:
+                last_error = SystemMonitor._classify_socket_error(e)
+            except OSError as e:
+                last_error = SystemMonitor._classify_socket_error(e)
+            except Exception as e:
+                last_error = SystemMonitor._classify_socket_error(e)
             finally:
                 if s is not None:
                     try:
                         s.close()
                     except Exception:
                         pass
-        # Stash last error class on the function for callers that care.
         SystemMonitor._last_ping_error = last_error
         return -1.0
 
@@ -191,6 +223,7 @@ class SystemMonitor:
             cls._ping_measured = False
             cls._ping_fail_streak = 0
             cls._ping_status = "unknown"
+            cls._last_ping_error = ""
             cls._ping_thread_running = False
 
     @staticmethod
@@ -251,6 +284,7 @@ class SystemMonitor:
             "total_sent_mb": round(bytes_sent / (1024 ** 2), 1),
             "ping_ms": cls._cached_ping,
             "ping_status": cls._ping_status,
+            "ping_error": cls._last_ping_error or cls._ping_status,
             "ping_measured": cls._ping_measured,
             "ping_fail_streak": cls._ping_fail_streak,
             "adapter": cls._cached_adapter
@@ -265,6 +299,36 @@ class SystemMonitor:
             "net": SystemMonitor.get_network_info(),
             "process_count": len(psutil.pids())
         }
+
+
+def format_ping_overlay_text(
+    ping_ms: float,
+    ping_measured: bool,
+    ping_status: str = "",
+) -> str:
+    """
+    Text trên widget nổi: số ms khi đo được; 'timeout' / 'mất' / 'DNS'
+    khi đã đo nhưng thất bại — không chỉ '--'.
+    """
+    try:
+        val = float(ping_ms)
+    except (TypeError, ValueError):
+        val = -1.0
+    if val > 0:
+        return f"{val:.0f} ms"
+    if not ping_measured:
+        return "-- ms"
+    status = str(ping_status or "timeout").lower()
+    if status in ("timeout", "meter_timeout"):
+        return "timeout"
+    if status in ("unreachable", "no_connectivity", "tcp_fail", "firewall_or_no_route"):
+        return "mất"
+    if "dns" in status:
+        return "DNS"
+    if status in ("adapter_down", "no_gateway"):
+        return "offline"
+    return (status[:8] if status else "timeout")
+
 
 class SystemMonitorHub(QObject):
     """

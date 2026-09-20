@@ -265,16 +265,21 @@ def main():
                 recovered = info.get("recovered")
                 title = "Ping đã đo được lại" if recovered else "Tự kiểm tra & sửa mạng"
                 level = "success" if recovered else "warning"
+                needs_dns = bool(info.get("needs_dns_confirm")) and not recovered
+                action_text = "🌐 Đổi DNS Siêu Tốc" if needs_dns else "📶 Xem Mạng"
+                action_cb = main_win.apply_fast_dns if needs_dns else main_win.open_network_dialog
             else:
                 title = "Tự Động Tối Ưu Mạng"
                 level = "info"
+                action_text = "📶 Xem Mạng"
+                action_cb = main_win.open_network_dialog
             tray_mgr.notify(
                 title,
                 msg,
                 level=level,
                 icon="🌐",
-                action_text="📶 Xem Mạng",
-                action_callback=main_win.open_network_dialog
+                action_text=action_text,
+                action_callback=action_cb
             )
 
     scheduler.clean_completed.connect(on_scheduled_clean_done)

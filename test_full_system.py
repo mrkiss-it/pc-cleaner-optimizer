@@ -917,16 +917,29 @@ assert toast.windowFlags() & Qt.WindowDoesNotAcceptFocus, "Toast khong duoc chie
 assert toast.btn_action is not None, "Toast phai co action button"
 assert toast.btn_action.text() == "Thu Hồi RAM", "Action text phai khop"
 
-# Trigger action
+# Trigger action — dismiss happens first so the QTimer is stopped before the callback
 toast._on_action_clicked()
 assert len(toast_action_fired) == 1, "Action callback phai duoc kich hoat khi click action"
+assert toast._dismissing is True, "Click action phai dismiss toast (tranh QTimer deleted)"
 
-# Test hover pause and resume
-toast.enterEvent(None)
-assert toast.is_paused is True, "is_paused phai la True khi hover vao"
-toast.leaveEvent(None)
-assert toast.is_paused is False, "is_paused phai la False khi roi chuot ra"
+# Hover pause/resume on a fresh toast that is still alive
+toast_hover = ToastNotification(
+    title="Hover Toast",
+    message="pause test",
+    level=LEVEL_INFO,
+    duration_ms=3000
+)
+toast_hover.enterEvent(None)
+assert toast_hover.is_paused is True, "is_paused phai la True khi hover vao"
+toast_hover.leaveEvent(None)
+assert toast_hover.is_paused is False, "is_paused phai la False khi roi chuot ra"
 
+# Double-dismiss + tick after action must not raise (QTimer crash regression)
+toast_hover._on_tick()
+toast_hover.dismiss()
+toast_hover.dismiss()
+toast_hover._on_tick()
+toast._on_tick()
 toast.dismiss()
 
 # C. Test ToastManager Singleton & Stacking
@@ -1502,11 +1515,18 @@ assert "checks" in health and "issues" in health
 for key in ("adapter", "gateway", "dns", "connectivity", "ping"):
     assert key in health["checks"], f"Health check phai co {key}"
 
-# D. Repair skips destructive steps; recovered ping short-circuits
+# D. Repair: longer timeout recovers; escalate DNS when flush alone fails; skip Winsock
+from core.system_monitor import PING_SOCKET_TIMEOUT as _PST, PING_REPAIR_TIMEOUT as _PRT, PING_TARGETS as _PT
+assert _PST >= 1.5, f"Meter timeout phai >= 1.5s (nhan {_PST})"
+assert _PRT >= _PST
+assert ("8.8.8.8", 443) in _PT
+
 _orig_measure_fn = _SM.__dict__["_measure_quick_ping"]
 _orig_flush = _NO.__dict__["flush_dns"]
 _orig_arp = _NO.__dict__["purge_arp_netbios"]
 _orig_best = _NO.__dict__["apply_best_dns"]
+_orig_tcp = _NO.__dict__["optimize_tcp_stack"]
+_orig_health = _NO.__dict__["run_health_check"]
 flush_calls = {"n": 0}
 best_calls = {"n": 0}
 
@@ -1519,35 +1539,88 @@ def _fake_arp(cls=None):
 
 def _fake_best(cls=None, allow_elevation=True):
     best_calls["n"] += 1
-    return {"success": True, "message": "dns-applied"}
+    return {"success": True, "message": "dns-applied", "needs_admin": False}
 
-_SM._measure_quick_ping = staticmethod(lambda timeout=0.45: 22.0)
-_SM.reset_ping_state()
+def _fake_tcp(cls=None):
+    return {"action": "optimize_tcp_stack", "success": True, "message": "tcp-ok"}
+
+def _fast_health(cls, measure_ping=True):
+    ping = _SM.measure_ping_now() if measure_ping else float(_SM.get_network_info().get("ping_ms", -1))
+    ping_ok = ping > 0
+    probe = {"ok": True, "error": "", "latency_ms": 40.0}
+    return {
+        "ok": ping_ok,
+        "summary": "canned",
+        "issues": [] if ping_ok else ["ping_missing"],
+        "cause": "ok" if ping_ok else "meter_timeout",
+        "cause_label": "đồng hồ Ping quá thời gian (probe chậm hoặc bị chặn)",
+        "checks": {
+            "adapter": {"ok": True}, "gateway": {"ok": True}, "dns": {"ok": True},
+            "connectivity": {"ok": True, "cloudflare": probe, "google_dns": probe, "google_https": probe},
+            "ping": {"ok": ping_ok, "ping_ms": ping, "status": "ok" if ping_ok else "timeout"},
+        },
+    }
+
 _NO.flush_dns = classmethod(_fake_flush)
 _NO.purge_arp_netbios = classmethod(_fake_arp)
 _NO.apply_best_dns = classmethod(_fake_best)
+_NO.optimize_tcp_stack = classmethod(_fake_tcp)
+_NO.run_health_check = classmethod(_fast_health)
 try:
+    _SM._measure_quick_ping = staticmethod(lambda timeout=0.45: 22.0)
+    _SM.reset_ping_state()
     skip_fix = _NO.diagnose_and_repair_missing_ping(apply_dns=False)
     assert skip_fix.get("repaired") is False, "Ping da do duoc thi khong sua"
     assert skip_fix.get("recovered") is True
     assert flush_calls["n"] == 0, "Khong flush DNS khi ping da OK"
 
+    # Timeout-increase path: 1.6s meter fails, 2.0s remasure recovers
+    def _timeout_aware(timeout=0.45):
+        return 72.0 if timeout >= 1.9 else -1.0
+    _SM._measure_quick_ping = staticmethod(_timeout_aware)
+    _SM.reset_ping_state()
+    long_fix = _NO.diagnose_and_repair_missing_ping()
+    assert long_fix.get("recovered") is True
+    assert long_fix.get("stopped_at") == "remeasure_long_timeout"
+    assert flush_calls["n"] == 0, "Timeout dai hon phai du cho ping ve, khong can flush"
+
     _SM._measure_quick_ping = staticmethod(lambda timeout=0.45: -1.0)
     _SM.reset_ping_state()
-    did_fix = _NO.diagnose_and_repair_missing_ping(apply_dns=False)
+    did_fix = _NO.diagnose_and_repair_missing_ping(apply_dns=False, escalate_dns=True)
     assert did_fix.get("repaired") is True, "Ping missing phai chay repair"
     assert flush_calls["n"] >= 1, "Repair phai flush DNS"
-    assert best_calls["n"] == 0, "Auto-repair khong duoc apply_best_dns (tranh UAC / kho undo)"
+    assert best_calls["n"] >= 1, "Flush that bai phai escalate sang apply_best_dns"
     assert any("Winsock" in s or "card" in s.lower() for s in did_fix.get("skipped", [])), "Phai skip Winsock/adapter restart"
     steps_actions = [s.get("action") for s in did_fix.get("steps", [])]
     assert "flush_dns" in steps_actions
-    assert "apply_best_dns" not in steps_actions
+    assert "apply_best_dns" in steps_actions
+    assert "Nguyên nhân" in did_fix.get("message", "")
+    cause, label = _NO.classify_missing_ping_cause(did_fix.get("health_before") or _fast_health(_NO))
+    assert cause in (
+        "meter_timeout", "ping_missing", "dns_fail", "tcp_fail",
+        "firewall_or_no_route", "adapter_down", "no_gateway",
+    )
 finally:
     _NO.flush_dns = _orig_flush
     _NO.purge_arp_netbios = _orig_arp
     _NO.apply_best_dns = _orig_best
+    _NO.optimize_tcp_stack = _orig_tcp
+    _NO.run_health_check = _orig_health
     _SM._measure_quick_ping = _orig_measure_fn
     _SM.reset_ping_state()
+
+# D2. First-repair immediacy vs anti-loop backoff
+assert _BS.effective_missing_ping_cooldown(0, 8, 300) == 8
+assert _BS.should_trigger_missing_ping_fix(
+    enabled=True, ping_ms=-1, ping_measured=True, fail_streak=1,
+    min_streak=1, now_ts=1000, last_trigger_ts=990, cooldown_sec=300,
+    unrecovered_repairs=0, first_cooldown_sec=8,
+) is True, "Lan sua dau chi can ~8s"
+assert _BS.should_trigger_missing_ping_fix(
+    enabled=True, ping_ms=-1, ping_measured=True, fail_streak=5,
+    min_streak=1, now_ts=9999, last_trigger_ts=0, cooldown_sec=300,
+    unrecovered_repairs=2, first_cooldown_sec=8,
+) is False, "2 lan khong hoi phuc thi khong lap vo han"
 
 # E. Advisor surfaces missing ping with repair_network_now
 adv_ping = AIAdvisor(config_manager=cfg)
@@ -1586,7 +1659,8 @@ assert "không đo được" in res_net_miss.reply.lower() or "khong do duoc" in
 # G. Config default + UI checkbox
 from config_manager import DEFAULT_CONFIG as _DC
 assert _DC.get("auto_network_ping_fix_enabled") is True, "Default ON (an toan + throttle)"
-assert int(_DC.get("auto_network_ping_fail_streak", 0)) >= 3
+assert int(_DC.get("auto_network_ping_fail_streak", 0)) >= 1
+assert int(_DC.get("auto_network_ping_fix_first_cooldown_seconds", 99)) <= 15
 assert int(_DC.get("auto_network_ping_fix_cooldown_seconds", 0)) >= 60
 assert hasattr(win, "chk_auto_ping_fix"), "Settings phai co checkbox auto ping-fix"
 assert hasattr(win, "repair_network_now"), "MainWindow phai co repair_network_now"

@@ -596,7 +596,7 @@ class MainWindow(QMainWindow):
         self.chk_auto_net.setStyleSheet("font-weight: bold; font-size: 14px; color: #38bdf8;")
 
         self.chk_auto_ping_fix = QCheckBox(
-            "Khi Ping không đo được: tự kiểm tra mạng và sửa ngay (Flush DNS / ARP)"
+            "Khi Ping không đo được: tự chẩn đoán nguyên nhân và sửa ngay (Flush DNS / ARP / Đổi DNS)"
         )
         self.chk_auto_ping_fix.setStyleSheet("font-weight: bold; font-size: 13px; color: #7dd3fc;")
         self.chk_auto_ping_fix.setChecked(self.config_manager.get("auto_network_ping_fix_enabled", True))
@@ -612,8 +612,9 @@ class MainWindow(QMainWindow):
 
         lbl_net_desc = QLabel(
             "Tự động xóa DNS cache khi dọn định kỳ hoặc khi Ping cao. "
-            "Nếu Ping timeout / unreachable, tự chẩn đoán (card, DNS, gateway) rồi làm mới DNS — "
-            "không reset Winsock, không restart card. Có thể tắt bên dưới."
+            "Nếu Ping timeout: chẩn đoán (card, gateway, DNS, TCP) rồi sửa ngay lần đầu "
+            "(flush DNS → ARP → đổi DNS tốt nhất nếu vẫn lỗi). Không reset Winsock, "
+            "không restart card trừ khi bạn xác nhận. Có thể tắt bên dưới."
         )
         lbl_net_desc.setStyleSheet("color: #64748b; font-size: 11px;")
         lbl_net_desc.setWordWrap(True)
@@ -1534,7 +1535,10 @@ class MainWindow(QMainWindow):
         def _worker():
             from core.network_optimizer import NetworkOptimizer
             try:
-                result = NetworkOptimizer.diagnose_and_repair_missing_ping(apply_dns=apply_dns)
+                result = NetworkOptimizer.diagnose_and_repair_missing_ping(
+                    apply_dns=apply_dns,
+                    escalate_dns=True,
+                )
             except Exception as e:
                 result = {
                     "success": False,
@@ -1559,13 +1563,20 @@ class MainWindow(QMainWindow):
         try:
             from ui.toast_notification import ToastManager, LEVEL_SUCCESS, LEVEL_WARNING
             recovered = bool(result.get("recovered"))
+            needs_dns = bool(result.get("needs_dns_confirm"))
+            if needs_dns and not recovered:
+                action_text = "🌐 Đổi DNS Siêu Tốc"
+                action_cb = self.apply_fast_dns
+            else:
+                action_text = "📶 Xem Mạng"
+                action_cb = self.open_network_dialog
             ToastManager.show_toast(
                 title="Ping đã đo được" if recovered else "Đã kiểm tra / sửa mạng",
                 message=msg,
                 level=LEVEL_SUCCESS if recovered else LEVEL_WARNING,
                 icon="🌐",
-                action_text="📶 Xem Mạng",
-                action_callback=self.open_network_dialog,
+                action_text=action_text,
+                action_callback=action_cb,
                 duration_ms=5200,
                 play_sound=bool(self.config_manager.get("notification_sound_enabled", False)),
             )
