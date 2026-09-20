@@ -3671,48 +3671,51 @@ class MainWindow(QMainWindow):
                 self.btn_update_now.setEnabled(True)
             return
 
+        if not launch.should_close:
+            self._notify_update(
+                "Đã tải bản portable",
+                launch.message,
+                level="info",
+                icon="📂",
+                duration_ms=8000,
+            )
+            if hasattr(self, "lbl_status"):
+                self.lbl_status.setText(f"🔄 {launch.message}")
+            if hasattr(self, "lbl_update_status"):
+                try:
+                    self.lbl_update_status.setText(f"● {launch.message}")
+                    self.lbl_update_status.setStyleSheet("color: #fbbf24; font-size: 11px;")
+                except Exception:
+                    pass
+            if hasattr(self, "btn_update_now"):
+                self.btn_update_now.setEnabled(True)
+            if hasattr(self, "btn_update_banner"):
+                try:
+                    self.btn_update_banner.setEnabled(True)
+                except Exception:
+                    pass
+            return
+
+        tag = getattr(info, "tag", "") if info is not None else ""
         self._notify_update(
-            "Đã mở trình cài đặt",
+            "Đang mở trình cài đặt…",
             launch.message,
             level="success",
             icon="📦",
-            duration_ms=7000,
+            duration_ms=2500,
         )
         if hasattr(self, "lbl_status"):
-            self.lbl_status.setText(f"🔄 {launch.message}")
+            extra = f" {tag}" if tag else ""
+            self.lbl_status.setText(f"🔄 Đang mở trình cài đặt{extra}…")
+        if hasattr(self, "lbl_update_status"):
+            try:
+                self.lbl_update_status.setText("● Đang mở trình cài đặt… Ứng dụng sẽ thoát.")
+                self.lbl_update_status.setStyleSheet("color: #34d399; font-size: 11px;")
+            except Exception:
+                pass
 
-        if not launch.should_close:
-            if hasattr(self, "btn_update_now"):
-                self.btn_update_now.setEnabled(True)
-            return
-
-        tag = getattr(info, "tag", "") if info else ""
-        try:
-            reply = QMessageBox.question(
-                self,
-                "Cài đặt bản cập nhật",
-                (
-                    f"Đã mở trình cài đặt (bản {tag or 'mới'}).\n\n"
-                    "PC Auto Cleaner cần đóng để Windows có thể ghi đè file đang chạy.\n\n"
-                    "Đóng ứng dụng ngay bây giờ?"
-                ),
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-        except Exception:
-            reply = QMessageBox.Yes
-
-        if reply == QMessageBox.Yes:
-            QTimer.singleShot(350, self._quit_for_installer)
-        else:
-            self._notify_update(
-                "Nhớ đóng ứng dụng",
-                "Hãy đóng PC Auto Cleaner trước khi hoàn tất cài đặt, nếu không file có thể bị khóa.",
-                level="warning",
-                icon="⚠",
-            )
-            if hasattr(self, "btn_update_now"):
-                self.btn_update_now.setEnabled(True)
+        # Cài luôn: thoát app ngay (không hỏi Yes/No) để bộ cài ghi đè file đang chạy.
+        QTimer.singleShot(500, self._quit_for_installer)
 
     def _quit_for_installer(self):
         """Thoát hẳn (không thu nhỏ khay) để bộ cài ghi đè file."""

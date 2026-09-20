@@ -153,6 +153,25 @@ setup_url, setup_name = pick_download_asset(
 check(setup_name == "PCAutoCleaner_Setup.exe", "prefer Setup.exe name")
 check(setup_url.endswith("PCAutoCleaner_Setup.exe"), "prefer Setup.exe url")
 
+# v3.8.1 Release: zip listed first, then Setup.exe — still pick Setup
+v381_url, v381_name = pick_download_asset(
+    [
+        {
+            "name": "PCAutoCleaner_3.8.1_portable.zip",
+            "browser_download_url": "https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/download/v3.8.1/PCAutoCleaner_3.8.1_portable.zip",
+            "size": 40380503,
+        },
+        {
+            "name": "PCAutoCleaner_Setup.exe",
+            "browser_download_url": "https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/download/v3.8.1/PCAutoCleaner_Setup.exe",
+            "size": 116235370,
+        },
+    ],
+    html_url="https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/tag/v3.8.1",
+)
+check(v381_name == "PCAutoCleaner_Setup.exe", "v3.8.1 zip+setup prefers Setup.exe")
+check(v381_url.endswith("PCAutoCleaner_Setup.exe"), "v3.8.1 url is Setup.exe not zip")
+
 zip_url, zip_name = pick_download_asset(
     [{"name": "PCAutoCleaner_portable.zip", "browser_download_url": "https://ex/p.zip"}],
     html_url="https://github.com/x/y/releases/tag/v1",

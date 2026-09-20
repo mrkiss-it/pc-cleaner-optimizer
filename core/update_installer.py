@@ -2,9 +2,10 @@
 core/update_installer.py – Tải asset GitHub Release và chạy bộ cài (chỉ khi user bấm Cập nhật).
 
 - Không cần token cho release công khai (browser_download_url).
-- Không cài im lặng nền; không ghi đè exe đang chạy.
-- Setup wizard (PCAutoCleaner_Setup.exe) không có cờ silent — mở UI bình thường.
-- Inno Setup hỗ trợ /SILENT nhưng không dùng: ghi đè khi app còn chạy là không an toàn.
+- Setup wizard (PCAutoCleaner_Setup.exe) không có cờ silent — mở UI bình thường rồi thoát app.
+- Inno Setup hỗ trợ /SILENT nhưng không dùng (wizard tùy chỉnh không đọc cờ đó).
+- Sau khi mở Setup.exe/.msi: UI tự thoát (`should_close`) để bộ cài ghi đè file đang chạy.
+- Zip portable không có Setup bên trong: chỉ mở thư mục (không thể ghi đè file đang chạy).
 """
 
 from __future__ import annotations
@@ -25,7 +26,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.update_checker import USER_AGENT, current_app_version, GITHUB_OWNER, GITHUB_REPO
 
-DOWNLOAD_TIMEOUT_SEC = 60.0
+# urllib timeout áp dụng cho connect và mỗi lần read(). 60s quá ngắn với
+# PCAutoCleaner_Setup.exe (~116 MB) trên Wi-Fi chậm / CDN GitHub khựng.
+DOWNLOAD_CONNECT_TIMEOUT_SEC = 30.0
+DOWNLOAD_READ_TIMEOUT_SEC = 30 * 60.0  # 30 phút — file lớn, đường truyền chậm
+DOWNLOAD_TIMEOUT_SEC = DOWNLOAD_READ_TIMEOUT_SEC
 CHUNK_SIZE = 64 * 1024
 CACHE_DIRNAME = "PCAutoCleaner"
 CACHE_SUBDIR = "updates"
@@ -216,12 +221,24 @@ def _download_headers() -> Dict[str, str]:
     }
 
 
+def open_download_url(req: urllib.request.Request, timeout: Optional[float] = None, urlopen: Optional[UrlOpen] = None):
+    """
+    Mở URL tải. Timeout mặc định 30 phút — đủ cho Setup ~116MB trên Wi-Fi chậm.
+    (urllib chỉ có một socket timeout cho connect + mỗi lần đọc.)
+    urlopen injectable — unit test không mạng thật.
+    """
+    opener = urlopen or urllib.request.urlopen
+    if timeout is None:
+        timeout = DOWNLOAD_TIMEOUT_SEC
+    return opener(req, timeout=timeout)
+
+
 def download_release_asset(
     url: str,
     dest_path: str,
     expected_size: int = 0,
     expected_digest: str = "",
-    timeout: float = DOWNLOAD_TIMEOUT_SEC,
+    timeout: Optional[float] = DOWNLOAD_TIMEOUT_SEC,
     chunk_size: int = CHUNK_SIZE,
     progress_cb: Optional[ProgressCb] = None,
     cancel_check: Optional[CancelCheck] = None,
@@ -260,7 +277,6 @@ def download_release_asset(
             http_status=200,
         )
 
-    opener = urlopen or urllib.request.urlopen
     req = urllib.request.Request(target, headers=_download_headers(), method="GET")
     part_path = dest + ".part"
     written = 0
@@ -268,6 +284,8 @@ def download_release_asset(
     algo, hexdigest = parse_asset_digest(expected_digest)
     header_len = 0
     total = expect
+    if timeout is None:
+        timeout = DOWNLOAD_TIMEOUT_SEC
 
     try:
         if os.path.isfile(part_path):
@@ -276,7 +294,7 @@ def download_release_asset(
             except OSError:
                 pass
 
-        with opener(req, timeout=timeout) as resp:
+        with open_download_url(req, timeout=timeout, urlopen=urlopen) as resp:
             status = int(getattr(resp, "status", 200) or 200)
             if status >= 400:
                 code = "http_404" if status == 404 else ("http_403" if status == 403 else "http")
@@ -518,14 +536,20 @@ def launch_downloaded_update(
         if folder_opener(dest_dir):
             return LaunchResult(
                 ok=True,
-                message="Đã tải bản portable. Hãy giải nén/chạy từ thư mục vừa mở — ứng dụng hiện tại sẽ không tự ghi đè.",
+                message=(
+                    "Đã mở bản portable. Không thể ghi đè file đang chạy — "
+                    "hãy đóng ứng dụng rồi chạy bản mới từ thư mục vừa mở."
+                ),
                 action="folder",
                 should_close=False,
                 path=dest_dir,
             )
         return LaunchResult(
             ok=True,
-            message=f"Đã giải nén bản portable tại {dest_dir}.",
+            message=(
+                f"Đã giải nén bản portable tại {dest_dir}. "
+                "Không thể ghi đè file đang chạy — hãy đóng ứng dụng rồi chạy bản mới từ thư mục đó."
+            ),
             action="folder",
             should_close=False,
             path=dest_dir,
@@ -556,7 +580,7 @@ def launch_downloaded_update(
     name = os.path.basename(target)
     return LaunchResult(
         ok=True,
-        message=f"Đã mở trình cài đặt {name}. Hãy đóng ứng dụng để Windows ghi đè file đang chạy.",
+        message=f"Đang mở trình cài đặt {name}. Ứng dụng sẽ thoát để bộ cài ghi đè file.",
         action="installer",
         should_close=True,
         path=target,
