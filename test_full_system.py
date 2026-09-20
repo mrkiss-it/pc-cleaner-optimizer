@@ -1826,6 +1826,7 @@ from ui.eula_dialog import (
     LICENSE_LINK_HREF,
     COMMERCIAL_LINK_HREF,
     LICENSE_GITHUB_URL,
+    COMMERCIAL_PERMISSION_EMAIL,
     COMMERCIAL_PERMISSION_URL,
     resolve_license_path,
     open_full_license,
@@ -1841,7 +1842,11 @@ assert LICENSE_LINK_HREF in EULA_HTML
 assert COMMERCIAL_LINK_HREF in EULA_HTML
 assert "Giấy phép đầy đủ" in EULA_HTML
 assert "Xin phép thương mại" in EULA_HTML
-assert COMMERCIAL_PERMISSION_URL == "https://github.com/mrkiss-it"
+assert COMMERCIAL_PERMISSION_EMAIL == "mrkiss.it@gmail.com"
+assert COMMERCIAL_PERMISSION_EMAIL in EULA_HTML
+assert COMMERCIAL_PERMISSION_URL.startswith(f"mailto:{COMMERCIAL_PERMISSION_EMAIL}?")
+assert "subject=Xin%20phep%20thuong%20mai%20PCAutoCleaner" in COMMERCIAL_PERMISSION_URL
+assert "https://github.com/mrkiss-it" not in COMMERCIAL_PERMISSION_URL
 assert LICENSE_GITHUB_URL.endswith("/pc-cleaner-optimizer/blob/main/LICENSE")
 
 _local_license = resolve_license_path()
@@ -1880,11 +1885,15 @@ assert "mrkiss-it" in _lic
 assert "MIT License" not in _lic.splitlines()[0]
 assert "không được phép" in _lic.lower() or "KHÔNG được phép" in _lic or "You may NOT" in _lic
 assert "thương mại" in _lic.lower() or "commercially" in _lic.lower()
+assert "mrkiss.it@gmail.com" in _lic
+assert "Xin phep thuong mai PCAutoCleaner" in _lic
 
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "README.md"), "r", encoding="utf-8") as _rf:
     _readme = _rf.read()
 assert "MIT License" not in _readme
 assert "độc quyền" in _readme.lower() or "proprietary" in _readme.lower()
+assert "mailto:mrkiss.it@gmail.com" in _readme
+assert "Xin%20phep%20thuong%20mai%20PCAutoCleaner" in _readme
 
 # Isolated persist: AppData eula.json + local config, not memory-only
 fd_eula, tmp_eula = tempfile.mkstemp(suffix=".json")
@@ -1970,6 +1979,13 @@ try:
         opened.append(url.toString() if hasattr(url, "toString") else str(url))
         return True
 
+    def _is_commercial_mailto(s):
+        raw = (s or "").replace(" ", "%20")
+        return (
+            raw.startswith(f"mailto:{COMMERCIAL_PERMISSION_EMAIL}")
+            and "Xin%20phep%20thuong%20mai%20PCAutoCleaner" in raw
+        )
+
     with patch("ui.eula_dialog.QDesktopServices.openUrl", side_effect=_capture_open):
         dlg_view.btn_full_license.click()
         dlg_view.btn_commercial.click()
@@ -1977,7 +1993,7 @@ try:
         dlg_view._on_eula_link(_QUrl(COMMERCIAL_LINK_HREF))
 
     assert any("LICENSE" in (s or "") or (s or "").startswith("file:") for s in opened), opened
-    commercial_hits = [s for s in opened if s.rstrip("/") == COMMERCIAL_PERMISSION_URL]
+    commercial_hits = [s for s in opened if _is_commercial_mailto(s)]
     assert len(commercial_hits) >= 2, opened
 
     opened.clear()
@@ -1986,7 +2002,8 @@ try:
             assert open_full_license() is True
             assert open_commercial_permission() is True
     assert LICENSE_GITHUB_URL in opened
-    assert COMMERCIAL_PERMISSION_URL in opened
+    assert any(_is_commercial_mailto(s) for s in opened), opened
+    assert not any((s or "").rstrip("/") == "https://github.com/mrkiss-it" for s in opened)
     dlg_view.close()
 finally:
     os.environ.pop("PCAUTOCLEANER_EULA_PATH", None)
@@ -2012,6 +2029,8 @@ assert hasattr(win, "open_commercial_permission")
 assert "Điều khoản" in win.btn_eula.text()
 assert "Giấy phép đầy đủ" in win.btn_open_full_license.text()
 assert "Xin phép thương mại" in win.btn_open_commercial.text()
+assert (win.btn_open_commercial.toolTip() or "").startswith("mailto:mrkiss.it@gmail.com")
+assert "Xin%20phep%20thuong%20mai%20PCAutoCleaner" in (win.btn_open_commercial.toolTip() or "")
 assert hasattr(_tray, "show_eula_requested")
 print(" [PASS] 48. Proprietary LICENSE + EULA first-run persist (AppData/config) & Settings/header link!")
 

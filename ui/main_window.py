@@ -984,10 +984,11 @@ class MainWindow(QMainWindow):
         self.btn_open_full_license.setToolTip("Mở tệp LICENSE trong bộ cài, hoặc bản trên GitHub")
         self.btn_open_full_license.clicked.connect(self.open_full_license)
 
+        from ui.eula_dialog import COMMERCIAL_PERMISSION_URL
         self.btn_open_commercial = QPushButton("Xin phép thương mại")
         self.btn_open_commercial.setProperty("class", "btn-secondary")
         self.btn_open_commercial.setCursor(Qt.PointingHandCursor)
-        self.btn_open_commercial.setToolTip("https://github.com/mrkiss-it")
+        self.btn_open_commercial.setToolTip(COMMERCIAL_PERMISSION_URL)
         self.btn_open_commercial.clicked.connect(self.open_commercial_permission)
 
         eula_btns = QHBoxLayout()
@@ -1580,7 +1581,7 @@ class MainWindow(QMainWindow):
         open_full_license()
 
     def open_commercial_permission(self):
-        """Mở https://github.com/mrkiss-it để xin phép thương mại."""
+        """Mở ứng dụng thư mặc định (mailto) để xin phép thương mại."""
         from ui.eula_dialog import open_commercial_permission
         open_commercial_permission()
 

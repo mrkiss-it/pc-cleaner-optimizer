@@ -312,6 +312,7 @@ Phần mềm này là **độc quyền (proprietary) — All Rights Reserved**, 
 
 - Chủ sở hữu bản quyền: **[mrkiss-it](https://github.com/mrkiss-it)**.
 - **Không** được sao chép, sửa đổi, phân phối lại, hoặc sử dụng thương mại khi chưa có sự cho phép **bằng văn bản** từ chủ sở hữu bản quyền.
+- Xin phép thương mại: gửi email tới [mrkiss.it@gmail.com](mailto:mrkiss.it@gmail.com?subject=Xin%20phep%20thuong%20mai%20PCAutoCleaner).
 - Người dùng cuối được phép chạy bản phát hành chính thức trên máy của mình sau khi đồng ý Điều khoản sử dụng (EULA) trong ứng dụng (lần đầu; trạng thái đồng ý được lưu tại `%APPDATA%\PCAutoCleaner`).
 - Chi tiết đầy đủ (tiếng Việt + English): xem tệp [LICENSE](LICENSE).
 
