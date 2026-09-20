@@ -3,7 +3,7 @@ Thông tin phiên bản và kho GitHub dùng chung cho ứng dụng, installer v
 """
 
 APP_NAME = "PC Auto Cleaner & Optimizer"
-APP_VERSION = "3.7.0"
+APP_VERSION = "3.8.0"
 APP_PUBLISHER = "PC Cleaner Team"
 
 GITHUB_OWNER = "mrkiss-it"
