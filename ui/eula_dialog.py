@@ -2,12 +2,20 @@
 Hộp thoại Điều khoản sử dụng (EULA) — Fluent Dark, tiếng Việt.
 Lần chạy đầu: bắt buộc đồng ý trước khi dùng app.
 Sau đó: mở lại từ header / tab Tự Động / khay hệ thống (chỉ xem).
+
+Liên kết trong điều khoản:
+- Giấy phép đầy đủ → tệp LICENSE cạnh exe / bộ cài (nếu có), không thì GitHub blob.
+- Xin phép thương mại → trang GitHub của chủ sở hữu bản quyền.
 """
 from __future__ import annotations
 
-from typing import Optional
+import os
+import sys
+import webbrowser
+from typing import Iterable, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QUrl
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QCheckBox, QDialog, QHBoxLayout, QLabel, QPushButton,
     QTextBrowser, QVBoxLayout, QWidget,
@@ -15,7 +23,22 @@ from PyQt5.QtWidgets import (
 
 from config_manager import ConfigManager, EULA_VERSION
 
+try:
+    from app_meta import GITHUB_OWNER, GITHUB_REPO
+except ImportError:
+    GITHUB_OWNER = "mrkiss-it"
+    GITHUB_REPO = "pc-cleaner-optimizer"
+
 COPYRIGHT_HOLDER = "mrkiss-it"
+
+# Custom schemes handled by the EULA viewer (not navigated inside QTextBrowser).
+LICENSE_LINK_HREF = "pccleaner://full-license"
+COMMERCIAL_LINK_HREF = "pccleaner://commercial"
+
+LICENSE_GITHUB_URL = (
+    f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/blob/main/LICENSE"
+)
+COMMERCIAL_PERMISSION_URL = f"https://github.com/{GITHUB_OWNER}"
 
 EULA_HTML = """
 <h2 style="color:#38bdf8; margin-top:0;">Điều khoản sử dụng (EULA)</h2>
@@ -51,9 +74,115 @@ hoặc dùng thương mại.</p>
 commercially without written permission from the copyright holder ({holder}).
 The Software is provided “AS IS”, without warranty of any kind.</p>
 
-<p style="color:#64748b;">Giấy phép đầy đủ: tệp LICENSE trong bộ cài / kho mã nguồn.
-Xin phép thương mại: <span style="color:#38bdf8;">https://github.com/{holder}</span></p>
-""".format(holder=COPYRIGHT_HOLDER, version=EULA_VERSION)
+<p style="color:#64748b;">
+<a href="{license_href}" style="color:#38bdf8; text-decoration: underline;">Giấy phép đầy đủ</a>
+ — tệp LICENSE trong bộ cài / kho mã nguồn.<br/>
+<a href="{commercial_href}" style="color:#38bdf8; text-decoration: underline;">Xin phép thương mại</a>
+ — {commercial_url}</p>
+""".format(
+    holder=COPYRIGHT_HOLDER,
+    version=EULA_VERSION,
+    license_href=LICENSE_LINK_HREF,
+    commercial_href=COMMERCIAL_LINK_HREF,
+    commercial_url=COMMERCIAL_PERMISSION_URL,
+)
+
+_LINK_BUTTON_STYLE = """
+QPushButton {
+    background-color: #0b1220;
+    color: #38bdf8;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-weight: 600;
+    font-size: 12px;
+}
+QPushButton:hover {
+    background-color: #1e293b;
+    border-color: #38bdf8;
+}
+QPushButton:pressed {
+    background-color: #0f172a;
+}
+"""
+
+
+def iter_license_candidates() -> Iterable[str]:
+    """Các vị trí LICENSE: cạnh exe đã đóng gói, _MEIPASS, rồi thư mục mã nguồn."""
+    dirs = []
+    if getattr(sys, "frozen", False):
+        dirs.append(os.path.dirname(os.path.abspath(sys.executable)))
+        meipass = getattr(sys, "_MEIPASS", "") or ""
+        if meipass:
+            dirs.append(meipass)
+    # ui/eula_dialog.py → repo root khi chạy từ mã nguồn
+    dirs.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    dirs.append(os.getcwd())
+    if sys.argv and sys.argv[0]:
+        dirs.append(os.path.dirname(os.path.abspath(sys.argv[0])))
+
+    seen = set()
+    for folder in dirs:
+        if not folder:
+            continue
+        path = os.path.normpath(os.path.join(folder, "LICENSE"))
+        key = os.path.normcase(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        yield path
+
+
+def resolve_license_path() -> Optional[str]:
+    """Đường dẫn tệp LICENSE local nếu có; None khi cần mở GitHub."""
+    for path in iter_license_candidates():
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def open_external_target(path_or_url: str) -> bool:
+    """Mở tệp local hoặc URL trong ứng dụng mặc định của hệ thống."""
+    target = (path_or_url or "").strip()
+    if not target:
+        return False
+    if os.path.isfile(target):
+        url = QUrl.fromLocalFile(os.path.abspath(target))
+    else:
+        url = QUrl(target)
+    try:
+        if QDesktopServices.openUrl(url):
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(webbrowser.open(url.toString() if isinstance(url, QUrl) else target))
+    except Exception:
+        return False
+
+
+def open_full_license() -> bool:
+    """Mở LICENSE cạnh exe/bộ cài nếu có; không thì blob GitHub trên nhánh main."""
+    local = resolve_license_path()
+    if local:
+        return open_external_target(local)
+    return open_external_target(LICENSE_GITHUB_URL)
+
+
+def open_commercial_permission() -> bool:
+    """Mở trang GitHub của chủ sở hữu bản quyền để xin phép thương mại."""
+    return open_external_target(COMMERCIAL_PERMISSION_URL)
+
+
+def _url_matches(url: QUrl, href: str) -> bool:
+    raw = (url.toString() or "").rstrip("/")
+    want = (href or "").rstrip("/")
+    if raw == want:
+        return True
+    # pccleaner://full-license → host "full-license"
+    host = (url.host() or "").lower()
+    want_host = QUrl(href).host().lower()
+    return bool(host) and host == want_host
 
 
 class EulaDialog(QDialog):
@@ -124,11 +253,34 @@ class EulaDialog(QDialog):
         root.addWidget(subtitle)
 
         browser = QTextBrowser()
-        browser.setOpenExternalLinks(True)
+        browser.setOpenExternalLinks(False)
+        browser.setOpenLinks(False)
+        browser.anchorClicked.connect(self._on_eula_link)
         browser.setHtml(EULA_HTML)
         browser.setReadOnly(True)
         self.txt_eula = browser
         root.addWidget(browser, stretch=1)
+
+        link_row = QHBoxLayout()
+        link_row.setSpacing(10)
+        self.btn_full_license = QPushButton("Giấy phép đầy đủ")
+        self.btn_full_license.setCursor(Qt.PointingHandCursor)
+        self.btn_full_license.setToolTip(
+            "Mở tệp LICENSE trong bộ cài. Nếu không có, mở bản trên GitHub."
+        )
+        self.btn_full_license.setStyleSheet(_LINK_BUTTON_STYLE)
+        self.btn_full_license.clicked.connect(self._open_full_license)
+
+        self.btn_commercial = QPushButton("Xin phép thương mại")
+        self.btn_commercial.setCursor(Qt.PointingHandCursor)
+        self.btn_commercial.setToolTip(COMMERCIAL_PERMISSION_URL)
+        self.btn_commercial.setStyleSheet(_LINK_BUTTON_STYLE)
+        self.btn_commercial.clicked.connect(self._open_commercial)
+
+        link_row.addWidget(self.btn_full_license)
+        link_row.addWidget(self.btn_commercial)
+        link_row.addStretch()
+        root.addLayout(link_row)
 
         self.chk_agree = QCheckBox(
             "Tôi đã đọc và đồng ý với Điều khoản sử dụng (EULA) và giấy phép độc quyền."
@@ -178,6 +330,23 @@ class EulaDialog(QDialog):
             buttons.addWidget(self.btn_close)
 
         root.addLayout(buttons)
+
+    def _on_eula_link(self, url: QUrl) -> None:
+        if _url_matches(url, LICENSE_LINK_HREF):
+            self._open_full_license()
+            return
+        if _url_matches(url, COMMERCIAL_LINK_HREF):
+            self._open_commercial()
+            return
+        scheme = (url.scheme() or "").lower()
+        if scheme in ("http", "https", "file"):
+            open_external_target(url.toString())
+
+    def _open_full_license(self) -> None:
+        open_full_license()
+
+    def _open_commercial(self) -> None:
+        open_commercial_permission()
 
     def _sync_accept_enabled(self, checked: bool = False) -> None:
         if self.btn_accept is not None:

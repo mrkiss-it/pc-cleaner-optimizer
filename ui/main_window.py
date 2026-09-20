@@ -978,9 +978,28 @@ class MainWindow(QMainWindow):
         self.btn_view_eula.setCursor(Qt.PointingHandCursor)
         self.btn_view_eula.clicked.connect(self.open_eula_dialog)
 
+        self.btn_open_full_license = QPushButton("Giấy phép đầy đủ")
+        self.btn_open_full_license.setProperty("class", "btn-secondary")
+        self.btn_open_full_license.setCursor(Qt.PointingHandCursor)
+        self.btn_open_full_license.setToolTip("Mở tệp LICENSE trong bộ cài, hoặc bản trên GitHub")
+        self.btn_open_full_license.clicked.connect(self.open_full_license)
+
+        self.btn_open_commercial = QPushButton("Xin phép thương mại")
+        self.btn_open_commercial.setProperty("class", "btn-secondary")
+        self.btn_open_commercial.setCursor(Qt.PointingHandCursor)
+        self.btn_open_commercial.setToolTip("https://github.com/mrkiss-it")
+        self.btn_open_commercial.clicked.connect(self.open_commercial_permission)
+
+        eula_btns = QHBoxLayout()
+        eula_btns.setSpacing(8)
+        eula_btns.addWidget(self.btn_view_eula)
+        eula_btns.addWidget(self.btn_open_full_license)
+        eula_btns.addWidget(self.btn_open_commercial)
+        eula_btns.addStretch()
+
         layout_eula.addWidget(lbl_eula_title)
         layout_eula.addWidget(lbl_eula_desc)
-        layout_eula.addWidget(self.btn_view_eula, alignment=Qt.AlignLeft)
+        layout_eula.addLayout(eula_btns)
         layout.addWidget(card_eula)
 
         layout.addStretch()
@@ -1554,6 +1573,16 @@ class MainWindow(QMainWindow):
         from ui.eula_dialog import EulaDialog
         dialog = EulaDialog(self.config_manager, parent=self, require_accept=False)
         dialog.exec_()
+
+    def open_full_license(self):
+        """Mở LICENSE local (bộ cài) hoặc blob GitHub."""
+        from ui.eula_dialog import open_full_license
+        open_full_license()
+
+    def open_commercial_permission(self):
+        """Mở https://github.com/mrkiss-it để xin phép thương mại."""
+        from ui.eula_dialog import open_commercial_permission
+        open_commercial_permission()
 
     def open_ai_advisor_dialog(self):
         """Mở hộp thoại AI Smart Suggestions (v3.3 Pro)."""
