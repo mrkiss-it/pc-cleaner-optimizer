@@ -125,7 +125,20 @@ class MainWindow(QMainWindow):
             self.setWindowTitle("PC Auto Cleaner & RAM Optimizer [Administrator]")
         else:
             self.setWindowTitle("PC Auto Cleaner & RAM Optimizer")
-        self.resize(1000, 680)
+
+        # Khôi phục vị trí & kích thước cửa sổ từ cấu hình cũ
+        win_state = self.config_manager.get_window_state()
+        geom = win_state.get("geometry", {})
+        w = max(geom.get("width", 1000), 880)
+        h = max(geom.get("height", 680), 580)
+        self.resize(w, h)
+        x = geom.get("x", -1)
+        y = geom.get("y", -1)
+        if x >= 0 and y >= 0:
+            self.move(x, y)
+        if geom.get("is_maximized", False):
+            self.showMaximized()
+
         self.setMinimumSize(880, 580)
         self.setStyleSheet(DARK_THEME)
 
@@ -198,6 +211,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_analytics, "🧠 Phân Tích Thông Minh")
         self.tabs.addTab(self.tab_security, "🔒 Bảo Mật")
         self.tabs.addTab(self.tab_tweaks, "🛡️ Tinh Chỉnh && Riêng Tư")
+
+        # Khôi phục tab đang làm việc gần nhất từ cấu hình cũ
+        last_tab = self.config_manager.get("last_active_tab", 0)
+        if 0 <= last_tab < self.tabs.count():
+            self.tabs.setCurrentIndex(last_tab)
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -422,6 +440,7 @@ class MainWindow(QMainWindow):
         for key, title, desc in target_defs:
             checked = cfg_targets.get(key, True)
             row = CleanerTargetRow(key, title, desc, checked=checked)
+            row.checkbox.stateChanged.connect(self._auto_save_targets)
             self.target_rows[key] = row
             layout.addWidget(row)
 
@@ -438,6 +457,13 @@ class MainWindow(QMainWindow):
         btn_save_targets.clicked.connect(self.save_targets_config)
         bottom_bar.addWidget(btn_save_targets)
         outer_layout.addLayout(bottom_bar)
+
+    def _auto_save_targets(self):
+        """Tự động lưu tức thì các tùy chọn dọn dẹp mỗi khi người dùng thay đổi checkbox."""
+        new_targets = {}
+        for key, row in self.target_rows.items():
+            new_targets[key] = row.is_checked()
+        self.config_manager.set("targets", new_targets)
 
     def init_tab_automation(self):
         outer_layout = QVBoxLayout(self.tab_automation)
@@ -702,6 +728,23 @@ class MainWindow(QMainWindow):
         scroll.setWidget(scroll_content)
         outer_layout.addWidget(scroll, 1)
 
+        # Tự động kết nối Auto-Save cho tất cả các điều khiển trong Tab Tự Động Hóa
+        self.chk_auto_clean.toggled.connect(self._auto_save_automation_settings)
+        self.combo_interval.currentIndexChanged.connect(self._auto_save_automation_settings)
+        self.chk_auto_ram.toggled.connect(self._auto_save_automation_settings)
+        self.spin_ram_threshold.valueChanged.connect(self._auto_save_automation_settings)
+        self.chk_auto_net.toggled.connect(self._auto_save_automation_settings)
+        self.spin_ping_threshold.valueChanged.connect(self._auto_save_automation_settings)
+        self.chk_auto_best_dns.toggled.connect(self._auto_save_automation_settings)
+        self.combo_dns_interval.currentIndexChanged.connect(self._auto_save_automation_settings)
+        self.chk_auto_sec_scan.toggled.connect(self._auto_save_automation_settings)
+        self.combo_sec_interval.currentIndexChanged.connect(self._auto_save_automation_settings)
+        self.chk_startup.toggled.connect(self._auto_save_automation_settings)
+        self.chk_minimize_tray.toggled.connect(self._auto_save_automation_settings)
+        self.chk_notifications.toggled.connect(self._auto_save_automation_settings)
+        self.chk_floating_widget.toggled.connect(self._auto_save_automation_settings)
+        self.chk_leak_detection.toggled.connect(self._auto_save_automation_settings)
+
         # Fixed Bottom Action Bar for Quick Apply
         bottom_bar = QHBoxLayout()
         bottom_bar.setContentsMargins(16, 8, 16, 12)
@@ -779,49 +822,54 @@ class MainWindow(QMainWindow):
         self.refresh_log_viewer()
 
     def load_settings_into_ui(self):
-        cfg = self.config_manager.config
+        self._loading_settings = True
+        try:
+            cfg = self.config_manager.config
 
-        # Automation
-        self.chk_auto_clean.setChecked(cfg.get("auto_clean_enabled", True))
-        self.chk_auto_ram.setChecked(cfg.get("auto_ram_optimize_enabled", True))
-        self.spin_ram_threshold.setValue(cfg.get("ram_threshold_percent", 80))
-        self.chk_minimize_tray.setChecked(cfg.get("minimize_to_tray_on_close", True))
-        self.chk_notifications.setChecked(cfg.get("show_notifications", True))
-        self.chk_floating_widget.setChecked(cfg.get("floating_widget_enabled", True))
-        self.chk_leak_detection.setChecked(cfg.get("memory_leak_detection_enabled", True))
-        self.chk_auto_net.setChecked(cfg.get("auto_network_optimize_enabled", True))
-        self.spin_ping_threshold.setValue(cfg.get("auto_network_ping_threshold_ms", 180))
+            # Automation
+            self.chk_auto_clean.setChecked(cfg.get("auto_clean_enabled", True))
+            self.chk_auto_ram.setChecked(cfg.get("auto_ram_optimize_enabled", True))
+            self.spin_ram_threshold.setValue(cfg.get("ram_threshold_percent", 80))
+            self.chk_minimize_tray.setChecked(cfg.get("minimize_to_tray_on_close", True))
+            self.chk_notifications.setChecked(cfg.get("show_notifications", True))
+            self.chk_floating_widget.setChecked(cfg.get("floating_widget_enabled", True))
+            self.chk_leak_detection.setChecked(cfg.get("memory_leak_detection_enabled", True))
+            self.chk_auto_net.setChecked(cfg.get("auto_network_optimize_enabled", True))
+            self.spin_ping_threshold.setValue(cfg.get("auto_network_ping_threshold_ms", 180))
 
-        # Auto Best-DNS
-        self.chk_auto_best_dns.setChecked(cfg.get("auto_best_dns_enabled", False))
-        dns_h_map = {1: 0, 2: 1, 4: 2, 8: 3, 12: 4, 24: 5}
-        self.combo_dns_interval.setCurrentIndex(dns_h_map.get(cfg.get("auto_best_dns_interval_hours", 2), 1))
+            # Auto Best-DNS
+            self.chk_auto_best_dns.setChecked(cfg.get("auto_best_dns_enabled", False))
+            dns_h_map = {1: 0, 2: 1, 4: 2, 8: 3, 12: 4, 24: 5}
+            self.combo_dns_interval.setCurrentIndex(dns_h_map.get(cfg.get("auto_best_dns_interval_hours", 2), 1))
 
-        # Auto Security Scan
-        self.chk_auto_sec_scan.setChecked(cfg.get("auto_security_scan_enabled", True))
-        sec_h_map = {6: 0, 12: 1, 24: 2, 48: 3}
-        self.combo_sec_interval.setCurrentIndex(sec_h_map.get(cfg.get("auto_security_scan_interval_hours", 24), 2))
+            # Auto Security Scan
+            self.chk_auto_sec_scan.setChecked(cfg.get("auto_security_scan_enabled", True))
+            sec_h_map = {6: 0, 12: 1, 24: 2, 48: 3}
+            self.combo_sec_interval.setCurrentIndex(sec_h_map.get(cfg.get("auto_security_scan_interval_hours", 24), 2))
 
-        # Windows Startup
-        is_startup = StartupManager.is_startup_enabled()
-        self.chk_startup.setChecked(is_startup)
+            # Windows Startup
+            is_startup = StartupManager.is_startup_enabled()
+            self.chk_startup.setChecked(is_startup)
 
-        # Interval combo
-        min_val = cfg.get("interval_minutes", 60)
-        min_map = {15: 0, 30: 1, 60: 2, 120: 3, 240: 4, 480: 5}
-        self.combo_interval.setCurrentIndex(min_map.get(min_val, 2))
+            # Interval combo
+            min_val = cfg.get("interval_minutes", 60)
+            min_map = {15: 0, 30: 1, 60: 2, 120: 3, 240: 4, 480: 5}
+            self.combo_interval.setCurrentIndex(min_map.get(min_val, 2))
+        finally:
+            self._loading_settings = False
 
     def save_targets_config(self):
-        new_targets = {}
-        for key, row in self.target_rows.items():
-            new_targets[key] = row.is_checked()
-        self.config_manager.set("targets", new_targets)
+        self._auto_save_targets()
         QMessageBox.information(self, "Đã Lưu", "Đã lưu tùy chọn mục tiêu dọn dẹp thành công!")
 
-    def save_automation_settings(self):
+    def _auto_save_automation_settings(self):
+        """Tự động lưu các thiết lập tự động hóa tức thì mỗi khi thay đổi."""
+        if getattr(self, "_loading_settings", False):
+            return
+
         interval_idx = self.combo_interval.currentIndex()
         min_lookup = [15, 30, 60, 120, 240, 480]
-        interval_min = min_lookup[interval_idx]
+        interval_min = min_lookup[interval_idx] if 0 <= interval_idx < len(min_lookup) else 60
 
         self.config_manager.set("auto_clean_enabled", self.chk_auto_clean.isChecked())
         self.config_manager.set("interval_minutes", interval_min)
@@ -832,18 +880,20 @@ class MainWindow(QMainWindow):
 
         # Auto Best-DNS
         dns_h_list = [1, 2, 4, 8, 12, 24]
-        dns_interval_h = dns_h_list[self.combo_dns_interval.currentIndex()]
+        dns_idx = self.combo_dns_interval.currentIndex()
+        dns_interval_h = dns_h_list[dns_idx] if 0 <= dns_idx < len(dns_h_list) else 2
         self.config_manager.set("auto_best_dns_enabled", self.chk_auto_best_dns.isChecked())
         self.config_manager.set("auto_best_dns_interval_hours", dns_interval_h)
 
         # Auto Security Scanner
         sec_h_list = [6, 12, 24, 48]
-        sec_interval_h = sec_h_list[self.combo_sec_interval.currentIndex()]
+        sec_idx = self.combo_sec_interval.currentIndex()
+        sec_interval_h = sec_h_list[sec_idx] if 0 <= sec_idx < len(sec_h_list) else 24
         self.config_manager.set("auto_security_scan_enabled", self.chk_auto_sec_scan.isChecked())
         self.config_manager.set("auto_security_scan_interval_hours", sec_interval_h)
         self.config_manager.set("minimize_to_tray_on_close", self.chk_minimize_tray.isChecked())
         self.config_manager.set("show_notifications", self.chk_notifications.isChecked())
-        
+
         fw_enabled = self.chk_floating_widget.isChecked()
         self.config_manager.set("floating_widget_enabled", fw_enabled)
         self.floating_widget_toggled.emit(fw_enabled)
@@ -855,7 +905,9 @@ class MainWindow(QMainWindow):
         StartupManager.set_startup(startup_enabled)
         self.config_manager.set("run_on_startup", startup_enabled)
 
-        QMessageBox.information(self, "Đã Cập Nhật", "Cấu hình tự động hóa và lịch trình đã được lưu!")
+    def save_automation_settings(self):
+        self._auto_save_automation_settings()
+        QMessageBox.information(self, "Đã Cập Nhật", "Cấu hình tự động hóa và lịch trình đã được lưu thành công!")
 
     def _apply_best_dns_now(self):
         """
@@ -1416,6 +1468,9 @@ class MainWindow(QMainWindow):
         self.proc_timer.start(3000)
 
     def _on_tab_changed(self, idx: int):
+        if hasattr(self, "config_manager") and self.config_manager:
+            self.config_manager.set("last_active_tab", idx)
+
         if hasattr(self, "tabs") and self.tabs.widget(idx) == self.tab_performance:
             self.refresh_process_table()
         elif hasattr(self, "tabs") and self.tabs.widget(idx) == self.tab_analytics:
@@ -2559,10 +2614,31 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Lỗi", "Không thể khởi động lại Windows Explorer.")
 
     def closeEvent(self, event):
+        """
+        Bắt sự kiện đóng cửa sổ:
+        1. Tự động lưu toàn bộ trạng thái cửa sổ (Geometry, Maximized, Active Tab) và thiết lập.
+        2. Nếu người dùng bật thu nhỏ xuống khay, ẩn cửa sổ thay vì tắt.
+        """
+        try:
+            is_max = self.isMaximized()
+            if not is_max:
+                g = self.geometry()
+                self.config_manager.save_window_state(
+                    x=g.x(), y=g.y(),
+                    width=g.width(), height=g.height(),
+                    is_maximized=False,
+                    active_tab=self.tabs.currentIndex()
+                )
+            else:
+                self.config_manager.save_window_state(
+                    x=-1, y=-1,
+                    width=self.width(), height=self.height(),
+                    is_maximized=True,
+                    active_tab=self.tabs.currentIndex()
+                )
+        except Exception:
+            pass
 
-        """
-        Bắt sự kiện đóng cửa sổ: Nếu người dùng bật thu nhỏ xuống khay, ẩn cửa sổ thay vì tắt
-        """
         if self.config_manager.get("minimize_to_tray_on_close", True):
             event.ignore()
             self.hide()

@@ -38,13 +38,57 @@
         "critical_count": 0,
         "warning_count": 0,
         "ok_count": 11,
-        "timestamp": "20/09/2026 08:45:36"
+        "timestamp": "20/09/2026 09:15:38"
     },
+    "window_geometry": {
+        "x": 120,
+        "y": 80,
+        "width": 1150,
+        "height": 720,
+        "is_maximized": false
+    },
+    "last_active_tab": 0,
     "predictive_disk_history": [
         {
             "ts": 1789868656.2400045,
             "free_gb": 52.68,
             "total_gb": 274.39
+        },
+        {
+            "ts": 1789869482.3634865,
+            "free_gb": 52.68,
+            "total_gb": 274.39
+        },
+        {
+            "ts": 1789870424.9257693,
+            "free_gb": 52.67,
+            "total_gb": 274.39
         }
-    ]
+    ],
+    "predictive_habits_profile": {
+        "morning": {
+            "cpu_sum": 2800.0,
+            "ram_sum": 5800.0,
+            "samples": 65,
+            "gaming_hits": 0
+        },
+        "afternoon": {
+            "cpu_sum": 0.0,
+            "ram_sum": 0.0,
+            "samples": 0,
+            "gaming_hits": 0
+        },
+        "evening": {
+            "cpu_sum": 0.0,
+            "ram_sum": 0.0,
+            "samples": 0,
+            "gaming_hits": 0
+        },
+        "night": {
+            "cpu_sum": 0.0,
+            "ram_sum": 0.0,
+            "samples": 0,
+            "gaming_hits": 0
+        }
+    }
 }

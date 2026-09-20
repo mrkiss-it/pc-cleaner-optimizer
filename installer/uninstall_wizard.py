@@ -84,8 +84,8 @@ class UninstallerDialog(QDialog):
         msg.setStyleSheet(f"color: {_TEXT_WHITE};")
         c_lay.addWidget(msg)
 
-        self.chk_remove_data = QCheckBox("Đồng thời xóa toàn bộ tệp cấu hình và lịch sử dọn dẹp")
-        self.chk_remove_data.setChecked(True)
+        self.chk_remove_data = QCheckBox("Xóa toàn bộ tệp cấu hình và lịch sử cá nhân (Bỏ chọn nếu bạn dự định cài đặt lại sau này)")
+        self.chk_remove_data.setChecked(False)
         self.chk_remove_data.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 11px;")
         c_lay.addWidget(self.chk_remove_data)
 
@@ -212,6 +212,9 @@ class UninstallerDialog(QDialog):
             config_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "PCAutoCleaner")
             if os.path.exists(config_dir):
                 shutil.rmtree(config_dir, ignore_errors=True)
+            roaming_dir = os.path.join(os.environ.get("APPDATA", ""), "PCAutoCleaner")
+            if os.path.exists(roaming_dir):
+                shutil.rmtree(roaming_dir, ignore_errors=True)
 
         self.progress_bar.setValue(100)
         self.lbl_status.setText("✅ Đã gỡ bỏ hoàn tất!")

@@ -61,6 +61,7 @@ def build():
         "--hidden-import=core.context_menu_manager",
         "--hidden-import=core.uninstaller_manager",
         "--hidden-import=core.winsxs_cleaner",
+        "--hidden-import=core.predictive_ai",
         "--hidden-import=ui.hardware_dialog",
         "--hidden-import=ui.ai_advisor_dialog",
         "--hidden-import=ui.service_context_dialog",

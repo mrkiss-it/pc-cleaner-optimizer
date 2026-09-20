@@ -596,7 +596,83 @@ pred_dlg.close()
 dlg_dispatch.close()
 print(" [PASS] 40. AI Advisor Predictive Integration: Dashboard 3 the truc quan (Disk, Habit, Anomaly), Tab loc rieng biet & Action Dispatcher hoat dong xuat sac 100%!")
 
-print("\n>>> TAT CA 40 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD & PREDICTIVE AI DEU THANH CONG 100%! <<<")
+# 41. Test Settings Persistence, Deep Merge & Window State Memory Across Sessions & Updates
+from config_manager import _deep_merge
+
+# A. Test Deep Merge algorithm
+target_dict = {
+    "theme": "dark",
+    "targets": {"temp": True, "recycle": True, "prefetch": True},
+    "window_geometry": {"width": 1050, "height": 680, "maximized": False},
+    "automation": {"auto_clean": False, "ram_threshold": 80}
+}
+src_dict = {
+    "targets": {"prefetch": False, "custom_user_folder": True},
+    "window_geometry": {"width": 1280, "height": 720, "x": 150, "y": 100, "maximized": True},
+    "automation": {"auto_clean": True, "ram_threshold": 75, "custom_flag": True},
+    "last_active_tab": 3,
+    "user_custom_setting": "preserved"
+}
+merged = _deep_merge(target_dict, src_dict)
+assert merged["targets"]["temp"] is True, "Target goc phai duoc giu lai neu src khong ghi de"
+assert merged["targets"]["prefetch"] is False, "Target src phai ghi de target goc"
+assert merged["targets"]["custom_user_folder"] is True, "Khoa moi trong dict con phai duoc them vao"
+assert merged["window_geometry"]["width"] == 1280 and merged["window_geometry"]["maximized"] is True, "Window state phai duoc ghi nhan"
+assert merged["automation"]["auto_clean"] is True and merged["automation"]["custom_flag"] is True, "Automation settings phai duoc merge sau"
+assert merged["last_active_tab"] == 3, "last_active_tab phai duoc luu"
+assert merged["user_custom_setting"] == "preserved", "Cai dat tuy bien khong bi mat di"
+
+# B. Test ConfigManager window state helpers
+cfg.save_window_state(x=120, y=80, width=1150, height=720, maximized=False)
+win_state = cfg.get_window_state()
+assert win_state["x"] == 120 and win_state["y"] == 80, "get_window_state phai tra ve toa do chinh xac"
+assert win_state["width"] == 1150 and win_state["height"] == 720, "get_window_state phai tra ve kich thuoc chinh xac"
+assert win_state["maximized"] is False, "get_window_state phai tra ve trang thai maximized chinh xac"
+
+# C. Test Real-time auto-saving in MainWindow
+assert hasattr(win, "_auto_save_targets"), "MainWindow phai co phuong thuc _auto_save_targets"
+assert hasattr(win, "_auto_save_automation_settings"), "MainWindow phai co phuong thuc _auto_save_automation_settings"
+assert hasattr(win, "_on_tab_changed"), "MainWindow phai co slot _on_tab_changed"
+
+# Test tab index change persistence
+win._on_tab_changed(2)
+assert cfg.get("last_active_tab") == 2, "Config phai cap nhat last_active_tab = 2 ngay lap tuc"
+win._on_tab_changed(0)
+assert cfg.get("last_active_tab") == 0, "Config phai cap nhat last_active_tab = 0 ngay lap tuc"
+
+# Test auto-saving automation settings
+orig_ram = win.spin_ram_threshold.value()
+win.chk_auto_clean.setChecked(True)
+win.chk_auto_ram.setChecked(True)
+win.spin_ram_threshold.setValue(77)
+win._auto_save_automation_settings()
+assert cfg.get("auto_clean_enabled") is True, "auto_clean_enabled phai duoc ghi nho vao config"
+assert cfg.get("auto_ram_optimize_enabled") is True, "auto_ram_optimize_enabled phai duoc ghi nho vao config"
+assert cfg.get("ram_threshold_percent") == 77, f"ram_threshold_percent phai la 77, hien tai: {cfg.get('ram_threshold_percent')}"
+
+# Test auto-saving targets
+if win.target_rows:
+    first_target_key = list(win.target_rows.keys())[0]
+    first_cb = win.target_rows[first_target_key].checkbox
+    first_cb.setChecked(False)
+    win._auto_save_targets()
+    saved_targets = cfg.get_targets()
+    assert saved_targets.get(first_target_key) is False, f"Muc muc tieu {first_target_key} phai duoc ghi nho la False"
+    first_cb.setChecked(True)
+    win._auto_save_targets()
+    assert cfg.get_targets().get(first_target_key) is True, f"Muc muc tieu {first_target_key} phai duoc ghi nho la True"
+
+# D. Test Setup Wizard badge detection
+assert hasattr(wizard, "_check_preserve_badge"), "SetupWizard phai co ham kiem tra cau hinh cu _check_preserve_badge"
+assert hasattr(wizard, "lbl_preserve_badge"), "SetupWizard phai co nhan thong bao bao luu cau hinh"
+wizard._check_preserve_badge()
+# Neu config ton tai, nhan phai hien thi
+assert wizard.lbl_preserve_badge is not None, "Badge bao luu phai duoc khoi tao"
+
+print(" [PASS] 41. Settings Persistence: Deep Merge cau hinh, Window Geometry/Tab Memory & Real-time Auto-saving hoat dong hoan hao 100%!")
+
+print("\n>>> TAT CA 41 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI & SETTINGS PERSISTENCE DEU THANH CONG 100%! <<<")
+
 
 
 

@@ -13,6 +13,7 @@ import shutil
 import zipfile
 import winreg
 import subprocess
+import json
 
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
@@ -142,6 +143,30 @@ class InstallWorker(QThread):
             self.progress_signal.emit(5, "Chuẩn bị thư mục cài đặt...")
             os.makedirs(self.target_dir, exist_ok=True)
 
+            # Sao lưu cấu hình người dùng trước khi giải nén đè
+            old_config = {}
+            appdata_dir = os.path.join(os.environ.get("APPDATA", ""), "PCAutoCleaner")
+            appdata_cfg = os.path.join(appdata_dir, "config.json")
+            target_cfg = os.path.join(self.target_dir, "config.json")
+
+            def _merge_dict(target, src):
+                for k, v in src.items():
+                    if k in target and isinstance(target[k], dict) and isinstance(v, dict):
+                        _merge_dict(target[k], v)
+                    else:
+                        target[k] = v
+                return target
+
+            for cfg_path in [target_cfg, appdata_cfg]:
+                if os.path.exists(cfg_path):
+                    try:
+                        with open(cfg_path, "r", encoding="utf-8") as f:
+                            loaded = json.load(f)
+                            if isinstance(loaded, dict):
+                                _merge_dict(old_config, loaded)
+                    except Exception:
+                        pass
+
             # Tìm file bundle.zip (đóng gói kèm theo installer hoặc lấy từ thư mục gốc)
             bundle_path = None
             if getattr(sys, 'frozen', False):
@@ -175,6 +200,29 @@ class InstallWorker(QThread):
                 else:
                     self.finished_signal.emit(False, f"Không tìm thấy gói cài đặt tại {src_dist}!")
                     return
+
+            # Nếu có cấu hình cũ, thực hiện deep-merge và lưu lại cả target_dir lẫn AppData
+            if old_config:
+                self.progress_signal.emit(78, "Đang bảo lưu và đồng bộ cài đặt trước đó...")
+                new_template = {}
+                if os.path.exists(target_cfg):
+                    try:
+                        with open(target_cfg, "r", encoding="utf-8") as f:
+                            new_template = json.load(f)
+                    except Exception:
+                        pass
+                final_merged = _merge_dict(new_template, old_config)
+                try:
+                    with open(target_cfg, "w", encoding="utf-8") as f:
+                        json.dump(final_merged, f, indent=4, ensure_ascii=False)
+                except Exception:
+                    pass
+                try:
+                    os.makedirs(appdata_dir, exist_ok=True)
+                    with open(appdata_cfg, "w", encoding="utf-8") as f:
+                        json.dump(final_merged, f, indent=4, ensure_ascii=False)
+                except Exception:
+                    pass
 
             self.progress_signal.emit(80, "Đang tạo biểu tượng lối tắt (Shortcuts)...")
             exe_path = os.path.join(self.target_dir, "PCAutoCleaner.exe")
@@ -491,6 +539,23 @@ class SetupWizard(QDialog):
         dir_h.addWidget(btn_browse)
         d_lay.addLayout(dir_h)
 
+        self.lbl_preserve_badge = QLabel("🛡️ Đã phát hiện cấu hình cũ: Toàn bộ tùy chọn, lịch trình và danh sách Whitelist sẽ được tự động bảo lưu.")
+        self.lbl_preserve_badge.setWordWrap(True)
+        self.lbl_preserve_badge.setStyleSheet(f"""
+            QLabel {{
+                background: #161b22;
+                color: #58a6ff;
+                border: 1px solid #1f6feb;
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-size: 11px;
+                font-weight: 500;
+            }}
+        """)
+        d_lay.addWidget(self.lbl_preserve_badge)
+        self.txt_install_dir.textChanged.connect(self._check_preserve_badge)
+        self._check_preserve_badge()
+
         layout.addWidget(dir_card)
 
         # Shortcuts Options Card
@@ -529,6 +594,15 @@ class SetupWizard(QDialog):
         layout.addWidget(sc_card)
         layout.addStretch()
         return p
+
+    def _check_preserve_badge(self):
+        target = self.txt_install_dir.text().strip()
+        target_cfg = os.path.join(target, "config.json")
+        appdata_cfg = os.path.join(os.environ.get("APPDATA", ""), "PCAutoCleaner", "config.json")
+        if os.path.exists(target_cfg) or os.path.exists(appdata_cfg):
+            self.lbl_preserve_badge.setVisible(True)
+        else:
+            self.lbl_preserve_badge.setVisible(False)
 
     def _on_browse_dir(self):
         curr = self.txt_install_dir.text().strip()
