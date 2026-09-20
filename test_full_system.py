@@ -950,14 +950,41 @@ habit_throttled.feed_sample(12.0, 22.0)
 habit_throttled.feed_sample(8.0, 18.0)
 assert save_cfg.saves == 1, "Khong duoc ghi config.json lai o moi mau 800ms"
 
-# H. Cloud Gemini: model 1.5 da ngung, API key khong nam trong URL
+# H. Cloud Gemini: Flash alias + header key, khong dung 1.5 da shut down
 import inspect
+from core.ai_copilot import DEFAULT_GEMINI_MODEL, GEMINI_FALLBACK_MODELS, parse_gemini_error_message, format_gemini_http_error
+from config_manager import DEFAULT_CONFIG as _DEFAULT_CFG
 gemini_src = inspect.getsource(CloudAIBrain.query_gemini)
-assert 'model: str = "gemini-2.5-flash"' in gemini_src or 'models/{model}:generateContent' in gemini_src
+assert "models/{candidate}:generateContent" in gemini_src or "models/{model}:generateContent" in gemini_src
 assert "models/gemini-1.5" not in gemini_src, "Khong duoc goi model Gemini 1.5 da shut down"
-assert "gemini-2.5-flash" in gemini_src, "Phai dung gemini-2.5-flash (hoac model cau hinh tuong duong)"
+assert DEFAULT_GEMINI_MODEL == "gemini-flash-latest"
+assert _DEFAULT_CFG.get("ai_copilot_gemini_model") == "gemini-flash-latest"
+assert GEMINI_FALLBACK_MODELS == (
+    "gemini-flash-latest",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-2.0-flash",
+)
 assert "?key=" not in gemini_src, "API key khong duoc gan vao query string"
 assert "x-goog-api-key" in gemini_src, "API key phai gui qua header x-goog-api-key"
+assert "Không tìm thấy mô hình Gemini" in gemini_src or "Không tìm thấy mô hình Gemini" in inspect.getsource(CloudAIBrain)
+
+# Parsed Google error.message, not truncated raw JSON
+_raw_404 = (
+    '{"error":{"code":404,"message":"models/gemini-2.5-flash is not found for API version v1beta, '
+    'or is not supported for generateContent. Call ListModels to see the list of available models '
+    'and their supported methods.","status":"NOT_FOUND"}}'
+)
+_parsed = parse_gemini_error_message(_raw_404)
+assert "not found" in _parsed.lower()
+assert "{" not in _parsed and "status" not in _parsed
+_fmt = format_gemini_http_error(404, _raw_404)
+assert _fmt.startswith("HTTP 404:")
+assert "Mô hình Gemini không khả dụng" in _fmt
+assert "gemini-2.5-flash" in _fmt
+assert "models/gemini-2.5-flash is not found" not in _fmt
+assert '"error"' not in _fmt
+assert "{" not in _fmt
 
 adv_dlg.close()
 
@@ -1109,6 +1136,141 @@ from PyQt5.QtCore import QThread
 assert issubclass(CopilotAskWorker, QThread)
 worker = CopilotAskWorker(copilot, "ping", append_user=False)
 assert worker._prompt == "ping"
+
+# F. HTTP 404 fallback retries documented Flash models and persists the first that works
+import io
+import urllib.error as _ue
+from unittest.mock import patch as _patch
+from ui.ai_copilot_widget import APIConfigDialog as _APICfgDlg
+
+def _gemini_http_error(url, code, body):
+    return _ue.HTTPError(url, code, "error", hdrs=None, fp=io.BytesIO(body.encode("utf-8")))
+
+class _GeminiOkResp:
+    status = 200
+    def __init__(self, text):
+        self._payload = _json.dumps({
+            "candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": "STOP"}]
+        }).encode("utf-8")
+    def read(self):
+        return self._payload
+    def __enter__(self):
+        return self
+    def __exit__(self, *_a):
+        return False
+
+_urls = []
+def _urlopen_404_then_ok(req, timeout=8.0):
+    url = getattr(req, "full_url", str(req))
+    _urls.append(url)
+    if "gemini-2.5-flash" in url:
+        raise _gemini_http_error(url, 404, _raw_404)
+    if "gemini-flash-latest" in url:
+        return _GeminiOkResp("RAM đang cao, hãy thu hồi bộ nhớ standby.")
+    raise _gemini_http_error(url, 404, '{"error":{"message":"model not found"}}')
+
+_saved_model = {}
+def _persist(m):
+    _saved_model["model"] = m
+
+with _patch("urllib.request.urlopen", side_effect=_urlopen_404_then_ok):
+    CloudAIBrain.last_error = ""
+    ok_reply = CloudAIBrain.query_gemini(
+        api_key="AIzaSyTESTKEY",
+        user_prompt="May ngong RAM",
+        telemetry=telemetry,
+        model="gemini-2.5-flash",
+        persist_model=_persist,
+    )
+assert ok_reply and "RAM" in ok_reply
+assert CloudAIBrain.last_working_model == "gemini-flash-latest"
+assert _saved_model.get("model") == "gemini-flash-latest"
+assert any("gemini-2.5-flash" in u for u in _urls)
+assert any("gemini-flash-latest" in u for u in _urls)
+assert not CloudAIBrain.last_error
+
+# All 404 -> Vietnamese, parsed message, no raw JSON blob
+_all_urls = []
+def _urlopen_all_404(req, timeout=8.0):
+    url = getattr(req, "full_url", str(req))
+    _all_urls.append(url)
+    raise _gemini_http_error(url, 404, _raw_404)
+
+with _patch("urllib.request.urlopen", side_effect=_urlopen_all_404):
+    none_all = CloudAIBrain.query_gemini(
+        api_key="AIzaSyTESTKEY",
+        user_prompt="hi",
+        telemetry=telemetry,
+        model="gemini-2.5-flash",
+    )
+assert none_all is None
+assert "Không tìm thấy mô hình Gemini" in CloudAIBrain.last_error
+assert "gemini-2.5-flash" in CloudAIBrain.last_error
+assert "gemini-flash-latest" in CloudAIBrain.last_error
+assert "gemini-3.1-flash-lite" in CloudAIBrain.last_error
+assert CloudAIBrain.last_error_short.startswith("Cloud Gemini:")
+assert "models/gemini-2" not in CloudAIBrain.last_error_short
+assert '"error"' not in CloudAIBrain.last_error
+assert '"status"' not in CloudAIBrain.last_error
+assert "{" not in CloudAIBrain.last_error
+assert len(_all_urls) >= 2
+
+# Non-404 (401) must not walk the fallback list
+_auth_urls = []
+def _urlopen_401(req, timeout=8.0):
+    url = getattr(req, "full_url", str(req))
+    _auth_urls.append(url)
+    raise _gemini_http_error(url, 401, '{"error":{"message":"API key not valid. Please pass a valid API key."}}')
+
+with _patch("urllib.request.urlopen", side_effect=_urlopen_401):
+    none_auth = CloudAIBrain.query_gemini(
+        api_key="AIzaSyBAD",
+        user_prompt="hi",
+        telemetry=telemetry,
+        model="gemini-2.5-flash",
+    )
+assert none_auth is None
+assert len(_auth_urls) == 1
+assert "API key not valid" in CloudAIBrain.last_error
+assert "Không tìm thấy mô hình Gemini" not in CloudAIBrain.last_error
+
+# API config dialog exposes a model combo of known-good Flash ids
+_api_dlg = _APICfgDlg(config_manager=win.config_manager)
+assert hasattr(_api_dlg, "combo_model"), "APIConfigDialog phai co combo chon model Gemini"
+combo_items = [_api_dlg.combo_model.itemText(i) for i in range(_api_dlg.combo_model.count())]
+assert "gemini-flash-latest" in combo_items
+assert "gemini-3.1-flash-lite" in combo_items
+_api_dlg.close()
+
+# G. ConfigManager must migrate gemini-2.5-flash and can never re-save it
+from config_manager import ConfigManager as _CfgGemini, canonicalize_gemini_model as _canon_g
+assert _canon_g("gemini-2.5-flash") == "gemini-flash-latest"
+assert _canon_g("models/gemini-2.5-flash") == "gemini-flash-latest"
+assert _canon_g("gemini-2.0-flash") == "gemini-2.0-flash"
+
+fd_g, tmp_g = tempfile.mkstemp(suffix=".json")
+os.close(fd_g)
+with open(tmp_g, "w", encoding="utf-8") as f:
+    _json.dump({"ai_copilot_gemini_model": "gemini-2.5-flash", "ai_copilot_cloud_enabled": True}, f)
+iso_g = _CfgGemini(config_path=tmp_g)
+assert iso_g.get("ai_copilot_gemini_model") == "gemini-flash-latest"
+with open(tmp_g, "r", encoding="utf-8") as f:
+    disk_g = _json.load(f)
+assert disk_g.get("ai_copilot_gemini_model") == "gemini-flash-latest"
+assert disk_g.get("ai_copilot_gemini_model") != "gemini-2.5-flash"
+iso_g.config["ai_copilot_gemini_model"] = "gemini-2.5-flash"
+iso_g.set("last_active_tab", 3)
+with open(tmp_g, "r", encoding="utf-8") as f:
+    disk_g2 = _json.load(f)
+assert disk_g2.get("ai_copilot_gemini_model") == "gemini-flash-latest", "save_config khong duoc ghi lai 2.5-flash"
+iso_g.set("ai_copilot_gemini_model", "gemini-2.5-flash")
+assert iso_g.get("ai_copilot_gemini_model") == "gemini-flash-latest"
+iso_g.set("ai_copilot_gemini_model", "gemini-2.0-flash")
+assert iso_g.get("ai_copilot_gemini_model") == "gemini-2.0-flash"
+try:
+    os.remove(tmp_g)
+except Exception:
+    pass
 
 print(" [PASS] 44. Auto-Pilot apply/undo, Gemini last_error hien thi, secrets khong ghi vao config.json!")
 

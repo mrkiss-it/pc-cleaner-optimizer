@@ -2,7 +2,34 @@ import os
 import sys
 import copy
 import json
+import re
 from typing import Dict, Any, Optional
+
+# Gemini 2.5 Flash 404s for many new AI Studio keys (Sep 2026). Never persist it.
+DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
+RETIRED_GEMINI_MODELS = frozenset({
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro-latest",
+})
+_GEMINI_MODEL_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def canonicalize_gemini_model(model: Optional[str]) -> str:
+    """Return a persistable Gemini model id. Retired 2.5/1.5 ids become the default."""
+    raw = str(model or "").strip()
+    if raw.lower().startswith("models/"):
+        raw = raw[7:]
+    if not raw or not _GEMINI_MODEL_ID_RE.fullmatch(raw):
+        return DEFAULT_GEMINI_MODEL
+    if raw.lower() in RETIRED_GEMINI_MODELS or raw in RETIRED_GEMINI_MODELS:
+        return DEFAULT_GEMINI_MODEL
+    return raw
+
 
 DEFAULT_CONFIG = {
     "auto_clean_enabled": True,
@@ -49,7 +76,7 @@ DEFAULT_CONFIG = {
     },
     "last_active_tab": 0,
     "ai_copilot_cloud_enabled": False,
-    "ai_copilot_gemini_model": "gemini-2.5-flash",
+    "ai_copilot_gemini_model": DEFAULT_GEMINI_MODEL,
     "ai_autopilot_enabled": True,
     "ai_autopilot_mode": "auto"
 }
@@ -128,6 +155,33 @@ class ConfigManager:
         self.config = self.load_config()
         self._load_secrets()
         self._migrate_secrets_from_config()
+        self._migrate_retired_gemini_model()
+
+    def _sanitize_gemini_model_in(self, data: Dict[str, Any]) -> bool:
+        """Coerce retired Gemini ids so dist/AppData config can never re-save 2.5-flash."""
+        current = data.get("ai_copilot_gemini_model", DEFAULT_GEMINI_MODEL)
+        fixed = canonicalize_gemini_model(current)
+        if data.get("ai_copilot_gemini_model") != fixed:
+            data["ai_copilot_gemini_model"] = fixed
+            return True
+        return False
+
+    def _migrate_retired_gemini_model(self) -> None:
+        """Rewrite dist/AppData config if it still stores a retired Gemini id."""
+        self._sanitize_gemini_model_in(self.config)
+        disk_stale = False
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    disk = json.load(f)
+                if isinstance(disk, dict) and "ai_copilot_gemini_model" in disk:
+                    raw = str(disk.get("ai_copilot_gemini_model") or "").strip()
+                    if canonicalize_gemini_model(raw) != raw:
+                        disk_stale = True
+            except Exception:
+                pass
+        if disk_stale:
+            self.save_config()
 
     def load_config(self) -> Dict[str, Any]:
         """Tải cấu hình với cơ chế Deep Merge để bảo toàn mọi thiết lập cũ."""
@@ -138,9 +192,9 @@ class ConfigManager:
                     data = json.load(f)
                 if isinstance(data, dict):
                     _deep_merge(merged, data)
-                    return merged
             except Exception as e:
                 print(f"[ConfigManager] Lỗi khi đọc file cấu hình: {e}")
+        self._sanitize_gemini_model_in(merged)
         return merged
 
     def save_config(self) -> bool:
@@ -150,9 +204,11 @@ class ConfigManager:
             if parent_dir:
                 os.makedirs(parent_dir, exist_ok=True)
 
+            self._sanitize_gemini_model_in(self.config)
             to_write = copy.deepcopy(self.config)
             for k in SECRET_KEYS:
                 to_write.pop(k, None)
+            self._sanitize_gemini_model_in(to_write)
 
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(to_write, f, indent=4, ensure_ascii=False)
@@ -223,6 +279,8 @@ class ConfigManager:
                 self.config.pop(key, None)
                 self.save_config()
             return
+        if key == "ai_copilot_gemini_model":
+            value = canonicalize_gemini_model(value)
         self.config[key] = value
         self.save_config()
 
