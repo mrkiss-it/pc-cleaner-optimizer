@@ -351,6 +351,10 @@ class FloatingWidget(QWidget):
         action_gb.triggered.connect(self.toggle_game_boost)
         menu.addAction(action_gb)
 
+        action_exam = QAction("📝 Trước thi / họp", self)
+        action_exam.triggered.connect(self.toggle_exam_focus)
+        menu.addAction(action_exam)
+
         action_net = QAction("🌐 Tối Ưu Hóa Mạng", self)
         action_net.triggered.connect(self.open_network_requested.emit)
         menu.addAction(action_net)
@@ -377,6 +381,17 @@ class FloatingWidget(QWidget):
             GameBooster.enable_game_boost()
             self.btn_boost.setText("🎮")
             self.setToolTip("🎮 ĐANG BẬT GAME BOOST\nĐã tối ưu RAM & CPU cho Gaming!")
+        if self.monitor_hub:
+            self.monitor_hub.force_refresh()
+
+    def toggle_exam_focus(self):
+        from core.exam_focus import ExamMeetingFocus
+        if ExamMeetingFocus.is_active():
+            ExamMeetingFocus.disable()
+            self.setToolTip("Chế độ bình thường\nClick để tối ưu RAM")
+        else:
+            ExamMeetingFocus.enable()
+            self.setToolTip("📝 ĐANG BẬT TRƯỚC THI / HỌP\nĐã dọn temp nhẹ, giảm thông báo, thu hồi RAM.")
         if self.monitor_hub:
             self.monitor_hub.force_refresh()
 

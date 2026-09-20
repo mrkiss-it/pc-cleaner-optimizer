@@ -219,6 +219,7 @@ def main():
     tray_mgr.optimize_ram_requested.connect(on_optimize_ram)
     tray_mgr.network_optimize_requested.connect(on_optimize_network)
     tray_mgr.game_boost_requested.connect(main_win.toggle_game_boost)
+    tray_mgr.exam_focus_requested.connect(main_win.toggle_exam_focus)
     tray_mgr.toggle_window_requested.connect(on_toggle_window)
     tray_mgr.toggle_floating_widget_requested.connect(floating_widget.toggle_widget)
     tray_mgr.check_updates_requested.connect(

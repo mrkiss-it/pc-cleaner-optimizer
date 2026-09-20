@@ -9,6 +9,7 @@ class SystemTrayManager(QSystemTrayIcon):
     optimize_ram_requested = pyqtSignal()
     network_optimize_requested = pyqtSignal()
     game_boost_requested = pyqtSignal()
+    exam_focus_requested = pyqtSignal()
     toggle_window_requested = pyqtSignal()
     toggle_floating_widget_requested = pyqtSignal()
     check_updates_requested = pyqtSignal()
@@ -108,6 +109,10 @@ class SystemTrayManager(QSystemTrayIcon):
         action_game_boost.triggered.connect(self.game_boost_requested.emit)
         menu.addAction(action_game_boost)
 
+        action_exam_focus = QAction("📝 Trước thi / họp", self)
+        action_exam_focus.triggered.connect(self.exam_focus_requested.emit)
+        menu.addAction(action_exam_focus)
+
         action_net = QAction("🌐 Tối Ưu Mạng (Flush DNS)", self)
         action_net.triggered.connect(self.network_optimize_requested.emit)
         menu.addAction(action_net)
@@ -144,13 +149,24 @@ class SystemTrayManager(QSystemTrayIcon):
         icon: Optional[str] = None,
         action_text: Optional[str] = None,
         action_callback: Optional[Callable] = None,
-        duration_ms: int = 4500
+        duration_ms: int = 4500,
+        force: bool = False,
     ):
         """
         Phát thông báo đa phương thức:
         1. On-Screen HUD Toast banner nổi trực tiếp trên màn hình desktop.
         2. Windows Tray Balloon tiêu chuẩn nếu được cấu hình.
+
+        force=True: hiện toast xác nhận (ví dụ bật/tắt Trước thi / họp) kể cả
+        khi chế độ tập trung đang tắt thông báo của ứng dụng.
         """
+        if not force:
+            try:
+                from core.exam_focus import ExamMeetingFocus
+                if ExamMeetingFocus.should_suppress_app_toasts():
+                    return
+            except Exception:
+                pass
         cfg = self.config_manager
         screen_enabled = True
         sound_enabled = False

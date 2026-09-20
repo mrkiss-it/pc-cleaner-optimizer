@@ -7,6 +7,7 @@ from core.context_menu_manager import ContextMenuManager
 from core.uninstaller_manager import UninstallerManager, InstalledApp
 from core.winsxs_cleaner import WinSxSCleaner, UpdateCacheItem, OemDriverItem
 from core.predictive_ai import PredictiveAIEngine, DiskForecast, UsageHabit, ProcessAnomaly
+from core.exam_focus import ExamMeetingFocus
 
 __all__ = [
     "SystemTweaker",
@@ -20,6 +21,7 @@ __all__ = [
     "UpdateCacheItem",
     "OemDriverItem",
     "PredictiveAIEngine",
+    "ExamMeetingFocus",
     "DiskForecast",
     "UsageHabit",
     "ProcessAnomaly",

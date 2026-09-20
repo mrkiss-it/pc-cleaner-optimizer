@@ -83,6 +83,18 @@ Checklist thủ công trước mỗi phát hành (cài mới → cập nhật �
 
 ---
 
+### 3b. 📝 Chế độ Trước thi / họp (Exam / Meeting Focus)
+
+Một nút trên **Bảng Điều Khiển** (và khay hệ thống) để chuẩn bị máy cho buổi thi hoặc họp — rồi **tắt để khôi phục** đúng những gì chế độ này đã đổi (cùng kiểu hoàn tác như Game Boost).
+
+- **Dọn rác nhẹ**: chỉ `%TEMP%`, `Windows\Temp` và crash dump. Không dọn Recycle Bin, cache trình duyệt, Windows Update, WinSxS hay registry.
+- **Giảm nhiễu**: tạm tắt thông báo của chính ứng dụng; có thể chặn khảo sát Feedback Hub nếu chưa tối ưu. **Không** đụng Focus Assist (không khôi phục được tin cậy).
+- **Tài nguyên**: thu hồi RAM nhẹ và hạ tiến trình nền (Search Indexer, sync…) theo đúng pattern Game Boost. Bảo vệ Zoom/Teams/trình duyệt. Nếu Game Boost đang bật thì bỏ qua đổi ưu tiên.
+- **Mạng**: **không** đổi DNS hay Wi-Fi — giữ kết nối họp ổn định.
+- Tên sản phẩm lấy từ `app_meta.APP_NAME` — không gắn nhãn “Pro”.
+
+---
+
 ### 4. 🌐 Network Optimizer & Parallel DNS Benchmark (Tối Ưu Mạng & DNS)
 - **Đo tốc độ DNS song song (Parallel Benchmark)**: Kiểm tra đồng thời độ trễ (latency ms) của các DNS hàng đầu thế giới:
   - 🚀 Cloudflare DNS (`1.1.1.1`)
@@ -242,6 +254,7 @@ pc-cleaner-optimizer/
 │   ├── memory_optimizer.py     # Giải phóng RAM qua Win32 API EmptyWorkingSet
 │   ├── process_manager.py      # Giám sát, xếp hạng top RAM/CPU, bảo vệ tiến trình hệ thống
 │   ├── game_booster.py         # Chế độ Game Boost (ưu tiên CPU, dồn tài nguyên)
+│   ├── exam_focus.py           # Chế độ Trước thi / họp (dọn nhẹ, giảm nhiễu, hoàn tác)
 │   ├── system_monitor.py       # Hub giám sát phần cứng RAM, CPU, Ổ đĩa thời gian thực
 │   ├── hardware_monitor.py     # Đo độ chai pin laptop, Windows battery report, CPU đa nhân, GPU
 │   ├── thermal_monitor.py      # Nhiệt CPU/GPU (LHM/OHM WMI, nvidia-smi, ACPI) — không bịa số
