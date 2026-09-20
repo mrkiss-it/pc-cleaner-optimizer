@@ -690,7 +690,7 @@ assert os.path.exists(mock_lnk), "File .lnk phai ton tai tren o dia"
 # Test dang ky uninstaller vao Registry
 ok_reg = register_windows_uninstaller(
     install_dir=mock_temp_dir,
-    version="3.7.0",
+    version="9.9.9",
     publisher="PC Cleaner Team",
     display_name="PC Auto Cleaner (Test Mock)",
     uninstaller_path=mock_exe,
@@ -708,12 +708,16 @@ shutil.rmtree(mock_temp_dir, ignore_errors=True)
 print(" [PASS] 37. Installer Engine: Tao Shortcut Windows (.lnk) & Dang ky Uninstaller Registry hoat dong chuan xac 100%!")
 
 # 38. Test Smart Setup Wizard UI & Standalone Uninstaller Dialog (v3.7 Pro)
-from installer.setup_wizard import SetupWizard
+from installer.setup_wizard import SetupWizard, qt_literal_ampersand as _qt_amp
 from installer.uninstall_wizard import UninstallerDialog as StandaloneUninstaller
-
+from app_meta import APP_NAME as _WIZ_NAME, APP_VERSION as _WIZ_VER
 wizard = SetupWizard()
 assert wizard.pages.count() == 4, "SetupWizard phai co 4 trang (Welcome, Options, Progress, Finish)"
 assert wizard.current_step == 0, "Trang bat dau phai la 0 (Welcome)"
+assert f"v{_WIZ_VER}" in wizard.lbl_finish_sub.text(), "Trang thanh cong phai hien APP_VERSION"
+assert "3.7.0" not in wizard.lbl_finish_sub.text(), "Khong hard-code 3.7.0 tren trang thanh cong"
+assert _qt_amp(_WIZ_NAME) in wizard.chk_launch_now.text(), "Checkbox khoi chay phai escape & (tranh _Optimizer)"
+assert " _Optimizer" not in wizard.chk_launch_now.text()
 wizard._go_next()
 assert wizard.current_step == 1, "Next phai chuyen sang trang 1 (Options)"
 wizard._go_back()

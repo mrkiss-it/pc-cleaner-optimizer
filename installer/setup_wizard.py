@@ -1,10 +1,12 @@
 """
-installer/setup_wizard.py – Trình Cài Đặt Thông Minh (Smart Setup Wizard) cho PC Auto Cleaner & Optimizer (v3.7 Pro).
+installer/setup_wizard.py – Trình Cài Đặt Thông Minh (Smart Setup Wizard) cho PC Auto Cleaner & Optimizer.
 Giao diện Fluent Dark 4-bước:
 - Bước 0: Chào Mừng (Welcome & Overview).
 - Bước 1: Tùy Chọn Cài Đặt (Thư mục đích, Desktop Shortcut, Start Menu, Khởi động cùng Windows).
 - Bước 2: Tiến Trình Giải Nén & Cài Đặt (Trích xuất bundle, tạo Shortcut, đăng ký Windows Uninstall).
 - Bước 3: Hoàn Tất (Khởi chạy ứng dụng ngay).
+
+Phiên bản hiển thị luôn lấy từ APP_VERSION trong app_meta (cùng nguồn với ứng dụng).
 """
 
 import os
@@ -35,15 +37,26 @@ _SUCCESS     = "#3fb950"
 _WARNING     = "#d29922"
 _DANGER      = "#f85149"
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
-try:
-    from app_meta import APP_NAME, APP_VERSION, APP_PUBLISHER
-except ImportError:
-    APP_NAME = "PC Auto Cleaner & Optimizer"
-    APP_VERSION = "3.7.0"
-    APP_PUBLISHER = "PC Cleaner Team"
+def _ensure_app_meta_import_path():
+    """Đặt repo root / PyInstaller _MEIPASS lên sys.path để import app_meta."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(here)
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass and meipass not in sys.path:
+            sys.path.insert(0, meipass)
+        return
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+
+_ensure_app_meta_import_path()
+from app_meta import APP_NAME, APP_VERSION, APP_PUBLISHER
+
+
+def qt_literal_ampersand(text: str) -> str:
+    """Escape '&' so QCheckBox/QPushButton show a literal ampersand, not a mnemonic underline."""
+    return (text or "").replace("&", "&&")
 
 
 # ---------------------------------------------------------------------------
@@ -242,13 +255,13 @@ class InstallWorker(QThread):
             if self.create_desktop:
                 desk_dir = os.path.join(os.path.expanduser("~"), "Desktop")
                 lnk = os.path.join(desk_dir, "PC Auto Cleaner.lnk")
-                create_windows_shortcut(exe_path, lnk, self.target_dir, ico_path, "PC Auto Cleaner & Optimizer")
+                create_windows_shortcut(exe_path, lnk, self.target_dir, ico_path, APP_NAME)
 
             # Start Menu Shortcut
             if self.create_start_menu:
                 sm_dir = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs")
                 lnk = os.path.join(sm_dir, "PC Auto Cleaner.lnk")
-                create_windows_shortcut(exe_path, lnk, self.target_dir, ico_path, "PC Auto Cleaner & Optimizer")
+                create_windows_shortcut(exe_path, lnk, self.target_dir, ico_path, APP_NAME)
 
             # Autostart
             if self.autostart:
@@ -330,7 +343,7 @@ class SetupWizard(QDialog):
         self.lbl_header_title.setFont(QFont("Segoe UI", 13, QFont.Bold))
         self.lbl_header_title.setStyleSheet(f"color: {_TEXT_WHITE};")
 
-        self.lbl_header_sub = QLabel(f"Phiên bản v{APP_VERSION} Pro – Giải pháp tối ưu máy tính toàn diện")
+        self.lbl_header_sub = QLabel(f"Phiên bản v{APP_VERSION} – Giải pháp tối ưu máy tính toàn diện")
         self.lbl_header_sub.setFont(QFont("Segoe UI", 9))
         self.lbl_header_sub.setStyleSheet(f"color: {_TEXT_MUTED};")
         h_vbox.addWidget(self.lbl_header_title)
@@ -626,7 +639,7 @@ class SetupWizard(QDialog):
         layout.setContentsMargins(32, 30, 32, 20)
         layout.setSpacing(16)
 
-        self.lbl_installing_title = QLabel("Đang tiến hành cài đặt PC Auto Cleaner & Optimizer...")
+        self.lbl_installing_title = QLabel(f"Đang tiến hành cài đặt {APP_NAME}...")
         self.lbl_installing_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
         self.lbl_installing_title.setStyleSheet(f"color: {_TEXT_WHITE};")
         layout.addWidget(self.lbl_installing_title)
@@ -676,11 +689,11 @@ class SetupWizard(QDialog):
         t.setFont(QFont("Segoe UI", 14, QFont.Bold))
         t.setStyleSheet(f"color: {_SUCCESS};")
 
-        sub = QLabel(f"{APP_NAME} v{APP_VERSION} Pro đã sẵn sàng phục vụ bạn.")
-        sub.setFont(QFont("Segoe UI", 10))
-        sub.setStyleSheet(f"color: {_TEXT_WHITE};")
+        self.lbl_finish_sub = QLabel(f"{APP_NAME} v{APP_VERSION} đã sẵn sàng phục vụ bạn.")
+        self.lbl_finish_sub.setFont(QFont("Segoe UI", 10))
+        self.lbl_finish_sub.setStyleSheet(f"color: {_TEXT_WHITE};")
         tv.addWidget(t)
-        tv.addWidget(sub)
+        tv.addWidget(self.lbl_finish_sub)
         top_h.addLayout(tv)
         top_h.addStretch()
         layout.addLayout(top_h)
@@ -708,7 +721,9 @@ class SetupWizard(QDialog):
 
         layout.addWidget(card)
 
-        self.chk_launch_now = QCheckBox("🚀 Khởi chạy PC Auto Cleaner & Optimizer ngay bây giờ")
+        self.chk_launch_now = QCheckBox(
+            f"🚀 Khởi chạy {qt_literal_ampersand(APP_NAME)} ngay bây giờ"
+        )
         self.chk_launch_now.setChecked(True)
         self.chk_launch_now.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.chk_launch_now.setStyleSheet(f"color: {_ACCENT_BLUE};")
@@ -767,7 +782,7 @@ class SetupWizard(QDialog):
             self.btn_back.setVisible(False)
             self.btn_next.setText("Tiếp Tục →")
             self.lbl_header_title.setText(f"Cài Đặt {APP_NAME}")
-            self.lbl_header_sub.setText(f"Phiên bản v{APP_VERSION} Pro – Giải pháp tối ưu máy tính toàn diện")
+            self.lbl_header_sub.setText(f"Phiên bản v{APP_VERSION} – Giải pháp tối ưu máy tính toàn diện")
 
     def _on_install_progress(self, percent: int, text: str):
         self.progress_bar.setValue(percent)
@@ -782,7 +797,7 @@ class SetupWizard(QDialog):
             self.btn_next.setEnabled(True)
             self.btn_next.setText("Hoàn Tất")
             self.lbl_header_title.setText("Cài Đặt Thành Công!")
-            self.lbl_header_sub.setText("Cảm ơn bạn đã lựa chọn PC Auto Cleaner & Optimizer")
+            self.lbl_header_sub.setText(f"Cảm ơn bạn đã lựa chọn {APP_NAME}")
         else:
             QMessageBox.critical(self, "Lỗi Cài Đặt", message)
             self.reject()
