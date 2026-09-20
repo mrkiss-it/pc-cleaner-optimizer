@@ -1132,7 +1132,7 @@ assert save_cfg.saves == 1, "Khong duoc ghi config.json lai o moi mau 800ms"
 
 # H. Cloud Gemini: Flash alias + header key, khong dung 1.5 da shut down
 import inspect
-from core.ai_copilot import DEFAULT_GEMINI_MODEL, GEMINI_FALLBACK_MODELS, parse_gemini_error_message, format_gemini_http_error
+from core.ai_copilot import DEFAULT_GEMINI_MODEL, GEMINI_FALLBACK_MODELS, parse_gemini_error_message, format_gemini_http_error, gemini_http_should_fallback
 from config_manager import DEFAULT_CONFIG as _DEFAULT_CFG
 gemini_src = inspect.getsource(CloudAIBrain.query_gemini)
 assert "models/{candidate}:generateContent" in gemini_src or "models/{model}:generateContent" in gemini_src
@@ -1147,6 +1147,7 @@ assert GEMINI_FALLBACK_MODELS == (
 )
 assert "?key=" not in gemini_src, "API key khong duoc gan vao query string"
 assert "x-goog-api-key" in gemini_src, "API key phai gui qua header x-goog-api-key"
+assert "gemini_http_should_fallback" in gemini_src, "HTTP 404/429/503 phai di tiep model fallback"
 assert "Không tìm thấy mô hình Gemini" in gemini_src or "Không tìm thấy mô hình Gemini" in inspect.getsource(CloudAIBrain)
 
 # Parsed Google error.message, not truncated raw JSON
@@ -1165,6 +1166,22 @@ assert "gemini-2.5-flash" in _fmt
 assert "models/gemini-2.5-flash is not found" not in _fmt
 assert '"error"' not in _fmt
 assert "{" not in _fmt
+assert gemini_http_should_fallback(404)
+assert gemini_http_should_fallback(503)
+assert gemini_http_should_fallback(429)
+assert not gemini_http_should_fallback(401)
+assert not gemini_http_should_fallback(403)
+_raw_503 = (
+    '{"error":{"code":503,"message":"This model is currently experiencing high demand. '
+    'Please try again later or switch to another model.","status":"UNAVAILABLE"}}'
+)
+_fmt_503 = format_gemini_http_error(503, _raw_503)
+assert _fmt_503.startswith("HTTP 503:")
+assert "quá tải" in _fmt_503
+assert "high demand" in _fmt_503
+assert "{" not in _fmt_503
+_fmt_429 = format_gemini_http_error(429, '{"error":{"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}')
+assert "rate limit" in _fmt_429.lower() or "giới hạn" in _fmt_429
 
 adv_dlg.close()
 
@@ -1413,6 +1430,106 @@ assert none_auth is None
 assert len(_auth_urls) == 1
 assert "API key not valid" in CloudAIBrain.last_error
 assert "Không tìm thấy mô hình Gemini" not in CloudAIBrain.last_error
+
+# HTTP 503 high-demand: walk fallback, persist first success (no same-model retry)
+_raw_503_body = (
+    '{"error":{"code":503,"message":"This model is currently experiencing high demand. '
+    'Please try again later or switch to another model.","status":"UNAVAILABLE"}}'
+)
+_urls_503 = []
+def _urlopen_503_then_ok(req, timeout=8.0):
+    url = getattr(req, "full_url", str(req))
+    _urls_503.append(url)
+    if "gemini-flash-latest" in url:
+        raise _gemini_http_error(url, 503, _raw_503_body)
+    if "gemini-3.1-flash-lite" in url:
+        return _GeminiOkResp("CPU đang ổn, có thể tối ưu RAM.")
+    raise _gemini_http_error(url, 503, _raw_503_body)
+
+_saved_503 = {}
+def _persist_503(m):
+    _saved_503["model"] = m
+
+with _patch("urllib.request.urlopen", side_effect=_urlopen_503_then_ok):
+    CloudAIBrain.last_error = ""
+    ok_503 = CloudAIBrain.query_gemini(
+        api_key="AIzaSyTESTKEY",
+        user_prompt="May ngong RAM",
+        telemetry=telemetry,
+        model="gemini-flash-latest",
+        persist_model=_persist_503,
+    )
+assert ok_503 and "RAM" in ok_503
+assert CloudAIBrain.last_working_model == "gemini-3.1-flash-lite"
+assert _saved_503.get("model") == "gemini-3.1-flash-lite"
+assert any("gemini-flash-latest" in u for u in _urls_503)
+assert any("gemini-3.1-flash-lite" in u for u in _urls_503)
+assert _urls_503[0].count("gemini-flash-latest") >= 1
+# Prefer next model first: the first URL is the requested model, second is the next fallback
+assert "gemini-flash-latest" in _urls_503[0]
+assert "gemini-3.1-flash-lite" in _urls_503[1]
+assert not CloudAIBrain.last_error
+
+# All 503 -> Vietnamese overload, not truncated JSON
+_all_503_urls = []
+def _urlopen_all_503(req, timeout=8.0):
+    url = getattr(req, "full_url", str(req))
+    _all_503_urls.append(url)
+    raise _gemini_http_error(url, 503, _raw_503_body)
+
+with _patch("urllib.request.urlopen", side_effect=_urlopen_all_503):
+    none_503 = CloudAIBrain.query_gemini(
+        api_key="AIzaSyTESTKEY",
+        user_prompt="hi",
+        telemetry=telemetry,
+        model="gemini-flash-latest",
+    )
+assert none_503 is None
+assert "Google Gemini đang quá tải trên mọi model đã thử" in CloudAIBrain.last_error
+assert CloudAIBrain.last_error_short == "Google Gemini đang quá tải trên mọi model đã thử — thử lại sau."
+assert "gemini-flash-latest" in CloudAIBrain.last_error
+assert "gemini-3.1-flash-lite" in CloudAIBrain.last_error
+assert "{" not in CloudAIBrain.last_error
+assert "models/gemini" not in CloudAIBrain.last_error_short
+assert len(_all_503_urls) >= 2
+
+# HTTP 429 also continues; 403 still stops
+_urls_429 = []
+def _urlopen_429_then_ok(req, timeout=8.0):
+    url = getattr(req, "full_url", str(req))
+    _urls_429.append(url)
+    if "gemini-flash-latest" in url:
+        raise _gemini_http_error(url, 429, '{"error":{"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}')
+    return _GeminiOkResp("Mạng ổn định.")
+
+with _patch("urllib.request.urlopen", side_effect=_urlopen_429_then_ok):
+    ok_429 = CloudAIBrain.query_gemini(
+        api_key="AIzaSyTESTKEY",
+        user_prompt="ping",
+        telemetry=telemetry,
+        model="gemini-flash-latest",
+    )
+assert ok_429 and "Mạng" in ok_429
+assert len(_urls_429) >= 2
+assert CloudAIBrain.last_working_model != "gemini-flash-latest"
+
+_urls_403 = []
+def _urlopen_403(req, timeout=8.0):
+    url = getattr(req, "full_url", str(req))
+    _urls_403.append(url)
+    raise _gemini_http_error(url, 403, '{"error":{"message":"Permission denied"}}')
+
+with _patch("urllib.request.urlopen", side_effect=_urlopen_403):
+    none_403 = CloudAIBrain.query_gemini(
+        api_key="AIzaSyBAD",
+        user_prompt="hi",
+        telemetry=telemetry,
+        model="gemini-flash-latest",
+    )
+assert none_403 is None
+assert len(_urls_403) == 1
+assert "Permission denied" in CloudAIBrain.last_error
+assert "quá tải trên mọi model" not in CloudAIBrain.last_error
 
 # API config dialog exposes a model combo of known-good Flash ids
 _api_dlg = _APICfgDlg(config_manager=win.config_manager)
