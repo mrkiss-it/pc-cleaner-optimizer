@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "auto_network_recovery_min_outage_retoast_seconds": 60,
     "auto_network_recovery_failure_toast_cooldown_seconds": 45,
     "auto_network_recovery_cta_toast_cooldown_seconds": 0,
+    "auto_network_wifi_stability_tip_cooldown_seconds": 1800,
     "auto_best_dns_enabled": False,
     "auto_best_dns_interval_hours": 2,
     "auto_security_scan_enabled": True,

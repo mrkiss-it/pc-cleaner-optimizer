@@ -162,6 +162,8 @@ class BackgroundScheduler(QObject):
             self.last_ping_fix_trigger = now
             ping_outage = self.recovery_toast_gate.ping_outage_sec(now.timestamp())
             self.run_auto_missing_ping_fix(outage_seconds=ping_outage)
+        else:
+            self._maybe_emit_wifi_stability_tip(wifi_snap, now, config)
 
         # 4. Check Auto Best-DNS Switcher
         if config.get("auto_best_dns_enabled", False):
@@ -417,6 +419,9 @@ class BackgroundScheduler(QObject):
                     "applied_summary": result.get("applied_summary", ""),
                     "needs_dns_confirm": result.get("needs_dns_confirm", False),
                     "needs_location_unlock": result.get("needs_location_unlock", False),
+                    "needs_wifi_stability_guidance": result.get(
+                        "needs_wifi_stability_guidance", not recovered
+                    ),
                     "location_gpo_locked": result.get("location_gpo_locked", False),
                     "steps": result.get("steps", []),
                     "skipped": result.get("skipped", []),
@@ -432,6 +437,34 @@ class BackgroundScheduler(QObject):
                 logger.error(f"[Scheduler] Lỗi khi tự sửa Wi-Fi: {e}")
 
         threading.Thread(target=_worker, daemon=True, name="WifiDropFix").start()
+
+    def _maybe_emit_wifi_stability_tip(self, wifi_snap, now, config):
+        """Surface Ổn định Wi-Fi CTA when detect is weak/flapping and no repair this tick."""
+        try:
+            from core.network_optimizer import NetworkOptimizer
+            from core.wifi_recovery import WifiRecovery
+            from core.wifi_stability import build_wifi_stability_toast_payload
+
+            last_report = (
+                getattr(NetworkOptimizer, "last_wifi_drop_report", None)
+                or getattr(WifiRecovery, "last_wifi_drop_report", None)
+            )
+            payload = build_wifi_stability_toast_payload(
+                detect=wifi_snap if isinstance(wifi_snap, dict) else {},
+                last_report=last_report,
+                unrecovered_repairs=int(self.wifi_fix_unrecovered or 0),
+                repair_running=False,
+            )
+            if not payload:
+                return
+            if not self.recovery_toast_gate.allow_stability_tip_from_config(
+                now.timestamp(),
+                config if isinstance(config, dict) else {},
+            ):
+                return
+            self.network_optimized.emit(payload)
+        except Exception:
+            pass
 
     def run_auto_best_dns(self):
         """

@@ -58,8 +58,13 @@ from core.wifi_recovery import (
     resolve_overlay_wifi_status,
     overlay_word_for_cause,
     is_genuine_link_loss,
+    infer_wifi_band_ghz,
+    looks_like_mt7921,
+    parse_wlan_channel,
     should_show_recovery_toast,
     RecoveryToastGate,
+    STABILITY_TIP_COOLDOWN_SEC,
+    STABILITY_TIP_TOAST_KIND,
 )
 from core.system_monitor import SystemMonitor, format_ping_overlay_text
 from core.network_optimizer import NetworkOptimizer
@@ -87,6 +92,9 @@ WLAN_IFACE_SAMPLE = """
     Description            : MediaTek Wi-Fi 6 MT7921 Wireless LAN Card
     State                  : connected
     SSID                   : NhaMinh
+    Radio type             : 802.11n
+    Channel                : 11
+    Band                   : 2.4 GHz
     Receive rate (Mbps)    : 26
     Transmit rate (Mbps)   : 26
     Signal                 : 45%
@@ -145,6 +153,18 @@ def test_parse_helpers():
     assert wlan["rx_mbps"] == 26.0
     assert "MT7921" in wlan["description"]
     assert wlan.get("location_blocked") is False
+    assert wlan.get("channel") == 11
+    assert wlan.get("band_ghz") == 2.4
+    assert looks_like_mt7921(wlan["description"]) is True
+    assert parse_wlan_channel("44") == 44
+    assert infer_wifi_band_ghz({"channel": 11}) == 2.4
+    assert infer_wifi_band_ghz({"channel": 44}) == 5.0
+    assert infer_wifi_band_ghz({"band": "5 GHz"}) == 5.0
+    vn = parse_wlan_interfaces(
+        "    Tên : Wi-Fi\n    Mô tả : MediaTek MT7921\n    Kênh : 36\n    Băng tần : 5 GHz\n"
+    )
+    assert vn["channel"] == 36
+    assert vn["band_ghz"] == 5.0
 
 
 def test_classify_and_filtering_dns():
@@ -633,8 +653,10 @@ def test_config_wifi_defaults():
     assert STABILITY_WINDOW_SEC >= 8
     assert int(DEFAULT_CONFIG.get("auto_network_recovery_success_toast_cooldown_seconds", 0)) >= 60
     assert int(DEFAULT_CONFIG.get("auto_network_recovery_min_outage_retoast_seconds", 0)) >= 30
+    assert int(DEFAULT_CONFIG.get("auto_network_wifi_stability_tip_cooldown_seconds", 0)) >= 300
     assert SUCCESS_TOAST_COOLDOWN_SEC >= 60
     assert MIN_OUTAGE_RETOAST_SEC >= 30
+    assert STABILITY_TIP_COOLDOWN_SEC >= 300
 
 
 def _success_info(cause="adapter_down", kind="wifi_drop", outage=12.0):
@@ -932,6 +954,122 @@ def test_reconnect_reports_location_blocked_without_unlock():
         WifiRecovery.reset_state()
 
 
+def test_wifi_stability_guidance_honest_and_gated():
+    from core.wifi_stability import (
+        DISCLAIMER,
+        build_wifi_stability_guidance,
+        build_wifi_stability_toast_payload,
+        open_windows_target,
+        should_offer_wifi_stability_guidance,
+        should_toast_wifi_stability_guidance,
+    )
+    weak = _wifi_snap(
+        status_flaps=0, wlan_flaps=0, link_mbps=26.0, cause="weak_link",
+        band_ghz=2.4, channel=11, radio_type="802.11n",
+        description="MediaTek Wi-Fi 6 MT7921 Wireless LAN Card",
+    )
+    assert should_offer_wifi_stability_guidance(detect=weak) is True
+    assert should_toast_wifi_stability_guidance(detect=weak) is True
+    assert should_toast_wifi_stability_guidance(detect=weak, repair_running=True) is False
+    assert should_offer_wifi_stability_guidance(detect={"cause": "ok"}) is False
+    assert should_offer_wifi_stability_guidance(
+        detect={"cause": "ok"}, unrecovered_repairs=2,
+    ) is True
+
+    guide = build_wifi_stability_guidance(detect=weak)
+    blob = " ".join([guide["intro"], guide["toast_message"], guide["disclaimer"]] + [
+        t["text"] for t in guide["tips"]
+    ]).lower()
+    assert "không sửa được driver" in blob or "khong sua duoc driver" in blob
+    assert "sóng rf" in blob or "song rf" in blob or "rf" in blob
+    assert "5 ghz" in blob
+    assert "mt7921" in blob
+    assert "tiết kiệm pin" in blob or "tiet kiem pin" in blob
+    assert guide["mt7921"] is True
+    assert guide["offer"] is True
+    actions = {t["action"] for t in guide["tips"]}
+    assert "wifi_settings" in actions
+    assert "device_manager" in actions
+    assert "disable_power_save" in actions
+    assert "unlock_location" not in actions
+
+    locked = dict(weak)
+    locked["location_gpo_locked"] = True
+    loc_guide = build_wifi_stability_guidance(detect=locked)
+    assert any(t["action"] == "unlock_location" for t in loc_guide["tips"])
+
+    payload = build_wifi_stability_toast_payload(detect=weak)
+    assert payload is not None
+    assert payload["type"] == STABILITY_TIP_TOAST_KIND
+    assert DISCLAIMER.split("—")[0].strip()[:20] in payload["message"] or "không sửa" in payload["message"]
+
+    opened = open_windows_target("device_manager")
+    assert opened.get("success") is False
+    assert opened.get("skipped") is True
+    assert "devmgmt.msc" in str(opened.get("uri") or opened.get("message") or "")
+    assert open_windows_target("nope").get("success") is False
+
+    gate = RecoveryToastGate()
+    assert gate.allow_stability_tip(10.0, cooldown_sec=1800) is True
+    assert gate.allow_stability_tip(20.0, cooldown_sec=1800) is False
+    assert gate.allow_stability_tip(10.0 + 1800, cooldown_sec=1800) is True
+    cfg = {"auto_network_wifi_stability_tip_cooldown_seconds": 60}
+    gate2 = RecoveryToastGate()
+    assert gate2.allow_stability_tip_from_config(1.0, cfg) is True
+    assert gate2.allow_stability_tip_from_config(30.0, cfg) is False
+    assert gate2.allow_stability_tip_from_config(70.0, cfg) is True
+
+
+def test_scheduler_emits_stability_tip_when_fix_blocked():
+    from core.wifi_stability import build_wifi_stability_toast_payload
+    assert hasattr(BackgroundScheduler, "_maybe_emit_wifi_stability_tip")
+    WifiRecovery.reset_state()
+    snap = _wifi_snap(
+        status_flaps=0, wlan_flaps=0, link_mbps=19.0, cause="weak_link",
+        band_ghz=2.4, unstable=False,
+    )
+    payload = build_wifi_stability_toast_payload(
+        detect=snap, unrecovered_repairs=2, repair_running=False,
+    )
+    assert payload and payload["type"] == STABILITY_TIP_TOAST_KIND
+    assert payload.get("needs_wifi_stability_guidance") is True
+    blocked = build_wifi_stability_toast_payload(
+        detect=snap, unrecovered_repairs=2, repair_running=True,
+    )
+    assert blocked is None, "Do not double-toast while a wifi_drop repair is running"
+    gate = RecoveryToastGate()
+    cfg = dict(DEFAULT_CONFIG)
+    assert gate.allow_stability_tip_from_config(1.0, cfg) is True
+    assert gate.allow_stability_tip_from_config(2.0, cfg) is False
+
+
+def test_advisor_surfaces_wifi_stability_cta():
+    from core.ai_advisor import AIAdvisor, CATEGORY_NETWORK
+    WifiRecovery.reset_state()
+    WifiRecovery.last_detect = _wifi_snap(
+        status_flaps=0, wlan_flaps=0, link_mbps=26.0,
+        cause="weak_link", unstable=True,
+        cause_label="Wi-Fi tín hiệu yếu / tốc độ liên kết thấp",
+    )
+    try:
+        adv = AIAdvisor()
+        adv._cache_ttl = 0.0
+        for _ in range(4):
+            adv.feed_snapshot({
+                "ram": {"percent": 40.0},
+                "cpu": {"percent": 10.0},
+                "disk": {"free_gb": 80.0},
+                "net": {"ping_ms": 40.0, "ping_measured": True, "ping_status": "ok"},
+            })
+        sug = [s for s in adv.get_suggestions() if s.category == CATEGORY_NETWORK]
+        keys = [s.action_key for s in sug]
+        assert "open_wifi_stability" in keys, f"Advisor must offer Ổn định Wi-Fi, got {keys}"
+        guide = [s for s in sug if s.action_key == "open_wifi_stability"][0]
+        assert "không sửa được driver" in guide.detail.lower() or "rf" in guide.detail.lower()
+    finally:
+        WifiRecovery.reset_state()
+
+
 def test_advisor_surfaces_location_unlock_cta():
     import core.windows_location as loc
     from core.ai_advisor import AIAdvisor, CATEGORY_NETWORK
@@ -982,6 +1120,9 @@ if __name__ == "__main__":
         test_location_gpo_detection_mocked_registry,
         test_repair_does_not_auto_unlock_location_gpo,
         test_reconnect_reports_location_blocked_without_unlock,
+        test_wifi_stability_guidance_honest_and_gated,
+        test_scheduler_emits_stability_tip_when_fix_blocked,
+        test_advisor_surfaces_wifi_stability_cta,
         test_advisor_surfaces_location_unlock_cta,
     ]
     for fn in tests:

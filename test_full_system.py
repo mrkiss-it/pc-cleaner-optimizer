@@ -147,6 +147,8 @@ from ui.network_dialog import NetworkOptimizerDialog
 from ui.floating_widget import FloatingWidget
 dlg = NetworkOptimizerDialog()
 assert dlg.tabs.count() == 3, "NetworkOptimizerDialog phai co 3 tabs"
+assert hasattr(dlg, "wifi_stability_card"), "Network dialog phai co the On dinh Wi-Fi"
+assert "Ổn định Wi-Fi" in dlg.wifi_stability_card.lbl_title.text()
 f_widget = FloatingWidget(cfg)
 assert hasattr(f_widget, "lbl_net_val"), "FloatingWidget phai co chi so NET"
 print(" [PASS] 13. Network UI: NetworkOptimizerDialog (3 tabs) va FloatingWidget NET indicator khoi tao thanh cong!")
@@ -1795,6 +1797,12 @@ assert int(_DC.get("auto_network_ping_fix_cooldown_seconds", 0)) >= 60
 assert hasattr(win, "chk_auto_ping_fix"), "Settings phai co checkbox auto ping-fix"
 assert hasattr(win, "repair_network_now"), "MainWindow phai co repair_network_now"
 assert hasattr(win, "unlock_location_now"), "MainWindow phai co unlock_location_now"
+assert hasattr(win, "open_wifi_stability"), "MainWindow phai co open_wifi_stability"
+assert hasattr(win, "disable_wifi_power_saving_now"), "MainWindow phai co disable_wifi_power_saving_now"
+assert hasattr(win, "wifi_stability_settings"), "Settings/Network phai co muc On dinh Wi-Fi"
+assert "Ổn định Wi-Fi" in win.wifi_stability_settings.lbl_title.text()
+assert win.wifi_stability_settings.btn_driver is not None
+assert win.wifi_stability_settings.always_visible is True
 
 # H. Dispatcher maps repair_network_now without crashing (busy-guard)
 win._network_repair_busy = True
@@ -1826,6 +1834,8 @@ from core.wifi_recovery import (
     resolve_overlay_wifi_status as _ros,
     overlay_word_for_cause as _owc,
     RecoveryToastGate as _RTG,
+    infer_wifi_band_ghz as _ibg,
+    looks_like_mt7921 as _mt,
 )
 from core.system_monitor import format_ping_overlay_text as _fpo
 _WR.reset_state()
@@ -1853,12 +1863,31 @@ assert _ros(
 assert _fpo(300, True, "ok", wifi_status="weak_link") == "300 ms · yếu"
 assert "rớt" not in _fpo(300, True, "ok", wifi_status="weak_link")
 assert _fpo(-1, True, "timeout", wifi_status="weak_link") == "timeout"
+assert _ibg({"channel": 11}) == 2.4
+assert _ibg({"band": "5 GHz"}) == 5.0
+assert _mt("MediaTek Wi-Fi 6 MT7921 Wireless LAN Card") is True
+from core.wifi_stability import (
+    build_wifi_stability_guidance as _bwg,
+    open_windows_target as _owt,
+    should_offer_wifi_stability_guidance as _sog,
+)
+_guide = _bwg({
+    "is_wifi": True, "is_up": True, "cause": "weak_link", "link_mbps": 19,
+    "description": "MediaTek Wi-Fi 6 MT7921 Wireless LAN Card",
+    "band_ghz": 2.4, "ssid": "NhaMinh",
+})
+assert _sog(detect={"cause": "weak_link"}) is True
+assert "không sửa được driver" in _guide["disclaimer"].lower() or "rf" in _guide["disclaimer"].lower()
+assert any(t["action"] == "device_manager" for t in _guide["tips"])
+assert _owt("wifi_settings").get("skipped") is True
 assert _WR.should_trigger_wifi_drop_fix(True, True, 1000, 980, 300, 0, first_cooldown_sec=12) is True
 assert _WR.should_trigger_wifi_drop_fix(True, True, 9999, 0, 300, 2) is False
 assert "Disable-NetAdapter" in _WR.skipped_nic_toggle() or "tắt/bật" in _WR.skipped_nic_toggle()
 assert int(_DC.get("auto_network_wifi_fix_first_cooldown_seconds", 99)) <= 15
 assert int(_DC.get("auto_network_recovery_success_toast_cooldown_seconds", 0)) >= 60
+assert int(_DC.get("auto_network_wifi_stability_tip_cooldown_seconds", 0)) >= 300
 assert hasattr(sched, "recovery_toast_gate")
+assert hasattr(sched, "_maybe_emit_wifi_stability_tip")
 _gate = _RTG()
 _wifi_ok = {
     "type": "wifi_drop",
@@ -1869,6 +1898,8 @@ _wifi_ok = {
 assert _gate.allow(_wifi_ok, now_ts=15.0) is True
 assert _gate.allow(_wifi_ok, now_ts=30.0) is False, "Repeated recovered=True must not spam success toast"
 assert _gate.allow(_wifi_ok, now_ts=15.0 + 180.0) is True
+assert _gate.allow_stability_tip(10.0, cooldown_sec=1800) is True
+assert _gate.allow_stability_tip(20.0, cooldown_sec=1800) is False, "Stability tip must not spam"
 assert "Wi-Fi" in win.chk_auto_ping_fix.text() or "wifi" in win.chk_auto_ping_fix.text().lower()
 clock = {"t": 0.0}
 def _sleep(s):

@@ -448,6 +448,19 @@ class AIAdvisor:
                 action_key="repair_network_now",
                 action_label="Sửa Wi-Fi Ngay",
             ))
+            guide_parts = [
+                "Ứng dụng không sửa được driver MediaTek hay sóng RF.",
+                "Ưu tiên SSID 5 GHz nếu có, cập nhật/rollback driver MT7921 trong Device Manager, "
+                "tắt tiết kiệm pin card Wi-Fi, và gỡ khóa Location nếu Settings bị xám.",
+            ]
+            results.append(Suggestion(
+                category=CATEGORY_NETWORK,
+                priority=PRIORITY_TIP,
+                title="Ổn định Wi-Fi (5 GHz / driver / tiết kiệm pin)",
+                detail=" ".join(guide_parts),
+                action_key="open_wifi_stability",
+                action_label="Ổn định Wi-Fi",
+            ))
             return results
 
         recent = buf[-5:]
