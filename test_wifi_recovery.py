@@ -18,6 +18,7 @@ if sys.platform != "win32":
         winreg.KEY_ALL_ACCESS = 0
         winreg.REG_DWORD = 4
         winreg.REG_SZ = 1
+        winreg.KEY_WOW64_64KEY = 0x0100
 
         def _missing(*_a, **_k):
             raise FileNotFoundError("winreg stub")
@@ -135,6 +136,7 @@ def test_parse_helpers():
     assert wlan["ssid"] == "NhaMinh"
     assert wlan["rx_mbps"] == 26.0
     assert "MT7921" in wlan["description"]
+    assert wlan.get("location_blocked") is False
 
 
 def test_classify_and_filtering_dns():
@@ -461,6 +463,208 @@ def test_config_wifi_defaults():
     assert STABILITY_WINDOW_SEC >= 8
 
 
+def _install_fake_location_registry(values):
+    """values: dict[name] -> DWORD/str. Missing names raise FileNotFoundError."""
+    import core.windows_location as loc
+
+    loc.invalidate_cache()
+
+    def query(hive, path, name):
+        path_n = str(path or "")
+        if "LocationAndSensors" in path_n:
+            if name in values:
+                return values[name]
+            raise FileNotFoundError(name)
+        if "ConsentStore" in path_n and name == "Value":
+            if "consent" in values:
+                return values["consent"]
+            raise FileNotFoundError(name)
+        raise FileNotFoundError(name)
+
+    loc._query_value_fn = query
+    return loc
+
+
+def test_location_gpo_detection_mocked_registry():
+    import core.windows_location as loc
+    from core.windows_location import (
+        get_location_lock_status,
+        is_location_gpo_locked,
+        looks_like_location_permission_error,
+        build_unlock_powershell,
+        unlock_location_via_uac,
+    )
+    try:
+        _install_fake_location_registry({"DisableLocation": 1})
+        status = get_location_lock_status(force=True)
+        assert status["locked"] is True
+        assert is_location_gpo_locked(force=True) is True
+        assert "DisableLocation" in status["locked_values"]
+        assert "Group Policy" in status["message"]
+
+        _install_fake_location_registry({})
+        loc.invalidate_cache()
+        assert is_location_gpo_locked(force=True) is False
+
+        _install_fake_location_registry({
+            "DisableLocationScripting": 1,
+            "DisableSensors": 1,
+        })
+        loc.invalidate_cache()
+        related = get_location_lock_status(force=True)
+        assert related["locked"] is True
+        assert "DisableLocationScripting" in related["locked_values"]
+
+        netsh_err = (
+            "Unable to get the wireless interface information because "
+            "Location permission is disabled. Please enable Location permission."
+        )
+        assert looks_like_location_permission_error(netsh_err) is True
+        assert looks_like_location_permission_error("SSID : NhaMinh") is False
+        vi_err = "Cần có quyền vị trí để sử dụng lệnh này."
+        assert looks_like_location_permission_error(vi_err) is True
+
+        script = build_unlock_powershell()
+        assert "DisableLocation" in script
+        assert "DisableLocationScripting" in script
+        assert "DisableSensors" in script
+        assert "DisableWindowsLocationProvider" in script
+        assert "ConsentStore" in script
+        assert "Allow" in script
+        assert "lfsvc" in script
+        assert "LOCATION_UNLOCK_OK" in script
+
+        cancelled = {"n": 0}
+
+        def fake_cancel(script_text, timeout_sec=30):
+            cancelled["n"] += 1
+            return {"success": False, "cancelled": True, "stderr": "UAC cancelled"}
+
+        loc._elevate_runner = fake_cancel
+        _install_fake_location_registry({"DisableLocation": 1})
+        loc.invalidate_cache()
+        res = unlock_location_via_uac()
+        assert res["cancelled"] is True
+        assert res["success"] is False
+        assert "UAC" in res["message"] or "hủy" in res["message"].lower()
+        assert cancelled["n"] == 1
+
+        store = {"DisableLocation": 1}
+
+        def query_mutating(hive, path, name):
+            if "LocationAndSensors" in str(path) and name in store:
+                return store[name]
+            raise FileNotFoundError(name)
+
+        def fake_ok(script_text, timeout_sec=30):
+            store.clear()
+            return {"success": True, "cancelled": False}
+
+        loc._query_value_fn = query_mutating
+        loc._elevate_runner = fake_ok
+        loc.invalidate_cache()
+        ok = unlock_location_via_uac()
+        assert ok["success"] is True
+        assert ok["cancelled"] is False
+        assert ok["locked_after"] is False
+        assert "gỡ khóa" in ok["message"].lower() or "Location" in ok["message"]
+    finally:
+        loc.reset_state()
+
+
+def test_repair_does_not_auto_unlock_location_gpo():
+    """Automatic wifi_recovery must never launch UAC / edit GPO."""
+    import core.windows_location as loc
+    orig, counts = _patch_wifi_repair()
+    clock = FakeClock(50)
+    elevate_calls = []
+
+    def boom(script_text, timeout_sec=30):
+        elevate_calls.append(script_text)
+        raise AssertionError("wifi_recovery must not auto-unlock Location GPO")
+
+    try:
+        _install_fake_location_registry({"DisableLocation": 1})
+        loc._elevate_runner = boom
+        SystemMonitor._measure_quick_ping = staticmethod(lambda timeout=0.45: 33.0)
+        SystemMonitor.reset_ping_state()
+        WifiRecovery.reset_state()
+        result = WifiRecovery.diagnose_and_repair_wifi_drop(
+            apply_dns=False,
+            snapshot=_wifi_snap(location_gpo_locked=True),
+            sleep_fn=clock.sleep,
+            clock_fn=clock.time,
+            stability_sec=8,
+        )
+        assert elevate_calls == []
+        skipped = " ".join(result.get("skipped") or [])
+        assert "Location" in skipped or "Group Policy" in skipped
+        assert result.get("needs_location_unlock") is True
+        assert result.get("location_gpo_locked") is True
+        assert "Disable-NetAdapter" not in str(result.get("steps"))
+    finally:
+        loc.reset_state()
+        _restore_wifi_repair(orig)
+
+
+def test_reconnect_reports_location_blocked_without_unlock():
+    import core.windows_location as loc
+    WifiRecovery.reset_state()
+    cmds = []
+
+    def runner(cmd, timeout=8):
+        cmds.append(cmd)
+        return {
+            "success": False,
+            "stdout": "Location permission is disabled. Please enable Location permission.",
+            "stderr": "",
+            "returncode": 1,
+        }
+
+    try:
+        _install_fake_location_registry({"DisableLocation": 1})
+        loc._elevate_runner = lambda *a, **k: (_ for _ in ()).throw(AssertionError("no UAC"))
+        WifiRecovery._cmd_runner = runner
+        res = WifiRecovery.reconnect_wifi_profile("", "Wi-Fi", now=5000, min_interval=0)
+        assert res["success"] is False
+        assert res.get("location_blocked") is True
+        assert "Gỡ khóa Location" in res["message"]
+        assert loc._elevate_runner  # still hooked, never called
+        wlan = parse_wlan_interfaces(
+            "Unable to retrieve wireless interface because location services are turned off."
+        )
+        assert wlan["location_blocked"] is True
+    finally:
+        loc.reset_state()
+        WifiRecovery.reset_state()
+
+
+def test_advisor_surfaces_location_unlock_cta():
+    import core.windows_location as loc
+    from core.ai_advisor import AIAdvisor, CATEGORY_NETWORK
+    WifiRecovery.reset_state()
+    try:
+        _install_fake_location_registry({"DisableLocation": 1})
+        loc.invalidate_cache()
+        adv = AIAdvisor()
+        adv._cache_ttl = 0.0
+        for _ in range(4):
+            adv.feed_snapshot({
+                "ram": {"percent": 40.0},
+                "cpu": {"percent": 10.0},
+                "disk": {"free_gb": 80.0},
+                "net": {"ping_ms": 28.0, "ping_measured": True, "ping_status": "ok"},
+            })
+        sug = [s for s in adv.get_suggestions() if s.category == CATEGORY_NETWORK]
+        loc_sugs = [s for s in sug if s.action_key == "unlock_location"]
+        assert loc_sugs, "Advisor must offer Gỡ khóa Location when GPO is locked"
+        assert "Group Policy" in loc_sugs[0].detail or "DisableLocation" in loc_sugs[0].detail
+        assert loc_sugs[0].action_label
+    finally:
+        loc.reset_state()
+        WifiRecovery.reset_state()
+
+
 if __name__ == "__main__":
     tests = [
         test_parse_helpers,
@@ -475,6 +679,10 @@ if __name__ == "__main__":
         test_detect_reconnect_loop_from_events,
         test_missing_ping_routes_to_wifi,
         test_config_wifi_defaults,
+        test_location_gpo_detection_mocked_registry,
+        test_repair_does_not_auto_unlock_location_gpo,
+        test_reconnect_reports_location_blocked_without_unlock,
+        test_advisor_surfaces_location_unlock_cta,
     ]
     for fn in tests:
         fn()

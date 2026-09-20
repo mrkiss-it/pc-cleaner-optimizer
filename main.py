@@ -265,16 +265,32 @@ def main():
                 recovered = info.get("recovered")
                 title = "Wi-Fi đã ổn định" if recovered else "Tự sửa Wi-Fi rớt"
                 level = "success" if recovered else "warning"
+                needs_loc = bool(info.get("needs_location_unlock") or info.get("location_gpo_locked")) and not recovered
                 needs_dns = bool(info.get("needs_dns_confirm")) and not recovered
-                action_text = "🌐 Đổi DNS Siêu Tốc" if needs_dns else "📶 Xem Mạng"
-                action_cb = main_win.apply_fast_dns if needs_dns else main_win.open_network_dialog
+                if needs_loc:
+                    action_text = "📍 Gỡ khóa Location"
+                    action_cb = main_win.unlock_location_now
+                elif needs_dns:
+                    action_text = "🌐 Đổi DNS Siêu Tốc"
+                    action_cb = main_win.apply_fast_dns
+                else:
+                    action_text = "📶 Xem Mạng"
+                    action_cb = main_win.open_network_dialog
             elif kind == "ping_missing":
                 recovered = info.get("recovered")
                 title = "Ping đã đo được lại" if recovered else "Tự kiểm tra & sửa mạng"
                 level = "success" if recovered else "warning"
+                needs_loc = bool(info.get("needs_location_unlock") or info.get("location_gpo_locked")) and not recovered
                 needs_dns = bool(info.get("needs_dns_confirm")) and not recovered
-                action_text = "🌐 Đổi DNS Siêu Tốc" if needs_dns else "📶 Xem Mạng"
-                action_cb = main_win.apply_fast_dns if needs_dns else main_win.open_network_dialog
+                if needs_loc:
+                    action_text = "📍 Gỡ khóa Location"
+                    action_cb = main_win.unlock_location_now
+                elif needs_dns:
+                    action_text = "🌐 Đổi DNS Siêu Tốc"
+                    action_cb = main_win.apply_fast_dns
+                else:
+                    action_text = "📶 Xem Mạng"
+                    action_cb = main_win.open_network_dialog
             else:
                 title = "Tự Động Tối Ưu Mạng"
                 level = "info"

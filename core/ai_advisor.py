@@ -410,6 +410,26 @@ class AIAdvisor:
             wifi_applied = str(report.get("applied_summary") or "")
         except Exception:
             wifi_cause = ""
+        loc_locked = False
+        try:
+            from core.windows_location import is_location_gpo_locked
+            loc_locked = is_location_gpo_locked()
+        except Exception:
+            loc_locked = False
+        if loc_locked:
+            results.append(Suggestion(
+                category=CATEGORY_NETWORK,
+                priority=PRIORITY_WARNING,
+                title="Location bị khóa bởi Group Policy",
+                detail=(
+                    "HKLM Policies DisableLocation=1 đang khóa Settings → Privacy → Location. "
+                    "ConsentStore vẫn có thể hiện Allow — GPO mới là khóa thật, nên netsh wlan / "
+                    "reconnect SSID có thể thất bại. Bấm để gỡ khóa một lần (Windows hỏi UAC). "
+                    "Ứng dụng không tự sửa GPO mỗi khi Wi-Fi rớt."
+                ),
+                action_key="unlock_location",
+                action_label="Gỡ khóa Location",
+            ))
         if wifi_cause:
             detail_parts = [f"Nguyên nhân: {wifi_label or wifi_cause}."]
             if wifi_applied:

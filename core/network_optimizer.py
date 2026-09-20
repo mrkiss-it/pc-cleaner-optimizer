@@ -959,6 +959,14 @@ class NetworkOptimizer:
         needs_dns_confirm = False
         dns_applied = False
         stopped_at = ""
+        loc_locked = bool((wifi_snap or {}).get("location_gpo_locked"))
+        if not loc_locked:
+            try:
+                from core.windows_location import is_location_gpo_locked
+                loc_locked = is_location_gpo_locked()
+            except Exception:
+                loc_locked = False
+        needs_location_unlock = loc_locked
 
         def _pack(ping_after: float, recovered: bool, repaired: bool, reason: str, msg: str) -> Dict[str, Any]:
             applied = cls.format_applied_fixes(steps)
@@ -979,6 +987,8 @@ class NetworkOptimizer:
                 "ping_after": ping_after,
                 "dns_applied": dns_applied,
                 "needs_dns_confirm": needs_dns_confirm,
+                "needs_location_unlock": needs_location_unlock,
+                "location_gpo_locked": loc_locked,
                 "stopped_at": stopped_at,
                 "duration_ms": round((time.time() - t0) * 1000, 1),
                 "timestamp": datetime_str(),

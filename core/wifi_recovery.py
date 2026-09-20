@@ -22,6 +22,11 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from core.logger import logger
+from core.windows_location import (
+    get_location_lock_status,
+    is_location_gpo_locked,
+    looks_like_location_permission_error,
+)
 
 WIFI_WEAK_LINK_MBPS = 50.0
 FLAP_WINDOW_SEC = 120.0
@@ -237,6 +242,7 @@ def parse_wlan_interfaces(text: str) -> Dict[str, Any]:
         "description": "",
         "rx_mbps": -1.0,
         "signal": "",
+        "location_blocked": looks_like_location_permission_error(text or ""),
     }
     if not text:
         return info
@@ -460,6 +466,10 @@ class WifiRecovery:
             link_loss = True
             is_up = False
 
+        location_lock = get_location_lock_status()
+        location_blocked = bool(wlan.get("location_blocked")) or looks_like_location_permission_error(
+            wlan_text or ""
+        )
         snap: Dict[str, Any] = {
             "is_wifi": bool(wifi_rows) or looks_like_wifi_name(name, desc),
             "name": name,
@@ -477,6 +487,9 @@ class WifiRecovery:
             "link_loss": link_loss,
             "event_text": event_text or "",
             "timestamp": now_ts,
+            "location_gpo_locked": bool(location_lock.get("locked")),
+            "location_blocked": location_blocked,
+            "location_lock": location_lock,
         }
         return snap
 
@@ -497,6 +510,10 @@ class WifiRecovery:
             now=now,
             **collect_kwargs,
         )
+        if "location_gpo_locked" not in snap:
+            loc = get_location_lock_status()
+            snap["location_gpo_locked"] = bool(loc.get("locked"))
+            snap.setdefault("location_lock", loc)
         if not snap.get("is_wifi"):
             snap.update({
                 "unstable": False,
@@ -578,13 +595,37 @@ class WifiRecovery:
         iface = (adapter_name or "").strip()
         if not profile:
             shown = cls._run("netsh wlan show interfaces", timeout=6)
-            profile = str(parse_wlan_interfaces(str(shown.get("stdout") or "")).get("ssid") or "")
+            wlan_blob = f"{shown.get('stdout') or ''}\n{shown.get('stderr') or ''}"
+            parsed = parse_wlan_interfaces(wlan_blob)
+            profile = str(parsed.get("ssid") or "")
+            if not profile and (
+                parsed.get("location_blocked") or looks_like_location_permission_error(wlan_blob)
+            ):
+                locked = is_location_gpo_locked()
+                hint = (
+                    " Location bị khóa bởi Group Policy — bấm «Gỡ khóa Location» (UAC) rồi thử lại."
+                    if locked else
+                    " netsh wlan cần quyền Location — bấm «Gỡ khóa Location» nếu Settings bị xám."
+                )
+                logger.warning(f"[WifiRecovery] netsh wlan show interfaces blocked by Location.{hint}")
+                return {
+                    "action": "reconnect_ssid",
+                    "success": False,
+                    "throttled": False,
+                    "location_blocked": True,
+                    "location_gpo_locked": locked,
+                    "message": "Không đọc được SSID vì thiếu quyền Location." + hint,
+                }
         if not profile:
+            extra = ""
+            if is_location_gpo_locked():
+                extra = " Location đang bị khóa bởi Group Policy — reconnect SSID có thể thất bại cho đến khi gỡ khóa."
             return {
                 "action": "reconnect_ssid",
                 "success": False,
                 "throttled": False,
-                "message": "Không có SSID hiện tại để kết nối lại.",
+                "location_gpo_locked": is_location_gpo_locked(),
+                "message": "Không có SSID hiện tại để kết nối lại." + extra,
             }
         disc_cmd = "netsh wlan disconnect"
         conn_cmd = f'netsh wlan connect name="{profile}"'
@@ -778,10 +819,17 @@ class WifiRecovery:
         steps: List[Dict[str, Any]] = []
         skipped: List[str] = [cls.skipped_nic_toggle()]
         needs_dns_confirm = False
+        needs_location_unlock = bool(snap.get("location_gpo_locked") or snap.get("location_blocked"))
         dns_applied = False
         stopped_at = ""
         adapter = str(snap.get("name") or "")
         ssid = str(snap.get("ssid") or "")
+        if needs_location_unlock:
+            # Never silently edit GPO / ConsentStore on a Wi-Fi flap — user must click the button.
+            skipped.append(
+                "Location bị khóa bởi Group Policy — không tự gỡ (chỉ khi bấm «Gỡ khóa Location»)."
+            )
+            logger.info("[WifiRecovery] Location GPO lock detected; skipping auto Location unlock")
 
         def _remeasure() -> float:
             return float(SystemMonitor.measure_ping_now(timeout=PING_REPAIR_TIMEOUT))
@@ -806,6 +854,8 @@ class WifiRecovery:
                 "ping_after": ping_after,
                 "dns_applied": dns_applied,
                 "needs_dns_confirm": needs_dns_confirm,
+                "needs_location_unlock": needs_location_unlock,
+                "location_gpo_locked": bool(snap.get("location_gpo_locked")),
                 "stopped_at": stopped_at,
                 "duration_ms": round((time.time() - t0) * 1000, 1),
                 "timestamp": _datetime_str(),
@@ -878,6 +928,8 @@ class WifiRecovery:
         if cause in ("reconnect_loop", "link_loss", "adapter_down", "weak_link"):
             recon = cls.reconnect_wifi_profile(ssid, adapter_name=adapter, now=clock_fn())
             steps.append(recon)
+            if recon.get("location_blocked") or recon.get("location_gpo_locked"):
+                needs_location_unlock = True
         else:
             skipped.append("Không reconnect SSID vì không phải mất link / vòng reconnect.")
 
@@ -914,11 +966,15 @@ class WifiRecovery:
             ping_bit = f" Ping: {ping_after:.0f} ms." if ping_after > 0 else " Link Wi-Fi Up ổn định."
             msg = f"Nguyên nhân: {cause_label}. Đã sửa: {applied}.{ping_bit}"
         else:
-            confirm = (
-                " Cần quyền Admin để đổi DNS — bấm «Đổi DNS Siêu Tốc»."
-                if needs_dns_confirm else
-                " Nếu vẫn rớt, kiểm tra router / kênh Wi-Fi — ứng dụng không tắt-bật card."
-            )
+            if needs_location_unlock:
+                confirm = (
+                    " Location bị khóa bởi Group Policy — bấm «Gỡ khóa Location» (UAC) "
+                    "để netsh wlan / reconnect SSID hoạt động. Không tự gỡ khi Wi-Fi rớt."
+                )
+            elif needs_dns_confirm:
+                confirm = " Cần quyền Admin để đổi DNS — bấm «Đổi DNS Siêu Tốc»."
+            else:
+                confirm = " Nếu vẫn rớt, kiểm tra router / kênh Wi-Fi — ứng dụng không tắt-bật card."
             msg = f"Nguyên nhân: {cause_label}. Đã sửa: {applied}. Wi-Fi chưa ổn định hẳn.{confirm}"
         logger.info(f"[WifiRecovery] wifi-drop repair recovered={recovered} ping_after={ping_after} cause={cause}")
         return _pack(ping_after, recovered, True, "wifi_drop", msg)
