@@ -13,6 +13,7 @@ def build():
     main_script = os.path.join(base_dir, "main.py")
     ico_path = os.path.join(base_dir, "assets", "icon.ico")
     assets_dir = os.path.join(base_dir, "assets")
+    license_path = os.path.join(base_dir, "LICENSE")
     dist_dir = os.path.join(base_dir, "dist", "PCAutoCleaner")
     build_dir = os.path.join(base_dir, "build")
 
@@ -48,6 +49,7 @@ def build():
         "--name=PCAutoCleaner",
         f"--icon={ico_path}",
         f"--add-data={assets_dir};assets",
+        f"--add-data={license_path};.",
         "--hidden-import=PyQt5.QtNetwork",
         "--hidden-import=PyQt5.QtCore",
         "--hidden-import=PyQt5.QtWidgets",
@@ -72,6 +74,7 @@ def build():
         "--hidden-import=ui.winsxs_dialog",
         "--hidden-import=ui.toast_notification",
         "--hidden-import=ui.ai_copilot_widget",
+        "--hidden-import=ui.eula_dialog",
         main_script
     ]
 
@@ -80,8 +83,8 @@ def build():
         print(f"\n[ERROR] Build thất bại với mã lỗi: {res.returncode}")
         return False
 
-    # 4. Sao chép assets và config.json vào thư mục phân phối
-    print("[4/5] Đồng bộ hóa assets và config.json vào dist/PCAutoCleaner...")
+    # 4. Sao chép assets, LICENSE và config.json vào thư mục phân phối
+    print("[4/5] Đồng bộ hóa assets, LICENSE và config.json vào dist/PCAutoCleaner...")
     try:
         dest_assets = os.path.join(dist_dir, "assets")
         shutil.copytree(assets_dir, dest_assets, dirs_exist_ok=True)
@@ -89,6 +92,11 @@ def build():
         dest_config = os.path.join(dist_dir, "config.json")
         if os.path.exists(src_config):
             shutil.copy2(src_config, dest_config)
+        if os.path.exists(license_path):
+            shutil.copy2(license_path, os.path.join(dist_dir, "LICENSE"))
+            print("        Đã kèm LICENSE cạnh exe (mở từ EULA khi offline).")
+        else:
+            print("[!] Cảnh báo: không tìm thấy LICENSE — người dùng EULA sẽ mở bản GitHub.")
     except Exception as e:
         print(f"Cảnh báo khi sao chép tài nguyên: {e}")
 

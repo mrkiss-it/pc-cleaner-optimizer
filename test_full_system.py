@@ -1818,13 +1818,60 @@ from config_manager import (
     eula_file_path as _eula_path,
     DEFAULT_CONFIG as _DC_EULA,
 )
-from ui.eula_dialog import EulaDialog, ensure_eula_accepted, EULA_HTML, COPYRIGHT_HOLDER
+from ui.eula_dialog import (
+    EulaDialog,
+    ensure_eula_accepted,
+    EULA_HTML,
+    COPYRIGHT_HOLDER,
+    LICENSE_LINK_HREF,
+    COMMERCIAL_LINK_HREF,
+    LICENSE_GITHUB_URL,
+    COMMERCIAL_PERMISSION_URL,
+    resolve_license_path,
+    open_full_license,
+    open_commercial_permission,
+)
 
 assert _EULA_VER >= 1
 assert _DC_EULA.get("eula_accepted") is False
 assert COPYRIGHT_HOLDER == "mrkiss-it"
 assert "độc quyền" in EULA_HTML or "All Rights Reserved" in EULA_HTML
 assert "thương mại" in EULA_HTML.lower() or "commercially" in EULA_HTML.lower()
+assert LICENSE_LINK_HREF in EULA_HTML
+assert COMMERCIAL_LINK_HREF in EULA_HTML
+assert "Giấy phép đầy đủ" in EULA_HTML
+assert "Xin phép thương mại" in EULA_HTML
+assert COMMERCIAL_PERMISSION_URL == "https://github.com/mrkiss-it"
+assert LICENSE_GITHUB_URL.endswith("/pc-cleaner-optimizer/blob/main/LICENSE")
+
+_local_license = resolve_license_path()
+assert _local_license and os.path.isfile(_local_license), "Dev/source tree phai tim duoc LICENSE"
+assert os.path.basename(_local_license) == "LICENSE"
+
+# Frozen onedir: LICENSE cạnh exe được ưu tiên hơn mã nguồn
+from unittest.mock import patch as _patch_eula
+_fake_dist = tempfile.mkdtemp(prefix="pcc_dist_")
+_fake_mei = tempfile.mkdtemp(prefix="pcc_mei_")
+try:
+    _dist_lic = os.path.join(_fake_dist, "LICENSE")
+    shutil.copy2(_local_license, _dist_lic)
+    with _patch_eula("ui.eula_dialog.sys.frozen", True, create=True), _patch_eula(
+        "ui.eula_dialog.sys.executable", os.path.join(_fake_dist, "PCAutoCleaner.exe")
+    ):
+        _resolved = resolve_license_path()
+        assert os.path.normpath(_resolved) == os.path.normpath(_dist_lic), _resolved
+    _mei_lic = os.path.join(_fake_mei, "LICENSE")
+    shutil.copy2(_local_license, _mei_lic)
+    _empty_exe_dir = tempfile.mkdtemp(prefix="pcc_empty_")
+    with _patch_eula("ui.eula_dialog.sys.frozen", True, create=True), _patch_eula(
+        "ui.eula_dialog.sys.executable", os.path.join(_empty_exe_dir, "PCAutoCleaner.exe")
+    ), _patch_eula("ui.eula_dialog.sys._MEIPASS", _fake_mei, create=True):
+        _resolved = resolve_license_path()
+        assert os.path.normpath(_resolved) == os.path.normpath(_mei_lic), _resolved
+    shutil.rmtree(_empty_exe_dir, ignore_errors=True)
+finally:
+    shutil.rmtree(_fake_dist, ignore_errors=True)
+    shutil.rmtree(_fake_mei, ignore_errors=True)
 
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "LICENSE"), "r", encoding="utf-8") as _lf:
     _lic = _lf.read()
@@ -1911,6 +1958,35 @@ try:
     assert dlg_view.chk_agree.isHidden() is True
     assert dlg_view.btn_accept is None
     assert hasattr(dlg_view, "btn_close")
+    assert "Giấy phép đầy đủ" in dlg_view.btn_full_license.text()
+    assert "Xin phép thương mại" in dlg_view.btn_commercial.text()
+
+    from unittest.mock import patch
+    from PyQt5.QtCore import QUrl as _QUrl
+
+    opened = []
+
+    def _capture_open(url):
+        opened.append(url.toString() if hasattr(url, "toString") else str(url))
+        return True
+
+    with patch("ui.eula_dialog.QDesktopServices.openUrl", side_effect=_capture_open):
+        dlg_view.btn_full_license.click()
+        dlg_view.btn_commercial.click()
+        dlg_view._on_eula_link(_QUrl(LICENSE_LINK_HREF))
+        dlg_view._on_eula_link(_QUrl(COMMERCIAL_LINK_HREF))
+
+    assert any("LICENSE" in (s or "") or (s or "").startswith("file:") for s in opened), opened
+    commercial_hits = [s for s in opened if s.rstrip("/") == COMMERCIAL_PERMISSION_URL]
+    assert len(commercial_hits) >= 2, opened
+
+    opened.clear()
+    with patch("ui.eula_dialog.resolve_license_path", return_value=None):
+        with patch("ui.eula_dialog.QDesktopServices.openUrl", side_effect=_capture_open):
+            assert open_full_license() is True
+            assert open_commercial_permission() is True
+    assert LICENSE_GITHUB_URL in opened
+    assert COMMERCIAL_PERMISSION_URL in opened
     dlg_view.close()
 finally:
     os.environ.pop("PCAUTOCLEANER_EULA_PATH", None)
@@ -1920,10 +1996,22 @@ finally:
         except Exception:
             pass
 
+_build_exe_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_exe.py"), "r", encoding="utf-8").read()
+assert "LICENSE" in _build_exe_src and "--add-data=" in _build_exe_src
+assert 'os.path.join(dist_dir, "LICENSE")' in _build_exe_src
+_spec_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "PCAutoCleaner.spec"), "r", encoding="utf-8").read()
+assert "LICENSE" in _spec_src
+
 assert hasattr(win, "btn_eula")
 assert hasattr(win, "btn_view_eula")
+assert hasattr(win, "btn_open_full_license")
+assert hasattr(win, "btn_open_commercial")
 assert hasattr(win, "open_eula_dialog")
+assert hasattr(win, "open_full_license")
+assert hasattr(win, "open_commercial_permission")
 assert "Điều khoản" in win.btn_eula.text()
+assert "Giấy phép đầy đủ" in win.btn_open_full_license.text()
+assert "Xin phép thương mại" in win.btn_open_commercial.text()
 assert hasattr(_tray, "show_eula_requested")
 print(" [PASS] 48. Proprietary LICENSE + EULA first-run persist (AppData/config) & Settings/header link!")
 
