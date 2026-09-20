@@ -155,6 +155,7 @@ print(" [PASS] 13. Network UI: NetworkOptimizerDialog (3 tabs) va FloatingWidget
 from core.scheduler import BackgroundScheduler
 sched = BackgroundScheduler(cfg)
 assert hasattr(sched, "network_optimized"), "BackgroundScheduler phai co signal network_optimized"
+assert hasattr(sched, "recovery_toast_gate"), "BackgroundScheduler phai co RecoveryToastGate"
 assert hasattr(sched, "security_scan_completed"), "BackgroundScheduler phai co signal security_scan_completed"
 assert cfg.get("auto_network_optimize_enabled") is not None, "Phai co config auto_network_optimize_enabled"
 assert cfg.get("auto_security_scan_enabled") is not None, "Phai co config auto_security_scan_enabled"
@@ -1696,6 +1697,7 @@ from core.wifi_recovery import (
     classify_wifi_cause as _cwc,
     resolve_overlay_wifi_status as _ros,
     overlay_word_for_cause as _owc,
+    RecoveryToastGate as _RTG,
 )
 from core.system_monitor import format_ping_overlay_text as _fpo
 _WR.reset_state()
@@ -1727,6 +1729,18 @@ assert _WR.should_trigger_wifi_drop_fix(True, True, 1000, 980, 300, 0, first_coo
 assert _WR.should_trigger_wifi_drop_fix(True, True, 9999, 0, 300, 2) is False
 assert "Disable-NetAdapter" in _WR.skipped_nic_toggle() or "tắt/bật" in _WR.skipped_nic_toggle()
 assert int(_DC.get("auto_network_wifi_fix_first_cooldown_seconds", 99)) <= 15
+assert int(_DC.get("auto_network_recovery_success_toast_cooldown_seconds", 0)) >= 60
+assert hasattr(sched, "recovery_toast_gate")
+_gate = _RTG()
+_wifi_ok = {
+    "type": "wifi_drop",
+    "recovered": True,
+    "cause": "adapter_down",
+    "outage_seconds": 12,
+}
+assert _gate.allow(_wifi_ok, now_ts=15.0) is True
+assert _gate.allow(_wifi_ok, now_ts=30.0) is False, "Repeated recovered=True must not spam success toast"
+assert _gate.allow(_wifi_ok, now_ts=15.0 + 180.0) is True
 assert "Wi-Fi" in win.chk_auto_ping_fix.text() or "wifi" in win.chk_auto_ping_fix.text().lower()
 clock = {"t": 0.0}
 def _sleep(s):

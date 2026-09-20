@@ -8,6 +8,7 @@ from core.memory_optimizer import MemoryOptimizer
 from core.system_monitor import SystemMonitor
 from core.leak_detector import MemoryLeakDetector
 from config_manager import ConfigManager
+from core.wifi_recovery import RecoveryToastGate
 
 class BackgroundScheduler(QObject):
     # Signals for UI notifications
@@ -36,6 +37,7 @@ class BackgroundScheduler(QObject):
         self.wifi_fix_first_cooldown_seconds = 12
         self.wifi_fix_unrecovered = 0
         self.wifi_fix_max_unrecovered = 2
+        self.recovery_toast_gate = RecoveryToastGate()
         self.last_dns_trigger = datetime.now() - timedelta(hours=2)
         self.dns_cooldown_seconds = 7200
         self.last_security_trigger = datetime.now() - timedelta(hours=23)  # Run first scan sooner
@@ -87,6 +89,14 @@ class BackgroundScheduler(QObject):
                 self.wifi_fix_unrecovered = 0
         except Exception:
             wifi_snap = {}
+
+        try:
+            self.recovery_toast_gate.observe_wifi(
+                bool(wifi_snap.get("unstable")), now.timestamp()
+            )
+            self.recovery_toast_gate.observe_ping(float(ping or 0) > 0, now.timestamp())
+        except Exception:
+            pass
 
         if config.get("auto_network_optimize_enabled", True):
             ping_threshold = config.get("auto_network_ping_threshold_ms", 180)
@@ -146,10 +156,12 @@ class BackgroundScheduler(QObject):
         )
         if wifi_fix_due:
             self.last_wifi_fix_trigger = now
-            self.run_auto_wifi_drop_fix(wifi_snap)
+            wifi_outage = self.recovery_toast_gate.wifi_outage_sec(now.timestamp())
+            self.run_auto_wifi_drop_fix(wifi_snap, outage_seconds=wifi_outage)
         elif ping_fix_due:
             self.last_ping_fix_trigger = now
-            self.run_auto_missing_ping_fix()
+            ping_outage = self.recovery_toast_gate.ping_outage_sec(now.timestamp())
+            self.run_auto_missing_ping_fix(outage_seconds=ping_outage)
 
         # 4. Check Auto Best-DNS Switcher
         if config.get("auto_best_dns_enabled", False):
@@ -310,12 +322,13 @@ class BackgroundScheduler(QObject):
             from core.logger import logger
             logger.error(f"[Scheduler] Lỗi khi tự động tối ưu mạng: {e}")
 
-    def run_auto_missing_ping_fix(self):
+    def run_auto_missing_ping_fix(self, outage_seconds: float = 0.0):
         """
         Tự động chẩn đoán + sửa an toàn khi Ping timeout / unreachable / -1.
         Chạy nền để không đóng băng UI.
         """
         import threading
+        outage_sec = float(outage_seconds or 0.0)
 
         def _worker():
             try:
@@ -351,6 +364,7 @@ class BackgroundScheduler(QObject):
                     "steps": result.get("steps", []),
                     "skipped": result.get("skipped", []),
                     "details": result,
+                    "outage_seconds": outage_sec,
                     "message": result.get(
                         "message",
                         "Đã kiểm tra mạng vì Ping không đo được."
@@ -362,12 +376,13 @@ class BackgroundScheduler(QObject):
 
         threading.Thread(target=_worker, daemon=True, name="MissingPingFix").start()
 
-    def run_auto_wifi_drop_fix(self, wifi_snap=None):
+    def run_auto_wifi_drop_fix(self, wifi_snap=None, outage_seconds: float = 0.0):
         """
         Tự động sửa Wi-Fi rớt / vòng reconnect (DHCP, SSID, tắt tiết kiệm pin).
         Ưu tiên hơn missing-ping khi cả hai cùng đến hạn.
         """
         import threading
+        outage_sec = float(outage_seconds or 0.0)
 
         def _worker():
             try:
@@ -406,6 +421,7 @@ class BackgroundScheduler(QObject):
                     "steps": result.get("steps", []),
                     "skipped": result.get("skipped", []),
                     "details": result,
+                    "outage_seconds": outage_sec,
                     "message": result.get(
                         "message",
                         "Đã kiểm tra Wi-Fi vì phát hiện rớt / vòng reconnect."
