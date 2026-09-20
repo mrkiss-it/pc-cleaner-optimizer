@@ -249,7 +249,7 @@ class CompanionCard(QFrame):
         self.btn_reflect.setStyleSheet(_BTN_STYLE)
         self.btn_reflect.setToolTip("Tóm tắt nhật ký máy này thành sổ tay. Không bịa kỷ niệm.")
         self.btn_reflect.clicked.connect(self._reflect_now)
-        self.btn_manage = QPushButton("Xem & xóa bộ nhớ")
+        self.btn_manage = QPushButton("Xem và xóa bộ nhớ")
         self.btn_manage.setStyleSheet(_BTN_STYLE)
         self.btn_manage.setToolTip("Xem nhật ký, kỹ năng và xóa dữ liệu local (có xác nhận).")
         self.btn_manage.clicked.connect(self._open_manage)
@@ -316,7 +316,14 @@ class CompanionCard(QFrame):
                 f"{stage.skills_count} kỹ năng"
             )
         digest = diary_digest(limit=3, days=14)
-        if stage.empty or "còn trống" in digest:
+        preview_kinds = (
+            "high_ram", "ram_optimized", "wifi_weak", "wifi_repaired", "ping_high",
+            "clean_freed", "clean_light", "focus_mode", "thermal_warn", "session_day",
+        )
+        interesting = [row for row in list_diary_rows(limit=20, days=14) if row.get("kind") in preview_kinds]
+        if interesting:
+            digest = "\n".join(f"- {format_event_row(row)}" for row in interesting[:3])
+        if stage.empty or "còn trống" in digest or "Chưa có nhật ký" in digest:
             self.lbl_diary.setText(empty["diary"])
         else:
             self.lbl_diary.setText(digest)
