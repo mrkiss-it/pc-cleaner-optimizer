@@ -22,7 +22,21 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QFont, QColor, QCursor
 
-# Cấp độ thông báo
+def _qt_object_alive(obj) -> bool:
+    """True if the Qt C++ object behind a sip wrapper still exists."""
+    if obj is None:
+        return False
+    try:
+        from PyQt5 import sip
+        if sip.isdeleted(obj):
+            return False
+    except Exception:
+        pass
+    try:
+        obj.objectName()
+        return True
+    except RuntimeError:
+        return False
 LEVEL_INFO    = "info"
 LEVEL_SUCCESS = "success"
 LEVEL_WARNING = "warning"
@@ -96,6 +110,8 @@ class ToastNotification(QFrame):
         self.duration_ms = max(1500, duration_ms)
         self.remaining_ms = self.duration_ms
         self.is_paused = False
+        self._dismissing = False
+        self._finished = False
 
         # Thiết lập cửa sổ không viền, luôn nổi và không chiếm tiêu điểm bàn phím
         self.setWindowFlags(
@@ -246,32 +262,60 @@ class ToastNotification(QFrame):
         self.adjustSize()
 
     def _on_tick(self):
-        if self.is_paused:
+        if getattr(self, "_dismissing", False):
             return
-        self.remaining_ms -= self.step_interval_ms
-        if self.remaining_ms <= 0:
-            self.timer.stop()
-            self.dismiss()
-        else:
-            self.progress.setValue(self.remaining_ms)
+        if not _qt_object_alive(self):
+            return
+        try:
+            if self.is_paused:
+                return
+            self.remaining_ms -= self.step_interval_ms
+            if self.remaining_ms <= 0:
+                try:
+                    if _qt_object_alive(self.timer):
+                        self.timer.stop()
+                except RuntimeError:
+                    pass
+                self.dismiss()
+            elif _qt_object_alive(getattr(self, "progress", None)):
+                self.progress.setValue(self.remaining_ms)
+        except RuntimeError:
+            return
 
     def _on_action_clicked(self):
-        if self.action_callback and callable(self.action_callback):
+        if getattr(self, "_dismissing", False):
+            return
+        cb = self.action_callback
+        self.action_callback = None
+        # Stop the countdown timer BEFORE the callback (which may pump Qt
+        # events / open a dialog). Clicking the missing-ping action used to
+        # delete the QTimer while _on_tick still ran.
+        self.dismiss()
+        if cb and callable(cb):
             try:
-                self.action_callback()
+                cb()
             except Exception as e:
                 print(f"[ToastNotification] Lỗi khi thực thi action callback: {e}")
-        self.dismiss()
 
     def enterEvent(self, event):
         """Tạm dừng đếm ngược khi người dùng di chuột vào."""
-        self.is_paused = True
-        self.setWindowOpacity(1.0)
+        if getattr(self, "_dismissing", False) or not _qt_object_alive(self):
+            return
+        try:
+            self.is_paused = True
+            self.setWindowOpacity(1.0)
+        except RuntimeError:
+            return
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         """Tiếp tục đếm ngược khi người dùng rời chuột."""
-        self.is_paused = False
+        if getattr(self, "_dismissing", False) or not _qt_object_alive(self):
+            return
+        try:
+            self.is_paused = False
+        except RuntimeError:
+            return
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
@@ -309,20 +353,47 @@ class ToastNotification(QFrame):
         self.timer.start(self.step_interval_ms)
 
     def dismiss(self):
-        """Đóng thông báo với hiệu ứng mờ dần."""
-        self.timer.stop()
-        anim_op = QPropertyAnimation(self, b"windowOpacity")
-        anim_op.setDuration(220)
-        anim_op.setStartValue(self.windowOpacity())
-        anim_op.setEndValue(0.0)
-        anim_op.finished.connect(self._finish_dismiss)
-        anim_op.start()
-        self._fade_out_anim = anim_op
+        """Đóng thông báo với hiệu ứng mờ dần. Idempotent — an toàn khi click action."""
+        if getattr(self, "_dismissing", False):
+            return
+        self._dismissing = True
+        try:
+            if _qt_object_alive(getattr(self, "timer", None)):
+                self.timer.stop()
+                try:
+                    self.timer.timeout.disconnect(self._on_tick)
+                except (TypeError, RuntimeError):
+                    pass
+        except RuntimeError:
+            self._finish_dismiss()
+            return
+        if not _qt_object_alive(self):
+            return
+        try:
+            anim_op = QPropertyAnimation(self, b"windowOpacity", self)
+            anim_op.setDuration(220)
+            anim_op.setStartValue(self.windowOpacity())
+            anim_op.setEndValue(0.0)
+            anim_op.finished.connect(self._finish_dismiss)
+            anim_op.start()
+            self._fade_out_anim = anim_op
+        except RuntimeError:
+            self._finish_dismiss()
 
     def _finish_dismiss(self):
-        self.closed_signal.emit(self)
-        self.close()
-        self.deleteLater()
+        if getattr(self, "_finished", False):
+            return
+        self._finished = True
+        try:
+            self.closed_signal.emit(self)
+        except RuntimeError:
+            pass
+        try:
+            if _qt_object_alive(self):
+                self.close()
+                self.deleteLater()
+        except RuntimeError:
+            pass
 
 
 class ToastManager(QObject):

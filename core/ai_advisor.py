@@ -101,6 +101,7 @@ class _Snapshot:
     net_ping_ms: float
     process_count: int
     net_ping_measured: bool = False
+    net_ping_status: str = "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +155,7 @@ class AIAdvisor:
                 net_ping_ms=float(net.get("ping_ms", -1)),
                 process_count=int(stats.get("process_count", 0)),
                 net_ping_measured=bool(net.get("ping_measured", False)),
+                net_ping_status=str(net.get("ping_status") or net.get("ping_error") or "unknown"),
             )
             self._buffer.append(snap)
             # Đồng bộ sang PredictiveAIEngine
@@ -212,7 +214,11 @@ class AIAdvisor:
                 "ram": {"percent": latest_snap.ram_pct},
                 "cpu": {"percent": latest_snap.cpu_pct},
                 "disk": {"free_gb": latest_snap.disk_free_gb, "total_gb": 256.0},
-                "net": {"ping_ms": latest_snap.net_ping_ms},
+                "net": {
+                    "ping_ms": latest_snap.net_ping_ms,
+                    "ping_measured": latest_snap.net_ping_measured,
+                    "ping_status": latest_snap.net_ping_status,
+                },
                 "process_count": latest_snap.process_count,
             }
         return self.predictive_engine.calculate_health_score(
@@ -377,15 +383,41 @@ class AIAdvisor:
         if len(recent) >= 3:
             missing_tail = recent[-3:]
             if all(s.net_ping_ms <= 0 and s.net_ping_measured for s in missing_tail):
+                cause_label = ""
+                applied = ""
+                try:
+                    from core.network_optimizer import NetworkOptimizer
+                    report = getattr(NetworkOptimizer, "last_missing_ping_report", None) or {}
+                    cause_label = str(report.get("cause_label") or "")
+                    applied = str(report.get("applied_summary") or "")
+                except Exception:
+                    cause_label = ""
+                    applied = ""
+                status = missing_tail[-1].net_ping_status or "timeout"
+                if not cause_label:
+                    labels = {
+                        "timeout": "đồng hồ Ping quá thời gian (probe chậm hoặc bị chặn)",
+                        "meter_timeout": "đồng hồ Ping quá thời gian (probe chậm hoặc bị chặn)",
+                        "unreachable": "firewall / không có tuyến mạng",
+                        "dns_fail": "DNS không phân giải được tên miền",
+                        "adapter_down": "card mạng tắt / không có adapter",
+                        "no_gateway": "không có default gateway",
+                    }
+                    cause_label = labels.get(status, "không đo được Ping")
+                detail_parts = [f"Nguyên nhân: {cause_label}."]
+                if applied:
+                    detail_parts.append(f"Đã sửa: {applied}.")
+                else:
+                    detail_parts.append(
+                        "Ứng dụng sẽ tự đo lại với timeout dài hơn, flush DNS, "
+                        "làm mới ARP rồi đổi DNS tốt nhất nếu vẫn lỗi."
+                    )
+                detail_parts.append("Bấm để chạy kiểm tra & sửa ngay (không reset Winsock).")
                 results.append(Suggestion(
                     category=CATEGORY_NETWORK,
                     priority=PRIORITY_WARNING,
                     title="Không đo được Ping – mạng có thể bị lỗi",
-                    detail=(
-                        "Độ trễ mạng không đo được (timeout / unreachable). "
-                        "Ứng dụng sẽ tự kiểm tra card mạng, DNS, gateway rồi làm mới DNS cache. "
-                        "Bạn cũng có thể bấm để chạy kiểm tra & sửa ngay."
-                    ),
+                    detail=" ".join(detail_parts),
                     action_key="repair_network_now",
                     action_label="Kiểm Tra & Sửa Mạng",
                 ))

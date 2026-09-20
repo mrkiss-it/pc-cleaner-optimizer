@@ -28,6 +28,7 @@ class BackgroundScheduler(QObject):
         self.net_cooldown_seconds = 300
         self.last_ping_fix_trigger = datetime.now() - timedelta(minutes=30)
         self.ping_fix_cooldown_seconds = 300
+        self.ping_fix_first_cooldown_seconds = 8
         self.ping_fix_unrecovered = 0
         self.ping_fix_max_unrecovered = 2
         self.last_dns_trigger = datetime.now() - timedelta(hours=2)
@@ -81,21 +82,27 @@ class BackgroundScheduler(QObject):
                     self.last_net_trigger = now
                     self.run_auto_network_boost(ping, ping_threshold)
 
-        # 3b. Missing / failed ping → health check + safe repair (throttled)
+        # 3b. Missing / failed ping → diagnose + escalating repair (first fix almost immediate)
+        first_cd = float(config.get(
+            "auto_network_ping_fix_first_cooldown_seconds",
+            self.ping_fix_first_cooldown_seconds
+        ))
+        repeat_cd = float(config.get(
+            "auto_network_ping_fix_cooldown_seconds",
+            self.ping_fix_cooldown_seconds
+        ))
         if self.should_trigger_missing_ping_fix(
             enabled=bool(config.get("auto_network_ping_fix_enabled", True)),
             ping_ms=float(ping),
             ping_measured=bool(net_info.get("ping_measured", False)),
             fail_streak=int(net_info.get("ping_fail_streak", 0)),
-            min_streak=int(config.get("auto_network_ping_fail_streak", 3)),
+            min_streak=int(config.get("auto_network_ping_fail_streak", 1)),
             now_ts=now.timestamp(),
             last_trigger_ts=self.last_ping_fix_trigger.timestamp(),
-            cooldown_sec=float(config.get(
-                "auto_network_ping_fix_cooldown_seconds",
-                self.ping_fix_cooldown_seconds
-            )),
+            cooldown_sec=repeat_cd,
             unrecovered_repairs=self.ping_fix_unrecovered,
             max_unrecovered=self.ping_fix_max_unrecovered,
+            first_cooldown_sec=first_cd,
         ):
             self.last_ping_fix_trigger = now
             self.run_auto_missing_ping_fix()
@@ -173,6 +180,21 @@ class BackgroundScheduler(QObject):
         })
 
     @staticmethod
+    def effective_missing_ping_cooldown(
+        unrecovered_repairs: int,
+        first_cooldown_sec: float,
+        repeat_cooldown_sec: float,
+        max_cooldown_sec: float = 600.0,
+    ) -> float:
+        """
+        Lần sửa đầu: cổng rất ngắn. Các lần sau không hồi phục: backoff
+        (repeat * số lần thất bại), chặn vòng lặp vô hạn ở max_unrecovered.
+        """
+        if int(unrecovered_repairs) <= 0:
+            return max(0.0, float(first_cooldown_sec))
+        return min(float(repeat_cooldown_sec) * int(unrecovered_repairs), float(max_cooldown_sec))
+
+    @staticmethod
     def should_trigger_missing_ping_fix(
         enabled: bool,
         ping_ms: float,
@@ -184,6 +206,7 @@ class BackgroundScheduler(QObject):
         cooldown_sec: float,
         unrecovered_repairs: int,
         max_unrecovered: int = 2,
+        first_cooldown_sec: float = None,
     ) -> bool:
         """
         Quyết định có chạy auto-fix khi Ping không đo được hay không.
@@ -193,7 +216,7 @@ class BackgroundScheduler(QObject):
           - đồng hồ chưa đo lần nào (tránh 'sửa' vì meter chưa chạy)
           - ping_ms > 0 (mạng ổn)
           - chưa đủ chuỗi thất bại liên tiếp
-          - đang trong cooldown
+          - đang trong cooldown (lần đầu dùng first_cooldown_sec rất ngắn)
           - đã sửa N lần liên tiếp mà Ping vẫn không về
         """
         if not enabled:
@@ -212,7 +235,16 @@ class BackgroundScheduler(QObject):
             return False
         if int(unrecovered_repairs) >= int(max_unrecovered):
             return False
-        if last_trigger_ts > 0 and (now_ts - last_trigger_ts) < float(cooldown_sec):
+        effective_cd = (
+            BackgroundScheduler.effective_missing_ping_cooldown(
+                unrecovered_repairs,
+                first_cooldown_sec,
+                cooldown_sec,
+            )
+            if first_cooldown_sec is not None
+            else float(cooldown_sec)
+        )
+        if last_trigger_ts > 0 and (now_ts - last_trigger_ts) < float(effective_cd):
             return False
         return True
 
@@ -245,7 +277,10 @@ class BackgroundScheduler(QObject):
             try:
                 from core.network_optimizer import NetworkOptimizer
                 from core.logger import logger
-                result = NetworkOptimizer.diagnose_and_repair_missing_ping(apply_dns=False)
+                result = NetworkOptimizer.diagnose_and_repair_missing_ping(
+                    apply_dns=False,
+                    escalate_dns=True,
+                )
                 recovered = bool(result.get("recovered"))
                 if recovered:
                     self.ping_fix_unrecovered = 0
@@ -263,6 +298,10 @@ class BackgroundScheduler(QObject):
                     "ping_before": result.get("ping_before", -1),
                     "ping_after": result.get("ping_after", -1),
                     "issues": result.get("issues", []),
+                    "cause": result.get("cause", ""),
+                    "cause_label": result.get("cause_label", ""),
+                    "applied_summary": result.get("applied_summary", ""),
+                    "needs_dns_confirm": result.get("needs_dns_confirm", False),
                     "steps": result.get("steps", []),
                     "skipped": result.get("skipped", []),
                     "details": result,
