@@ -155,10 +155,12 @@ class MainWindow(QMainWindow):
         if self.monitor_hub:
             self.monitor_hub.stats_updated.connect(self.update_system_stats)
             self.monitor_hub.stats_updated.connect(self._ai_advisor.feed_snapshot)
+            self.monitor_hub.stats_updated.connect(self._on_autopilot_tick)
             self.update_system_stats(self.monitor_hub.get_latest())
         else:
             self.monitor_timer = QTimer(self)
             self.monitor_timer.timeout.connect(self.update_system_stats)
+            self.monitor_timer.timeout.connect(self._on_autopilot_tick)
             self.monitor_timer.start(1000)
             self.update_system_stats()
 
@@ -541,6 +543,43 @@ class MainWindow(QMainWindow):
         layout_ram.addLayout(row_ram_spin)
         layout.addWidget(card_ram)
 
+        # Card 2b: AI Auto-Pilot
+        card_ap = QFrame()
+        card_ap.setObjectName("SettingCard")
+        card_ap.setStyleSheet(card_style)
+        layout_ap = QVBoxLayout(card_ap)
+        layout_ap.setContentsMargins(18, 16, 18, 16)
+        layout_ap.setSpacing(10)
+
+        self.chk_ai_autopilot = QCheckBox("Bật AI Auto-Pilot (tự bật Game Boost khi phát hiện game, hoàn tác khi thoát)")
+        self.chk_ai_autopilot.setStyleSheet("font-weight: bold; font-size: 14px; color: #38bdf8;")
+        lbl_ap = QLabel("Chỉ dùng Game Boost có hoàn tác. Không tự dọn rác, không đổi DNS, không sửa registry.")
+        lbl_ap.setStyleSheet("color: #64748b; font-size: 11px;")
+        lbl_ap.setWordWrap(True)
+
+        row_ap_mode = QHBoxLayout()
+        lbl_ap_mode = QLabel("Chế độ Auto-Pilot:")
+        lbl_ap_mode.setStyleSheet("color: #94a3b8;")
+        self.combo_ai_autopilot_mode = QComboBox()
+        self._ap_mode_values = ["auto", "off", "gaming", "eco", "work", "quiet", "balanced"]
+        self.combo_ai_autopilot_mode.addItems([
+            "Tự động (theo ngữ cảnh)",
+            "Tắt (chỉ đề xuất)",
+            "Luôn Game Boost",
+            "Luôn Tiết kiệm pin",
+            "Luôn Làm việc",
+            "Luôn Ban đêm",
+            "Luôn Cân bằng",
+        ])
+        row_ap_mode.addWidget(lbl_ap_mode)
+        row_ap_mode.addWidget(self.combo_ai_autopilot_mode)
+        row_ap_mode.addStretch()
+
+        layout_ap.addWidget(self.chk_ai_autopilot)
+        layout_ap.addWidget(lbl_ap)
+        layout_ap.addLayout(row_ap_mode)
+        layout.addWidget(card_ap)
+
         # Card 3: Smart Auto Network Optimization
         card_network = QFrame()
         card_network.setObjectName("SettingCard")
@@ -747,6 +786,8 @@ class MainWindow(QMainWindow):
         self.combo_interval.currentIndexChanged.connect(self._auto_save_automation_settings)
         self.chk_auto_ram.toggled.connect(self._auto_save_automation_settings)
         self.spin_ram_threshold.valueChanged.connect(self._auto_save_automation_settings)
+        self.chk_ai_autopilot.toggled.connect(self._auto_save_automation_settings)
+        self.combo_ai_autopilot_mode.currentIndexChanged.connect(self._auto_save_automation_settings)
         self.chk_auto_net.toggled.connect(self._auto_save_automation_settings)
         self.spin_ping_threshold.valueChanged.connect(self._auto_save_automation_settings)
         self.chk_auto_best_dns.toggled.connect(self._auto_save_automation_settings)
@@ -846,6 +887,10 @@ class MainWindow(QMainWindow):
             self.chk_auto_clean.setChecked(cfg.get("auto_clean_enabled", True))
             self.chk_auto_ram.setChecked(cfg.get("auto_ram_optimize_enabled", True))
             self.spin_ram_threshold.setValue(cfg.get("ram_threshold_percent", 80))
+            self.chk_ai_autopilot.setChecked(cfg.get("ai_autopilot_enabled", True))
+            ap_mode = str(cfg.get("ai_autopilot_mode", "auto")).lower()
+            if ap_mode in getattr(self, "_ap_mode_values", []):
+                self.combo_ai_autopilot_mode.setCurrentIndex(self._ap_mode_values.index(ap_mode))
             self.chk_minimize_tray.setChecked(cfg.get("minimize_to_tray_on_close", True))
             self.chk_notifications.setChecked(cfg.get("show_notifications", True))
             self.chk_instant_screen_notif.setChecked(cfg.get("instant_screen_notifications_enabled", True))
@@ -893,6 +938,13 @@ class MainWindow(QMainWindow):
         self.config_manager.set("interval_minutes", interval_min)
         self.config_manager.set("auto_ram_optimize_enabled", self.chk_auto_ram.isChecked())
         self.config_manager.set("ram_threshold_percent", self.spin_ram_threshold.value())
+        ap_enabled = self.chk_ai_autopilot.isChecked()
+        ap_idx = self.combo_ai_autopilot_mode.currentIndex()
+        ap_mode = self._ap_mode_values[ap_idx] if 0 <= ap_idx < len(self._ap_mode_values) else "auto"
+        if ap_mode == "off":
+            ap_enabled = False
+        self.config_manager.set("ai_autopilot_enabled", ap_enabled)
+        self.config_manager.set("ai_autopilot_mode", ap_mode)
         self.config_manager.set("auto_network_optimize_enabled", self.chk_auto_net.isChecked())
         self.config_manager.set("auto_network_ping_threshold_ms", self.spin_ping_threshold.value())
 
@@ -1321,10 +1373,17 @@ class MainWindow(QMainWindow):
                 self.tabs.setCurrentWidget(self.tab_dashboard)
                 self.start_full_clean()
             elif action_key in ("enable_game_boost", "toggle_game_boost"):
-                self.toggle_game_boost()
-            elif action_key in ("open_network_dialog", "optimize_network", "switch_dns"):
+                # Copilot/Advisor labels say "Kích Hoạt" — enable only, never toggle off.
+                self.enable_game_boost()
+            elif action_key == "optimize_network":
                 self.open_network_dialog()
-            elif action_key in ("open_hardware_dialog", "view_hardware", "battery_saver"):
+            elif action_key == "switch_dns":
+                self.apply_fast_dns()
+            elif action_key == "open_network_dialog":
+                self.open_network_dialog()
+            elif action_key == "battery_saver":
+                self.enable_battery_saver()
+            elif action_key in ("open_hardware_dialog", "view_hardware"):
                 self.open_hardware_dialog()
             elif action_key in ("open_services_dialog", "manage_services", "manage_startup"):
                 self.open_services_context_dialog()
@@ -1341,6 +1400,15 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "tab_performance"):
                     self.tabs.setCurrentWidget(self.tab_performance)
             elif action_key == "auto_optimize_all":
+                confirm = QMessageBox.question(
+                    self,
+                    "Tối Ưu Hóa Toàn Diện",
+                    "Sẽ thu hồi RAM và dọn rác Temp/Cache theo mục tiêu đang chọn.\nTiếp tục?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if confirm != QMessageBox.Yes:
+                    return
                 self.tabs.setCurrentWidget(self.tab_dashboard)
                 self.optimize_ram_only()
                 self.start_full_clean()
@@ -1353,6 +1421,87 @@ class MainWindow(QMainWindow):
         except Exception as e:
             import logging
             logging.error(f"[AI Advisor] Action dispatch error: {e}")
+
+    def _on_autopilot_tick(self, stats=None):
+        """Áp dụng Auto-Pilot (Game Boost reversible) theo snapshot monitor."""
+        try:
+            engine = self._ai_advisor.predictive_engine
+            kwargs = {"whitelist": self.config_manager.get_whitelist_set()}
+            if isinstance(stats, dict):
+                kwargs["current_stats"] = stats
+                batt = stats.get("battery") or {}
+                if batt:
+                    kwargs["on_battery"] = not bool(batt.get("power_plugged", True))
+                    kwargs["battery_pct"] = int(batt.get("percent", 100) or 100)
+            engine.apply_autopilot(**kwargs)
+            if engine.applicator.game_boost_ui_dirty:
+                self._sync_game_boost_ui()
+        except Exception:
+            pass
+
+    def _sync_game_boost_ui(self):
+        active = GameBooster.is_active()
+        if hasattr(self, "btn_game_boost"):
+            self.btn_game_boost.setText("🎮 Game Boost: BẬT" if active else "🎮 Game Boost: TẮT")
+        if hasattr(self, "btn_gb_toggle"):
+            self.btn_gb_toggle.setText("🛑 TẮT GAME BOOST" if active else "🎮 BẬT GAME BOOST")
+        if hasattr(self, "badge_gb"):
+            if active:
+                self.badge_gb.setText("● ĐANG TĂNG TỐC TỐI ĐA")
+                self.badge_gb.setStyleSheet(
+                    "background-color: #065f46; color: #34d399; font-size: 11px; "
+                    "font-weight: bold; padding: 5px 14px; border-radius: 12px; border: 1px solid #059669;"
+                )
+            else:
+                self.badge_gb.setText("● Đang Tắt (Bình thường)")
+                self.badge_gb.setStyleSheet(
+                    "background-color: #312e81; color: #c7d2fe; font-size: 11px; "
+                    "font-weight: bold; padding: 5px 14px; border-radius: 12px; border: 1px solid #4f46e5;"
+                )
+
+    def enable_game_boost(self):
+        """Bật Game Boost nếu chưa bật — không tắt khi đã bật."""
+        if GameBooster.is_active():
+            if hasattr(self, "lbl_status"):
+                self.lbl_status.setText("Game Boost đã đang bật.")
+            self._sync_game_boost_ui()
+            return
+        self.toggle_game_boost()
+
+    def enable_battery_saver(self):
+        """Thu hồi RAM và chuyển gói nguồn Tiết Kiệm Pin nếu Windows cho phép."""
+        whitelist = self.config_manager.get_whitelist_set()
+        MemoryOptimizer.optimize_ram(whitelist=whitelist)
+        msg = "Đã thu hồi RAM standby."
+        try:
+            from core.network_optimizer import NetworkOptimizer
+            res = NetworkOptimizer._run_cmd("powercfg /setactive a1841308-3541-4fab-bc81-f71556f20b4a")
+            if res.get("success"):
+                msg += " Đã chuyển gói nguồn Tiết Kiệm Pin."
+            else:
+                msg += " Không đổi được gói nguồn (cần Windows/quyền phù hợp)."
+        except Exception:
+            msg += " Không đổi được gói nguồn trên môi trường hiện tại."
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText(msg)
+        QMessageBox.information(self, "Tiết Kiệm Pin", msg)
+
+    def apply_fast_dns(self):
+        """Flush DNS cache rồi áp dụng DNS có độ trễ thấp nhất."""
+        from core.network_optimizer import NetworkOptimizer
+        flush = NetworkOptimizer.flush_dns()
+        best = NetworkOptimizer.apply_best_dns(allow_elevation=True)
+        parts = [flush.get("message", "Đã flush DNS.")]
+        if best.get("success"):
+            parts.append(best.get("message") or "Đã áp dụng DNS siêu tốc.")
+        else:
+            parts.append(best.get("message") or "Không áp dụng được DNS (xem hộp thoại Mạng).")
+            self.open_network_dialog()
+        msg = " ".join(parts)
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText(msg)
+        if best.get("success"):
+            QMessageBox.information(self, "Đổi DNS Siêu Tốc", msg)
 
     def _update_ai_badge(self):
         """Cập nhật màu/text button AI theo số lượng suggestions nghiêm trọng và AI Health Score."""

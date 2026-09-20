@@ -126,7 +126,8 @@ class AutoPilotState:
     description: str = ""
     active_process: Optional[str] = None
     recommended_tuning: List[str] = field(default_factory=list)
-    is_auto_applied: bool = True
+    is_auto_applied: bool = False
+    applied_actions: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -138,6 +139,7 @@ class AutoPilotState:
             "active_process": self.active_process,
             "recommended_tuning": self.recommended_tuning,
             "is_auto_applied": self.is_auto_applied,
+            "applied_actions": list(self.applied_actions),
         }
 
 
@@ -735,7 +737,7 @@ class AIAutoPilotEngine:
                 description=f"Phát hiện game đang chạy ({active_game}). Tự động thu hồi RAM standby và ưu tiên 100% CPU.",
                 active_process=active_game,
                 recommended_tuning=["Tối ưu RAM standby", "Ưu tiên luồng CPU cao nhất", "Tạm dừng tác vụ nền"],
-                is_auto_applied=True
+                is_auto_applied=False
             )
             self._current_state = state
             return state
@@ -750,7 +752,7 @@ class AIAutoPilotEngine:
                 description=f"Đang dùng pin ({battery_pct}%). Giảm xung nhịp nhàn rỗi và hạn chế quét ổ đĩa nền.",
                 active_process=None,
                 recommended_tuning=["Hạ tải I/O đĩa", "Giảm tác vụ ngầm", "Tắt hoạt ảnh nặng"],
-                is_auto_applied=True
+                is_auto_applied=False
             )
             self._current_state = state
             return state
@@ -766,7 +768,7 @@ class AIAutoPilotEngine:
                 description=f"Phát hiện ứng dụng công việc ({active_work}). Cân đối phân bổ RAM cho bộ đệm tập tin.",
                 active_process=active_work,
                 recommended_tuning=["Cấp phát RAM ổn định", "Ổn định mạng độ trễ thấp", "Tối ưu I/O đĩa"],
-                is_auto_applied=True
+                is_auto_applied=False
             )
             self._current_state = state
             return state
@@ -781,7 +783,7 @@ class AIAutoPilotEngine:
                 description="Khung giờ đêm muộn. Tắt âm thanh thông báo và kích hoạt dọn rác tự động nhàn rỗi.",
                 active_process=None,
                 recommended_tuning=["Tắt âm thanh cảnh báo", "Dọn rác tự động nhàn rỗi"],
-                is_auto_applied=True
+                is_auto_applied=False
             )
             self._current_state = state
             return state
@@ -795,10 +797,187 @@ class AIAutoPilotEngine:
             description="Hệ thống đang hoạt động ở mức tải tiêu chuẩn, tự động cân bằng giữa hiệu năng và nhiệt độ.",
             active_process=None,
             recommended_tuning=["Duy trì trạng thái tối ưu"],
-            is_auto_applied=True
+            is_auto_applied=False
         )
         self._current_state = state
         return state
+
+
+# ---------------------------------------------------------------------------
+# 4b. Auto-Pilot applicator (reversible Game Boost + undo)
+# ---------------------------------------------------------------------------
+
+_MODE_ALIASES = {
+    "auto": None,
+    "off": "OFF",
+    "disabled": "OFF",
+    "gaming": MODE_GAMING,
+    "game": MODE_GAMING,
+    "game_boost": MODE_GAMING,
+    "eco": MODE_ECO,
+    "battery": MODE_ECO,
+    "battery_saver": MODE_ECO,
+    "work": MODE_WORK,
+    "quiet": MODE_QUIET,
+    "night": MODE_QUIET,
+    "balanced": MODE_BALANCED,
+}
+
+
+class AutoPilotApplicator:
+    """
+    Áp dụng an toàn các chế độ Auto-Pilot bằng đường dẫn đã có:
+      GAMING → GameBooster.enable (có undo)
+      ECO/WORK/QUIET/BALANCED → hoàn tác Game Boost nếu chính Auto-Pilot đã bật
+      ECO → thu hồi RAM một lần khi vào chế độ (không đổi gói nguồn Windows)
+
+    Không dọn rác ổ đĩa, không đổi DNS, không sửa registry.
+    """
+
+    ENTER_GAMING_GRACE_SEC = 0.0
+    LEAVE_GAMING_GRACE_SEC = 30.0
+    MODE_DWELL_SEC = 20.0
+    RAM_OPT_COOLDOWN_SEC = 600.0
+
+    def __init__(self, config_manager: Optional[Any] = None, booster: Any = None, ram_optimizer: Any = None):
+        self.config_manager = config_manager
+        self._booster = booster
+        self._ram_optimizer = ram_optimizer
+        self.held_mode: str = MODE_BALANCED
+        self.auto_applied_game_boost: bool = False
+        self.last_change_ts: float = 0.0
+        self.last_ram_opt_ts: float = 0.0
+        self.last_actions: List[str] = []
+        self.game_boost_ui_dirty: bool = False
+
+    def _booster_cls(self):
+        if self._booster is not None:
+            return self._booster
+        from core.game_booster import GameBooster
+        return GameBooster
+
+    def _ram_cls(self):
+        if self._ram_optimizer is not None:
+            return self._ram_optimizer
+        from core.memory_optimizer import MemoryOptimizer
+        return MemoryOptimizer
+
+    def is_enabled(self) -> bool:
+        if not self.config_manager:
+            return False
+        if not bool(self.config_manager.get("ai_autopilot_enabled", True)):
+            return False
+        raw = str(self.config_manager.get("ai_autopilot_mode", "auto")).strip().lower()
+        return raw not in ("off", "disabled")
+
+    def resolve_target_mode(self, evaluated: AutoPilotState) -> str:
+        raw = "auto"
+        if self.config_manager:
+            raw = str(self.config_manager.get("ai_autopilot_mode", "auto")).strip().lower()
+        alias = _MODE_ALIASES.get(raw, None)
+        if alias == "OFF":
+            return MODE_BALANCED
+        if alias:
+            return alias
+        return evaluated.mode
+
+    def annotate(self, state: AutoPilotState) -> AutoPilotState:
+        """Gắn nhãn đề xuất vs đã áp dụng mà không thay đổi hệ thống."""
+        enabled = self.is_enabled()
+        state.is_auto_applied = bool(enabled and self.last_actions)
+        if not enabled:
+            state.badge_text = state.badge_text.replace("AI Auto-Pilot:", "Đề xuất:")
+            if "chỉ đề xuất" not in state.description:
+                state.description = (state.description + " (Auto-Pilot đang tắt — chỉ đề xuất, chưa tự áp dụng).").strip()
+        elif self.auto_applied_game_boost:
+            if "Đã tự bật Game Boost" not in state.description:
+                state.description = (state.description + " Đã tự bật Game Boost (có thể hoàn tác).").strip()
+            state.is_auto_applied = True
+        else:
+            state.is_auto_applied = enabled
+        state.applied_actions = list(self.last_actions)
+        return state
+
+    def undo_auto_effects(self, reason: str = "disabled") -> List[str]:
+        actions: List[str] = []
+        booster = self._booster_cls()
+        if self.auto_applied_game_boost and booster.is_active():
+            try:
+                booster.disable_game_boost()
+                actions.append("disable_game_boost")
+                logger.info(f"[AutoPilot] Hoàn tác Game Boost ({reason}).")
+            except Exception as e:
+                logger.debug(f"[AutoPilot] Undo Game Boost failed: {e}")
+            self.auto_applied_game_boost = False
+            self.game_boost_ui_dirty = True
+        self.last_actions = actions
+        self.held_mode = MODE_BALANCED
+        return actions
+
+    def sync(self, evaluated: AutoPilotState, whitelist: Optional[set] = None) -> AutoPilotState:
+        """Áp dụng/hoàn tác khi chế độ mục tiêu đổi. Trả về state đã annotate."""
+        self.game_boost_ui_dirty = False
+        now = time.time()
+        if not self.is_enabled():
+            self.undo_auto_effects("auto-pilot disabled")
+            return self.annotate(evaluated)
+
+        target = self.resolve_target_mode(evaluated)
+        grace = self.MODE_DWELL_SEC
+        if target == MODE_GAMING and self.held_mode != MODE_GAMING:
+            grace = self.ENTER_GAMING_GRACE_SEC
+        elif self.held_mode == MODE_GAMING and target != MODE_GAMING:
+            grace = self.LEAVE_GAMING_GRACE_SEC
+
+        if target != self.held_mode and (now - self.last_change_ts) < grace:
+            return self.annotate(evaluated)
+
+        if target == self.held_mode and self.last_change_ts > 0:
+            return self.annotate(evaluated)
+
+        actions: List[str] = []
+        booster = self._booster_cls()
+        whitelist = whitelist or set()
+
+        if target == MODE_GAMING:
+            if not booster.is_active():
+                try:
+                    res = booster.enable_game_boost(whitelist=whitelist)
+                    if res.get("success", True):
+                        self.auto_applied_game_boost = True
+                        self.game_boost_ui_dirty = True
+                        actions.append("enable_game_boost")
+                        logger.info("[AutoPilot] Đã tự bật Game Boost (phát hiện game).")
+                except Exception as e:
+                    logger.debug(f"[AutoPilot] enable_game_boost failed: {e}")
+            elif not self.auto_applied_game_boost:
+                # User already turned it on manually — do not claim ownership
+                actions.append("game_boost_already_on")
+        else:
+            if self.auto_applied_game_boost and booster.is_active():
+                try:
+                    booster.disable_game_boost()
+                    self.game_boost_ui_dirty = True
+                    actions.append("disable_game_boost")
+                    logger.info(f"[AutoPilot] Hoàn tác Game Boost (chuyển sang {target}).")
+                except Exception as e:
+                    logger.debug(f"[AutoPilot] disable_game_boost failed: {e}")
+                self.auto_applied_game_boost = False
+
+            if target == MODE_ECO and (now - self.last_ram_opt_ts) >= self.RAM_OPT_COOLDOWN_SEC:
+                try:
+                    ram = self._ram_cls()
+                    ram.optimize_ram(whitelist=whitelist)
+                    self.last_ram_opt_ts = now
+                    actions.append("optimize_ram")
+                    logger.info("[AutoPilot] Eco: đã thu hồi RAM standby một lần.")
+                except Exception as e:
+                    logger.debug(f"[AutoPilot] Eco RAM optimize failed: {e}")
+
+        self.held_mode = target
+        self.last_change_ts = now
+        self.last_actions = actions
+        return self.annotate(evaluated)
 
 
 # ---------------------------------------------------------------------------
@@ -818,6 +997,7 @@ class PredictiveAIEngine:
         self.habit_learner = HabitLearner(config_manager)
         self.anomaly_detector = ProcessAnomalyDetector(config_manager)
         self.autopilot = AIAutoPilotEngine(config_manager)
+        self.applicator = AutoPilotApplicator(config_manager)
 
         self._cached_forecast: Optional[DiskForecast] = None
         self._forecast_cache_ts: float = 0.0
@@ -892,12 +1072,30 @@ class PredictiveAIEngine:
         running_process_names: Optional[List[str]] = None
     ) -> AutoPilotState:
         """Lấy trạng thái chế độ tự động thích ứng ngữ cảnh AI Auto-Pilot."""
-        return self.autopilot.evaluate_context(
+        state = self.autopilot.evaluate_context(
             current_stats=current_stats,
             on_battery=on_battery,
             battery_pct=battery_pct,
             running_process_names=running_process_names
         )
+        return self.applicator.annotate(state)
+
+    def apply_autopilot(
+        self,
+        current_stats: Optional[Dict[str, Any]] = None,
+        on_battery: bool = False,
+        battery_pct: int = 100,
+        running_process_names: Optional[List[str]] = None,
+        whitelist: Optional[set] = None,
+    ) -> AutoPilotState:
+        """Nhận diện + áp dụng (Game Boost reversible) theo cấu hình Auto-Pilot."""
+        state = self.autopilot.evaluate_context(
+            current_stats=current_stats,
+            on_battery=on_battery,
+            battery_pct=battery_pct,
+            running_process_names=running_process_names
+        )
+        return self.applicator.sync(state, whitelist=whitelist)
 
     def calculate_health_score(
         self,

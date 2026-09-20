@@ -12,15 +12,15 @@ from __future__ import annotations
 
 from typing import Optional, List, Dict, Any
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QCursor
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QScrollArea, QFrame, QSizePolicy, QDialog,
-    QCheckBox, QMessageBox
+    QCheckBox, QMessageBox, QComboBox
 )
 
-from core.ai_copilot import AICopilotEngine, ChatMessage, CopilotAction, QUICK_PROMPTS
+from core.ai_copilot import AICopilotEngine, ChatMessage, CopilotAction, QUICK_PROMPTS, CloudAIBrain
 from core.predictive_ai import PredictiveAIEngine, AIHealthReport, AutoPilotState
 
 
@@ -109,11 +109,37 @@ class APIConfigDialog(QDialog):
         layout.addWidget(self.chk_cloud)
 
         self.txt_api_key = QLineEdit()
-        self.txt_api_key.setPlaceholderText("Dán mã Gemini API Key tại đây (AIzaSy...)")
+        self.txt_api_key.setPlaceholderText("Dán mã Gemini API Key tại đây (AIzaSy...) — lưu ngoài git, trong %APPDATA%")
         self.txt_api_key.setEchoMode(QLineEdit.Password)
         key_val = str(self.config_manager.get("ai_copilot_gemini_api_key", "")) if self.config_manager else ""
         self.txt_api_key.setText(key_val)
         layout.addWidget(self.txt_api_key)
+
+        self.chk_autopilot = QCheckBox("Bật AI Auto-Pilot (tự bật/tắt Game Boost an toàn, có hoàn tác)")
+        ap_on = bool(self.config_manager.get("ai_autopilot_enabled", True)) if self.config_manager else True
+        self.chk_autopilot.setChecked(ap_on)
+        layout.addWidget(self.chk_autopilot)
+
+        mode_row = QHBoxLayout()
+        lbl_mode = QLabel("Chế độ Auto-Pilot:")
+        lbl_mode.setStyleSheet(f"color: {_TEXT_MUTED};")
+        self.combo_ap_mode = QComboBox()
+        self._ap_mode_values = ["auto", "off", "gaming", "eco", "work", "quiet", "balanced"]
+        self.combo_ap_mode.addItems([
+            "Tự động (theo ngữ cảnh)",
+            "Tắt (chỉ đề xuất)",
+            "Luôn Game Boost",
+            "Luôn Tiết kiệm pin",
+            "Luôn Làm việc",
+            "Luôn Ban đêm",
+            "Luôn Cân bằng",
+        ])
+        cur_mode = str(self.config_manager.get("ai_autopilot_mode", "auto")).lower() if self.config_manager else "auto"
+        if cur_mode in self._ap_mode_values:
+            self.combo_ap_mode.setCurrentIndex(self._ap_mode_values.index(cur_mode))
+        mode_row.addWidget(lbl_mode)
+        mode_row.addWidget(self.combo_ap_mode, stretch=1)
+        layout.addLayout(mode_row)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
@@ -133,7 +159,31 @@ class APIConfigDialog(QDialog):
         if self.config_manager:
             self.config_manager.set("ai_copilot_cloud_enabled", self.chk_cloud.isChecked())
             self.config_manager.set("ai_copilot_gemini_api_key", self.txt_api_key.text().strip())
+            self.config_manager.set("ai_autopilot_enabled", self.chk_autopilot.isChecked())
+            idx = self.combo_ap_mode.currentIndex()
+            mode = self._ap_mode_values[idx] if 0 <= idx < len(self._ap_mode_values) else "auto"
+            self.config_manager.set("ai_autopilot_mode", mode)
+            if mode == "off":
+                self.config_manager.set("ai_autopilot_enabled", False)
         self.accept()
+
+
+class CopilotAskWorker(QThread):
+    """Chạy AICopilotEngine.ask() ngoài UI thread (Gemini urlopen có thể tới 8s)."""
+    finished_msg = pyqtSignal(object)
+
+    def __init__(self, engine: AICopilotEngine, prompt: str, append_user: bool = False, parent=None):
+        super().__init__(parent)
+        self._engine = engine
+        self._prompt = prompt
+        self._append_user = append_user
+
+    def run(self):
+        try:
+            msg = self._engine.ask(self._prompt, append_user=self._append_user)
+        except Exception as e:
+            msg = e
+        self.finished_msg.emit(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +308,7 @@ class AICopilotWidget(QWidget):
             config_manager=self.config_manager,
             predictive_engine=self.predictive_engine
         )
+        self._ask_worker: Optional[CopilotAskWorker] = None
         self._build_ui()
 
     def _build_ui(self):
@@ -297,6 +348,11 @@ class AICopilotWidget(QWidget):
         self.lbl_autopilot_badge.setFont(QFont("Segoe UI Semibold", 9))
         self.lbl_autopilot_badge.setStyleSheet("color: #58a6ff; border: none; background: transparent;")
         hdr_lay.addWidget(self.lbl_autopilot_badge)
+
+        self.lbl_busy = QLabel("")
+        self.lbl_busy.setFont(QFont("Segoe UI", 8))
+        self.lbl_busy.setStyleSheet("color: #e3b341; border: none; background: transparent;")
+        hdr_lay.addWidget(self.lbl_busy)
 
         hdr_lay.addStretch(1)
 
@@ -472,6 +528,10 @@ class AICopilotWidget(QWidget):
 
             autopilot = self.predictive_engine.get_autopilot_state()
             self.lbl_autopilot_badge.setText(autopilot.badge_text)
+            if not autopilot.is_auto_applied:
+                self.lbl_autopilot_badge.setToolTip("Chỉ đề xuất — Auto-Pilot đang tắt hoặc chưa tự áp dụng.")
+            else:
+                self.lbl_autopilot_badge.setToolTip(autopilot.description)
         except Exception:
             pass
 
@@ -485,10 +545,45 @@ class AICopilotWidget(QWidget):
             self.txt_input.clear()
             self._send_user_text(text)
 
+    def _set_busy(self, busy: bool, status: str = ""):
+        self.txt_input.setEnabled(not busy)
+        self.btn_send.setEnabled(not busy)
+        self.btn_send.setText("…" if busy else "Gửi 🚀")
+        if hasattr(self, "lbl_busy"):
+            self.lbl_busy.setText(status if busy else "")
+
     def _send_user_text(self, text: str):
-        # Trực tiếp sinh câu trả lời
-        self.copilot_engine.ask(text)
+        if self._ask_worker and self._ask_worker.isRunning():
+            return
+        text = (text or "").strip()
+        if not text:
+            return
+
+        self.copilot_engine.chat_history.append(ChatMessage(role="user", content=text))
         self._refresh_chat_display()
+        self._set_busy(True, "⏳ Đang hỏi AI…")
+
+        worker = CopilotAskWorker(self.copilot_engine, text, append_user=False, parent=self)
+        self._ask_worker = worker
+        worker.finished_msg.connect(self._on_ask_finished)
+        worker.start()
+
+    def _on_ask_finished(self, result):
+        self._set_busy(False)
+        if isinstance(result, Exception):
+            err = ChatMessage(
+                role="assistant",
+                content=f"⚠️ Lỗi Copilot: {result}",
+                source="offline_expert",
+                telemetry_badge="Lỗi",
+            )
+            self.copilot_engine.chat_history.append(err)
+        self._refresh_chat_display()
+        if CloudAIBrain.last_error and hasattr(self, "lbl_busy"):
+            # Keep a non-blocking hint if cloud failed but offline replied
+            if "Cloud Gemini lỗi" in (self.copilot_engine.chat_history[-1].content if self.copilot_engine.chat_history else ""):
+                self.lbl_busy.setText(f"⚠️ {CloudAIBrain.last_error}")
+                self.lbl_busy.setStyleSheet("color: #f85149; border: none; background: transparent;")
 
     def _refresh_chat_display(self):
         # Xóa các widget cũ trong chat_lay (trừ spacer cuối)

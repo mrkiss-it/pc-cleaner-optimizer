@@ -55,6 +55,11 @@ venv.bak/
 app.log
 *.sqlite3
 
+# Local secrets (Gemini API keys, etc.) — never commit
+secrets.json
+**/secrets.json
+.pcautocleaner_secrets.json
+
 # Backups & Temp files
 backups/registry/*.reg
 !backups/registry/.gitkeep

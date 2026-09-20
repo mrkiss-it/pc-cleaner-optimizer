@@ -414,7 +414,9 @@ class OfflineExpertBrain:
 # ---------------------------------------------------------------------------
 
 class CloudAIBrain:
-    """Kết nối mô hình ngôn ngữ lớn trên đám mây (Google Gemini Flash / OpenAI)."""
+    """Kết nối mô hình ngôn ngữ lớn trên đám mây (Google Gemini Flash)."""
+
+    last_error: str = ""
 
     @classmethod
     def query_gemini(
@@ -426,7 +428,9 @@ class CloudAIBrain:
         timeout: float = 8.0,
         model: str = "gemini-2.5-flash",
     ) -> Optional[str]:
+        cls.last_error = ""
         if not api_key:
+            cls.last_error = "Chưa có Gemini API Key."
             return None
 
         # Gemini 1.5 Flash has been shut down. Send the key in a header so it is
@@ -473,14 +477,38 @@ class CloudAIBrain:
                 method="POST"
             )
             with urllib.request.urlopen(req, timeout=timeout) as response:
-                if response.status == 200:
-                    resp_data = json.loads(response.read().decode("utf-8"))
-                    candidates = resp_data.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts:
-                            return parts[0].get("text", "")
+                raw = response.read().decode("utf-8")
+                if response.status != 200:
+                    cls.last_error = f"HTTP {response.status}"
+                    logger.debug(f"[CloudAI] Gemini HTTP {response.status}: {raw[:200]}")
+                    return None
+                resp_data = json.loads(raw)
+                candidates = resp_data.get("candidates", [])
+                if not candidates:
+                    prompt_fb = (resp_data.get("promptFeedback") or {}).get("blockReason")
+                    cls.last_error = f"Gemini không trả lời ({prompt_fb or 'phản hồi rỗng'})."
+                    return None
+                finish = candidates[0].get("finishReason") or ""
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text = parts[0].get("text", "") if parts else ""
+                if text:
+                    cls.last_error = ""
+                    return text
+                cls.last_error = f"Gemini trả về rỗng ({finish or 'no text'})."
+                return None
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")[:180]
+            except Exception:
+                pass
+            cls.last_error = f"HTTP {e.code}: {body or e.reason}"
+            logger.debug(f"[CloudAI] Gemini HTTPError: {cls.last_error}")
+        except urllib.error.URLError as e:
+            cls.last_error = f"Lỗi mạng: {getattr(e, 'reason', e)}"
+            logger.debug(f"[CloudAI] Gemini URLError: {e}")
         except Exception as e:
+            cls.last_error = f"{type(e).__name__}: {e}"
             logger.debug(f"[CloudAI] Gemini API error: {e}")
 
         return None
@@ -524,20 +552,17 @@ class AICopilotEngine:
             telemetry_badge="Sẵn sàng hỗ trợ 24/7"
         ))
 
-    def ask(self, user_prompt: str) -> ChatMessage:
+    def ask(self, user_prompt: str, append_user: bool = True) -> ChatMessage:
         """Gửi câu hỏi tới AI Copilot và nhận phản hồi kèm nút hành động."""
         user_prompt_clean = user_prompt.strip()
         if not user_prompt_clean:
             user_prompt_clean = "Khám sức khỏe máy tính"
 
-        # 1. Lưu tin nhắn người dùng
-        user_msg = ChatMessage(role="user", content=user_prompt_clean)
-        self.chat_history.append(user_msg)
+        if append_user:
+            self.chat_history.append(ChatMessage(role="user", content=user_prompt_clean))
 
-        # 2. Thu thập telemetry hiện tại
         telemetry = TelemetryCollector.collect()
 
-        # 3. Lấy Health Report & AutoPilot State
         health_report = None
         autopilot_state = None
         if self.predictive_engine:
@@ -547,8 +572,8 @@ class AICopilotEngine:
             except Exception:
                 pass
 
-        # 4. Kiểm tra xem người dùng có bật Cloud AI không
         cloud_reply = None
+        cloud_failed = False
         is_cloud_enabled = False
         api_key = ""
         if self.config_manager:
@@ -564,14 +589,16 @@ class AICopilotEngine:
                 health_report=health_report,
                 model=model or "gemini-2.5-flash",
             )
+            cloud_failed = not bool(cloud_reply)
+        elif is_cloud_enabled and not api_key:
+            CloudAIBrain.last_error = "Đã bật Cloud Gemini nhưng chưa nhập API Key."
+            cloud_failed = True
 
-        # 5. Nếu có phản hồi từ Cloud AI, sử dụng và trích xuất action buttons
         if cloud_reply:
             source = "cloud_gemini"
             reply_text = cloud_reply
             actions = self._extract_actions_from_text(reply_text + " " + user_prompt_clean)
         else:
-            # Sử dụng Offline Expert Brain
             res = OfflineExpertBrain.answer(
                 user_text=user_prompt_clean,
                 telemetry=telemetry,
@@ -581,8 +608,16 @@ class AICopilotEngine:
             reply_text = res.reply
             actions = res.actions
             source = res.source
+            if cloud_failed:
+                err = CloudAIBrain.last_error or "Cloud Gemini không phản hồi."
+                reply_text = (
+                    f"⚠️ Cloud Gemini lỗi: {err}\n"
+                    f"Đang dùng Offline Expert Brain.\n\n---\n\n{res.reply}"
+                )
 
         badge = f"RAM {telemetry.get('ram', {}).get('percent', 0)}% • CPU {telemetry.get('cpu', {}).get('percent', 0)}% • Ổ C {telemetry.get('disk', {}).get('free_gb', 0)}GB"
+        if cloud_failed:
+            badge = f"Cloud lỗi • {badge}"
 
         assistant_msg = ChatMessage(
             role="assistant",
@@ -603,7 +638,7 @@ class AICopilotEngine:
         if any(k in t for k in ("rac", "rác", "o c", "ổ c", "dung luong", "dung lượng", "temp", "don dep", "dọn dẹp", "winsxs")):
             actions.append(CopilotAction(key="clean_disk", label="🧹 Dọn Rác Ổ C", icon="🧹"))
         if any(k in t for k in ("game", "fps", "boost")):
-            actions.append(CopilotAction(key="toggle_game_boost", label="🎮 Kích Hoạt Game Boost", icon="🎮"))
+            actions.append(CopilotAction(key="enable_game_boost", label="🎮 Kích Hoạt Game Boost", icon="🎮"))
         if any(k in t for k in ("mang", "mạng", "ping", "dns")):
             actions.append(CopilotAction(key="optimize_network", label="📶 Tối Ưu Mạng", icon="📶"))
         if any(k in t for k in ("an ninh", "virus", "bao mat", "bảo mật")):

@@ -824,7 +824,7 @@ assert any(a.key == "optimize_ram" for a in res_ram.actions), "Cau hoi ve RAM ph
 
 # Hoi ve Game
 res_game = copilot.ask("Lam sao de choi game muot hon?")
-assert any(a.key == "toggle_game_boost" for a in res_game.actions), "Cau hoi ve Game phai dinh kem action toggle_game_boost"
+assert any(a.key in ("toggle_game_boost", "enable_game_boost") for a in res_game.actions), "Cau hoi ve Game phai dinh kem action Game Boost"
 
 # Hoi ve O C
 res_disk = copilot.ask("O C bi day can xoa gi?")
@@ -903,7 +903,156 @@ adv_dlg.close()
 
 print(" [PASS] 43. AI Copilot & Real-time Telemetry & Health Score 0-100 & Auto-Pilot Context Engine hoat dong xuat sac 100%!")
 
-print("\n>>> TAT CA 43 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST & AI COPILOT/AUTO-PILOT DEU THANH CONG 100%! <<<")
+# ==============================================================================
+# 44. Auto-Pilot apply/undo, Gemini last_error, secrets not in tracked config
+# ==============================================================================
+print("\n[TEST 44] Auto-Pilot applicator, Cloud error surface, secret storage...")
+
+from core.predictive_ai import AutoPilotApplicator, MODE_GAMING, MODE_BALANCED, MODE_ECO
+from core.ai_copilot import CloudAIBrain
+from config_manager import SECRET_KEYS, secrets_file_path
+import tempfile
+import json as _json
+
+# A. Applicator enables Game Boost on GAMING and undoes on BALANCED
+class _StubBooster:
+    active = False
+    enables = 0
+    disables = 0
+    @classmethod
+    def is_active(cls):
+        return cls.active
+    @classmethod
+    def enable_game_boost(cls, whitelist=None):
+        cls.active = True
+        cls.enables += 1
+        return {"success": True}
+    @classmethod
+    def disable_game_boost(cls):
+        cls.active = False
+        cls.disables += 1
+        return {"success": True}
+
+class _StubRam:
+    calls = 0
+    @classmethod
+    def optimize_ram(cls, whitelist=None):
+        cls.calls += 1
+        return {"freed_mb": 1.0}
+
+class _MemCfg:
+    def __init__(self, enabled=True, mode="auto"):
+        self.data = {"ai_autopilot_enabled": enabled, "ai_autopilot_mode": mode}
+    def get(self, k, default=None):
+        return self.data.get(k, default)
+
+_StubBooster.active = False
+_StubBooster.enables = 0
+_StubBooster.disables = 0
+app_on = AutoPilotApplicator(config_manager=_MemCfg(True, "auto"), booster=_StubBooster, ram_optimizer=_StubRam)
+gaming_state = pred_engine.get_autopilot_state(running_process_names=["cs2.exe"])
+assert gaming_state.mode == MODE_GAMING
+applied = app_on.sync(gaming_state)
+assert _StubBooster.enables == 1, "Auto-Pilot phai bat Game Boost khi GAMING"
+assert app_on.auto_applied_game_boost is True
+assert "enable_game_boost" in applied.applied_actions
+
+# Immediate second sync same mode should not re-enable
+app_on.sync(gaming_state)
+assert _StubBooster.enables == 1
+
+# Leave gaming: skip 30s grace then force ts
+app_on.last_change_ts = 0.0
+app_on.LEAVE_GAMING_GRACE_SEC = 0.0
+balanced = pred_engine.autopilot.evaluate_context(running_process_names=["notepad.exe"])
+# Night/work/balanced depending on hour — just ask applicator to target balanced via config
+app_bal = AutoPilotApplicator(config_manager=_MemCfg(True, "balanced"), booster=_StubBooster, ram_optimizer=_StubRam)
+app_bal.auto_applied_game_boost = True
+_StubBooster.active = True
+app_bal.LEAVE_GAMING_GRACE_SEC = 0.0
+app_bal.MODE_DWELL_SEC = 0.0
+out = app_bal.sync(balanced)
+assert _StubBooster.disables >= 1, "Auto-Pilot phai hoan tac Game Boost khi roi GAMING"
+assert app_bal.auto_applied_game_boost is False
+
+# Disabled = recommendation only, undo
+_StubBooster.active = True
+app_off = AutoPilotApplicator(config_manager=_MemCfg(False, "auto"), booster=_StubBooster, ram_optimizer=_StubRam)
+app_off.auto_applied_game_boost = True
+off_state = app_off.sync(gaming_state)
+assert off_state.is_auto_applied is False
+assert "Đề xuất" in off_state.badge_text or "đề xuất" in off_state.description.lower()
+assert _StubBooster.active is False
+
+# B. Cloud last_error when no key
+CloudAIBrain.last_error = ""
+none_reply = CloudAIBrain.query_gemini(api_key="", user_prompt="hi", telemetry=telemetry)
+assert none_reply is None
+assert CloudAIBrain.last_error, "last_error phai duoc gan khi thieu API key"
+
+# Engine surfaces cloud failure in offline reply
+class _CloudCfg:
+    def get(self, k, default=None):
+        if k == "ai_copilot_cloud_enabled":
+            return True
+        if k == "ai_copilot_gemini_api_key":
+            return ""
+        return default
+cloud_copilot = AICopilotEngine(config_manager=_CloudCfg(), predictive_engine=pred_engine)
+cloud_msg = cloud_copilot.ask("Kham suc khoe")
+assert "Cloud Gemini lỗi" in cloud_msg.content or "Cloud Gemini" in cloud_msg.content
+assert "Offline" in cloud_msg.content or "Hồ Sơ" in cloud_msg.content or "sức khỏe" in cloud_msg.content.lower() or "RAM" in cloud_msg.content
+
+# C. Secrets never land in tracked config.json
+fd, tmp_cfg = tempfile.mkstemp(suffix=".json")
+os.close(fd)
+fd2, tmp_sec = tempfile.mkstemp(suffix=".json")
+os.close(fd2)
+os.environ["PCAUTOCLEANER_SECRETS_PATH"] = tmp_sec
+with open(tmp_cfg, "w", encoding="utf-8") as f:
+    _json.dump({"ai_copilot_cloud_enabled": False, "ai_copilot_gemini_api_key": "AIzaSyLEAKED"}, f)
+from config_manager import ConfigManager as _CM
+iso = _CM(config_path=tmp_cfg)
+assert iso.get("ai_copilot_gemini_api_key") == "AIzaSyLEAKED"
+with open(tmp_cfg, "r", encoding="utf-8") as f:
+    disk_cfg = _json.load(f)
+assert "ai_copilot_gemini_api_key" not in disk_cfg, "Key khong duoc con trong config.json"
+assert "AIzaSyLEAKED" not in _json.dumps(disk_cfg)
+with open(tmp_sec, "r", encoding="utf-8") as f:
+    sec_disk = _json.load(f)
+assert sec_disk.get("ai_copilot_gemini_api_key") == "AIzaSyLEAKED"
+iso.set("ai_copilot_gemini_api_key", "AIzaSyNEW")
+with open(tmp_cfg, "r", encoding="utf-8") as f:
+    disk_cfg2 = _json.load(f)
+assert "AIzaSyNEW" not in _json.dumps(disk_cfg2)
+os.environ.pop("PCAUTOCLEANER_SECRETS_PATH", None)
+try:
+    os.remove(tmp_cfg)
+    os.remove(tmp_sec)
+except Exception:
+    pass
+
+# D. Dispatcher enable_game_boost does not toggle off
+from core.game_booster import GameBooster as _GB
+was_active = _GB.is_active()
+if was_active:
+    _GB.disable_game_boost()
+win.enable_game_boost()
+assert _GB.is_active() is True, "enable_game_boost phai bat Game Boost"
+win.enable_game_boost()
+assert _GB.is_active() is True, "enable_game_boost lan 2 khong duoc tat"
+_GB.disable_game_boost()
+
+# E. Async worker class exists
+from ui.ai_copilot_widget import CopilotAskWorker
+from PyQt5.QtCore import QThread
+assert issubclass(CopilotAskWorker, QThread)
+worker = CopilotAskWorker(copilot, "ping", append_user=False)
+assert worker._prompt == "ping"
+
+print(" [PASS] 44. Auto-Pilot apply/undo, Gemini last_error hien thi, secrets khong ghi vao config.json!")
+
+print("\n>>> TAT CA 44 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST, AI COPILOT/AUTO-PILOT APPLY, ASYNC GEMINI & SECRET STORAGE DEU THANH CONG 100%! <<<")
 
 
 

@@ -46,11 +46,25 @@ DEFAULT_CONFIG = {
     },
     "last_active_tab": 0,
     "ai_copilot_cloud_enabled": False,
-    "ai_copilot_gemini_api_key": "",
     "ai_copilot_gemini_model": "gemini-2.5-flash",
     "ai_autopilot_enabled": True,
     "ai_autopilot_mode": "auto"
 }
+
+# Keys that must never be written to tracked/shared config.json
+SECRET_KEYS = frozenset({"ai_copilot_gemini_api_key"})
+
+
+def secrets_file_path() -> str:
+    """User-local secrets file, outside the git tree (%%APPDATA%% or ~/.config)."""
+    override = os.environ.get("PCAUTOCLEANER_SECRETS_PATH", "").strip()
+    if override:
+        return override
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return os.path.join(appdata, "PCAutoCleaner", "secrets.json")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(xdg, "PCAutoCleaner", "secrets.json")
 
 
 def _deep_merge(target: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
@@ -106,7 +120,11 @@ class ConfigManager:
                 config_path = os.path.join(base_dir, "config.json")
 
         self.config_path = config_path
+        self._secrets: Dict[str, Any] = {}
+        self._secrets_path = secrets_file_path()
         self.config = self.load_config()
+        self._load_secrets()
+        self._migrate_secrets_from_config()
 
     def load_config(self) -> Dict[str, Any]:
         """Tải cấu hình với cơ chế Deep Merge để bảo toàn mọi thiết lập cũ."""
@@ -123,23 +141,85 @@ class ConfigManager:
         return merged
 
     def save_config(self) -> bool:
-        """Lưu cấu hình an toàn, tạo thư mục cha nếu chưa có."""
+        """Lưu cấu hình an toàn. Không ghi khóa bí mật vào config.json."""
         try:
             parent_dir = os.path.dirname(os.path.abspath(self.config_path))
             if parent_dir:
                 os.makedirs(parent_dir, exist_ok=True)
 
+            to_write = copy.deepcopy(self.config)
+            for k in SECRET_KEYS:
+                to_write.pop(k, None)
+
             with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, indent=4, ensure_ascii=False)
+                json.dump(to_write, f, indent=4, ensure_ascii=False)
             return True
         except Exception as e:
             print(f"[ConfigManager] Lỗi khi lưu cấu hình: {e}")
             return False
 
+    def _load_secrets(self) -> None:
+        self._secrets = {}
+        path = getattr(self, "_secrets_path", "") or secrets_file_path()
+        if not path or not os.path.exists(path):
+            return
+        try:
+            if os.path.getsize(path) == 0:
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self._secrets = {k: v for k, v in data.items() if k in SECRET_KEYS}
+        except Exception as e:
+            print(f"[ConfigManager] Lỗi khi đọc secrets: {e}")
+
+    def _save_secrets(self) -> bool:
+        path = getattr(self, "_secrets_path", "") or secrets_file_path()
+        try:
+            parent = os.path.dirname(os.path.abspath(path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            payload = {k: v for k, v in self._secrets.items() if k in SECRET_KEYS and str(v).strip()}
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=4, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"[ConfigManager] Lỗi khi lưu secrets: {e}")
+            return False
+
+    def _migrate_secrets_from_config(self) -> None:
+        """Move any secret keys out of config.json into the user-local secrets file."""
+        dirty = False
+        for k in SECRET_KEYS:
+            if k not in self.config:
+                continue
+            val = self.config.pop(k)
+            dirty = True
+            if str(val).strip() and not str(self._secrets.get(k, "")).strip():
+                self._secrets[k] = str(val).strip()
+                self._save_secrets()
+        if dirty:
+            self.save_config()
+
     def get(self, key: str, default: Any = None) -> Any:
+        if key in SECRET_KEYS:
+            if key in self._secrets:
+                return self._secrets.get(key)
+            return default if default is not None else ""
         return self.config.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
+        if key in SECRET_KEYS:
+            val = str(value).strip() if value is not None else ""
+            if val:
+                self._secrets[key] = val
+            else:
+                self._secrets.pop(key, None)
+            self._save_secrets()
+            if key in self.config:
+                self.config.pop(key, None)
+                self.save_config()
+            return
         self.config[key] = value
         self.save_config()
 
