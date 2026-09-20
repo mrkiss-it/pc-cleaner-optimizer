@@ -683,9 +683,6 @@ class MainWindow(QMainWindow):
         stats_layout.addWidget(self.card_count)
         stats_layout.addWidget(self.card_net)
         layout.addLayout(stats_layout)
-        layout.addStretch()
-        scroll.setWidget(content)
-        outer.addWidget(scroll, 1)
 
         self.thermal_card = ThermalCard(
             self.tab_dashboard,
@@ -696,6 +693,10 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.thermal_card)
         self.thermal_card.refresh(force=False)
+
+        layout.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
 
     def init_tab_targets(self):
         outer_layout = QVBoxLayout(self.tab_targets)

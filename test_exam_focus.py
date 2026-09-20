@@ -322,6 +322,7 @@ def test_ui_has_focus_card_and_toggle():
     cfg = ConfigManager()
     win = MainWindow(cfg)
     assert hasattr(win, "btn_exam_focus")
+    assert hasattr(win, "thermal_card"), "Dashboard must keep laptop thermal card after rebase"
     assert "Trước thi" in win.btn_exam_focus.text()
     assert hasattr(win, "lbl_exam_focus_sub")
     sub = win.lbl_exam_focus_sub.text()
