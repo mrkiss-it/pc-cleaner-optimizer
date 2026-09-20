@@ -1848,6 +1848,31 @@ _local_license = resolve_license_path()
 assert _local_license and os.path.isfile(_local_license), "Dev/source tree phai tim duoc LICENSE"
 assert os.path.basename(_local_license) == "LICENSE"
 
+# Frozen onedir: LICENSE cạnh exe được ưu tiên hơn mã nguồn
+from unittest.mock import patch as _patch_eula
+_fake_dist = tempfile.mkdtemp(prefix="pcc_dist_")
+_fake_mei = tempfile.mkdtemp(prefix="pcc_mei_")
+try:
+    _dist_lic = os.path.join(_fake_dist, "LICENSE")
+    shutil.copy2(_local_license, _dist_lic)
+    with _patch_eula("ui.eula_dialog.sys.frozen", True, create=True), _patch_eula(
+        "ui.eula_dialog.sys.executable", os.path.join(_fake_dist, "PCAutoCleaner.exe")
+    ):
+        _resolved = resolve_license_path()
+        assert os.path.normpath(_resolved) == os.path.normpath(_dist_lic), _resolved
+    _mei_lic = os.path.join(_fake_mei, "LICENSE")
+    shutil.copy2(_local_license, _mei_lic)
+    _empty_exe_dir = tempfile.mkdtemp(prefix="pcc_empty_")
+    with _patch_eula("ui.eula_dialog.sys.frozen", True, create=True), _patch_eula(
+        "ui.eula_dialog.sys.executable", os.path.join(_empty_exe_dir, "PCAutoCleaner.exe")
+    ), _patch_eula("ui.eula_dialog.sys._MEIPASS", _fake_mei, create=True):
+        _resolved = resolve_license_path()
+        assert os.path.normpath(_resolved) == os.path.normpath(_mei_lic), _resolved
+    shutil.rmtree(_empty_exe_dir, ignore_errors=True)
+finally:
+    shutil.rmtree(_fake_dist, ignore_errors=True)
+    shutil.rmtree(_fake_mei, ignore_errors=True)
+
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "LICENSE"), "r", encoding="utf-8") as _lf:
     _lic = _lf.read()
 assert "All Rights Reserved" in _lic
