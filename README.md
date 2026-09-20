@@ -261,6 +261,8 @@ Bạn có thể mang thư mục này sang bất kỳ máy tính Windows nào kh�
 
 ## 🧪 Kiểm Thử & Đảm Bảo Chất Lượng (Quality Assurance)
 
+Trước mỗi GitHub Release, chạy checklist thủ công (cài → cập nhật → gỡ): [docs/RELEASE_SMOKE_TEST.md](docs/RELEASE_SMOKE_TEST.md).
+
 Dự án đi kèm bộ kiểm thử tự động toàn diện `test_full_system.py` xác thực 19 tiêu chí hoạt động:
 ```bash
 python test_full_system.py
