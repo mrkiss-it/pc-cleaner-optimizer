@@ -100,6 +100,7 @@ class _Snapshot:
     disk_free_gb: float
     net_ping_ms: float
     process_count: int
+    net_ping_measured: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +153,7 @@ class AIAdvisor:
                 disk_free_gb=float(disk.get("free_gb", 999)),
                 net_ping_ms=float(net.get("ping_ms", -1)),
                 process_count=int(stats.get("process_count", 0)),
+                net_ping_measured=bool(net.get("ping_measured", False)),
             )
             self._buffer.append(snap)
             # Đồng bộ sang PredictiveAIEngine
@@ -370,11 +372,29 @@ class AIAdvisor:
 
     # --- NETWORK ---
     def _rule_network(self, buf: List[_Snapshot]) -> List[Suggestion]:
-        recent_pings = [s.net_ping_ms for s in buf[-5:] if s.net_ping_ms > 0]
-        if not recent_pings:
-            return []
-        avg_ping = sum(recent_pings) / len(recent_pings)
         results = []
+        recent = buf[-5:]
+        if len(recent) >= 3:
+            missing_tail = recent[-3:]
+            if all(s.net_ping_ms <= 0 and s.net_ping_measured for s in missing_tail):
+                results.append(Suggestion(
+                    category=CATEGORY_NETWORK,
+                    priority=PRIORITY_WARNING,
+                    title="Không đo được Ping – mạng có thể bị lỗi",
+                    detail=(
+                        "Độ trễ mạng không đo được (timeout / unreachable). "
+                        "Ứng dụng sẽ tự kiểm tra card mạng, DNS, gateway rồi làm mới DNS cache. "
+                        "Bạn cũng có thể bấm để chạy kiểm tra & sửa ngay."
+                    ),
+                    action_key="repair_network_now",
+                    action_label="Kiểm Tra & Sửa Mạng",
+                ))
+                return results
+
+        recent_pings = [s.net_ping_ms for s in recent if s.net_ping_ms > 0]
+        if not recent_pings:
+            return results
+        avg_ping = sum(recent_pings) / len(recent_pings)
 
         if avg_ping > 200:
             results.append(Suggestion(

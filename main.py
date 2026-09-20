@@ -252,12 +252,26 @@ def main():
             )
 
     def on_auto_network_optimized(info):
-        main_win.lbl_status.setText(f"🌐 {info.get('message', 'Đã tự động tối ưu mạng')}")
+        kind = info.get("type", "ping_threshold")
+        msg = info.get("message", "Đã tự động tối ưu mạng")
+        main_win.lbl_status.setText(f"🌐 {msg}")
+        if hasattr(main_win, "_ai_advisor"):
+            try:
+                main_win._ai_advisor.invalidate_cache()
+            except Exception:
+                pass
         if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
+            if kind == "ping_missing":
+                recovered = info.get("recovered")
+                title = "Ping đã đo được lại" if recovered else "Tự kiểm tra & sửa mạng"
+                level = "success" if recovered else "warning"
+            else:
+                title = "Tự Động Tối Ưu Mạng"
+                level = "info"
             tray_mgr.notify(
-                "Tự Động Tối Ưu Mạng",
-                info.get("message", "Đã tự động dọn sạch DNS và làm mới TCP stack khi phát hiện độ trễ cao."),
-                level="info",
+                title,
+                msg,
+                level=level,
                 icon="🌐",
                 action_text="📶 Xem Mạng",
                 action_callback=main_win.open_network_dialog

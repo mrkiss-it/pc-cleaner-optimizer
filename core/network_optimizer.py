@@ -14,6 +14,7 @@ import time
 import socket
 import psutil
 import subprocess
+import threading
 from typing import Dict, Any, List, Optional
 from core.logger import logger
 
@@ -580,6 +581,313 @@ class NetworkOptimizer:
         # Sắp xếp theo số kết nối established và total giảm dần
         procs_list.sort(key=lambda x: (x["established"], x["total_connections"]), reverse=True)
         return procs_list[:limit]
+
+    # ------------------------------------------------------------------
+    # Network health check + safe repair (missing / failed ping)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _probe_tcp(host: str, port: int, timeout: float = 1.0) -> Dict[str, Any]:
+        """TCP connect probe. Trả về ok + latency_ms (-1 nếu thất bại)."""
+        s = None
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            t0 = time.time()
+            s.connect((host, port))
+            latency = round((time.time() - t0) * 1000, 1)
+            return {"ok": True, "latency_ms": latency, "error": ""}
+        except (socket.timeout, TimeoutError):
+            return {"ok": False, "latency_ms": -1.0, "error": "timeout"}
+        except OSError as e:
+            return {"ok": False, "latency_ms": -1.0, "error": str(e) or "unreachable"}
+        except Exception as e:
+            return {"ok": False, "latency_ms": -1.0, "error": str(e)}
+        finally:
+            if s is not None:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+
+    @classmethod
+    def get_default_gateway(cls) -> Dict[str, Any]:
+        """Đọc default gateway (Windows `route print`, Linux `ip route`)."""
+        gateway = ""
+        detail = ""
+        try:
+            if sys.platform == "win32":
+                res = cls._run_cmd("route print 0.0.0.0", timeout=4)
+                text = (res.get("stdout") or "") + "\n" + (res.get("stderr") or "")
+                for line in text.splitlines():
+                    parts = line.split()
+                    # Typical: 0.0.0.0  0.0.0.0  192.168.1.1  192.168.1.10  25
+                    if len(parts) >= 3 and parts[0] == "0.0.0.0":
+                        cand = parts[2]
+                        if cand.count(".") == 3 and not cand.startswith("0."):
+                            gateway = cand
+                            break
+            else:
+                res = cls._run_cmd("ip route show default", timeout=3)
+                text = res.get("stdout") or ""
+                parts = text.split()
+                if "via" in parts:
+                    gateway = parts[parts.index("via") + 1]
+        except Exception as e:
+            detail = str(e)
+
+        ok = bool(gateway)
+        if ok:
+            detail = f"Gateway mặc định: {gateway}"
+        elif not detail:
+            detail = "Không tìm thấy default gateway (máy có thể offline / chưa có DHCP)."
+        return {"ok": ok, "gateway": gateway, "detail": detail}
+
+    @classmethod
+    def check_dns_resolve(cls, hostname: str = "dns.google", timeout: float = 2.0) -> Dict[str, Any]:
+        """Kiểm tra phân giải DNS (không cần ICMP). Có timeout để không kẹt UI."""
+        box: Dict[str, Any] = {"ok": False, "addresses": [], "detail": "DNS quá thời gian chờ."}
+
+        def _resolve():
+            try:
+                infos = socket.getaddrinfo(hostname, 443, socket.AF_INET, socket.SOCK_STREAM)
+                addrs = sorted({item[4][0] for item in infos if item and item[4]})
+                if addrs:
+                    box.update({
+                        "ok": True,
+                        "addresses": addrs[:3],
+                        "detail": f"DNS OK — {hostname} → {', '.join(addrs[:3])}",
+                    })
+                else:
+                    box["detail"] = f"DNS không trả về địa chỉ cho {hostname}."
+            except socket.gaierror as e:
+                box["detail"] = f"DNS lỗi: {e}"
+            except Exception as e:
+                box["detail"] = f"DNS không phản hồi: {e}"
+
+        t = threading.Thread(target=_resolve, daemon=True)
+        t.start()
+        t.join(timeout)
+        return box
+
+    @classmethod
+    def get_adapter_state(cls) -> Dict[str, Any]:
+        """Trạng thái card mạng vật lý đang Up."""
+        names = []
+        try:
+            stats = psutil.net_if_stats()
+            for name, st in stats.items():
+                lower = name.lower()
+                if st.isup and not any(k in lower for k in ("loopback", "teredo", "tunnel", "pseudo")):
+                    names.append(name)
+        except Exception:
+            pass
+        if not names:
+            # Fallback to the existing adapter enumerator (Windows netsh / PowerShell)
+            try:
+                names = list(cls.get_active_adapters() or [])
+            except Exception:
+                names = []
+        ok = len(names) > 0
+        detail = (
+            f"Card đang hoạt động: {', '.join(names[:3])}"
+            if ok else
+            "Không có card mạng nào đang Up (Wi-Fi/Ethernet có thể bị tắt)."
+        )
+        return {"ok": ok, "adapters": names, "name": names[0] if names else "", "detail": detail}
+
+    @classmethod
+    def run_health_check(cls, measure_ping: bool = True) -> Dict[str, Any]:
+        """
+        Chẩn đoán mạng tập trung: adapter, gateway, DNS, TCP connectivity, ping.
+        Không thay đổi hệ thống.
+        """
+        from core.system_monitor import SystemMonitor
+
+        adapter = cls.get_adapter_state()
+        gateway = cls.get_default_gateway()
+        dns = cls.check_dns_resolve()
+
+        conn_cloudflare = cls._probe_tcp("1.1.1.1", 443, timeout=1.0)
+        conn_google = cls._probe_tcp("8.8.8.8", 53, timeout=1.0)
+        connectivity_ok = bool(conn_cloudflare["ok"] or conn_google["ok"])
+        conn_latency = conn_cloudflare["latency_ms"] if conn_cloudflare["ok"] else conn_google["latency_ms"]
+        connectivity = {
+            "ok": connectivity_ok,
+            "latency_ms": conn_latency,
+            "cloudflare": conn_cloudflare,
+            "google_dns": conn_google,
+            "detail": (
+                f"Kết nối TCP OK ({conn_latency:.0f} ms)"
+                if connectivity_ok else
+                "Không kết nối được tới Cloudflare (443) lẫn Google DNS (53)."
+            ),
+        }
+
+        if measure_ping:
+            ping_ms = SystemMonitor.measure_ping_now()
+        else:
+            ping_ms = float(SystemMonitor.get_network_info().get("ping_ms", -1))
+        ping_ok = ping_ms > 0
+        ping = {
+            "ok": ping_ok,
+            "ping_ms": ping_ms,
+            "status": SystemMonitor._ping_status,
+            "fail_streak": SystemMonitor._ping_fail_streak,
+            "detail": (
+                f"Ping {ping_ms:.0f} ms"
+                if ping_ok else
+                "Ping không đo được (timeout / unreachable)."
+            ),
+        }
+
+        issues = []
+        if not adapter["ok"]:
+            issues.append("adapter_down")
+        if not gateway["ok"]:
+            issues.append("no_gateway")
+        if not dns["ok"]:
+            issues.append("dns_fail")
+        if not connectivity["ok"]:
+            issues.append("no_connectivity")
+        if not ping["ok"]:
+            issues.append("ping_missing")
+
+        overall_ok = ping_ok and connectivity_ok
+        if not issues:
+            summary = "Mạng ổn định, Ping đo được."
+        elif ping_ok:
+            summary = "Ping đo được nhưng một số kiểm tra phụ chưa đạt."
+        else:
+            labels = {
+                "adapter_down": "card mạng tắt",
+                "no_gateway": "không có gateway",
+                "dns_fail": "DNS lỗi",
+                "no_connectivity": "mất kết nối",
+                "ping_missing": "không đo được Ping",
+            }
+            summary = "Phát hiện: " + ", ".join(labels.get(i, i) for i in issues) + "."
+
+        return {
+            "ok": overall_ok,
+            "summary": summary,
+            "issues": issues,
+            "checks": {
+                "adapter": adapter,
+                "gateway": gateway,
+                "dns": dns,
+                "connectivity": connectivity,
+                "ping": ping,
+            },
+        }
+
+    @classmethod
+    def diagnose_and_repair_missing_ping(cls, apply_dns: bool = False) -> Dict[str, Any]:
+        """
+        Khi Ping không đo được: chẩn đoán rồi áp dụng sửa an toàn, có thể hoàn tác về mặt cache:
+          1. Flush DNS resolver cache
+          2. Làm mới ARP / NetBIOS
+          3. (Tuỳ chọn, thủ công) Áp dụng DNS tốt nhất — không UAC ẩn
+        Không reset Winsock, không restart adapter, không tải gì từ xa.
+        """
+        from core.system_monitor import SystemMonitor
+
+        t0 = time.time()
+        health = cls.run_health_check(measure_ping=True)
+        ping_before = float(health["checks"]["ping"]["ping_ms"])
+        steps = []
+        skipped = []
+
+        if ping_before > 0:
+            msg = (
+                f"Ping đã đo được lại ({ping_before:.0f} ms). "
+                "Không cần sửa mạng — đồng hồ Ping hoạt động bình thường."
+            )
+            logger.info(f"[NetworkOptimizer] {msg}")
+            return {
+                "success": True,
+                "repaired": False,
+                "recovered": True,
+                "reason": "ping_recovered_before_fix",
+                "message": msg,
+                "issues": health.get("issues", []),
+                "steps": [],
+                "skipped": ["Bỏ qua sửa vì Ping đã đo được."],
+                "health_before": health,
+                "ping_before": ping_before,
+                "ping_after": ping_before,
+                "duration_ms": round((time.time() - t0) * 1000, 1),
+                "timestamp": datetime_str(),
+            }
+
+        # 1. Flush DNS — luôn an toàn, chỉ xóa cache
+        dns_res = cls.flush_dns()
+        steps.append({
+            "action": "flush_dns",
+            "success": bool(dns_res.get("success")),
+            "message": dns_res.get("message", "Flush DNS"),
+        })
+
+        # 2. ARP / NetBIOS — làm mới bảng địa chỉ nội mạng
+        arp_res = cls.purge_arp_netbios()
+        steps.append({
+            "action": "purge_arp_netbios",
+            "success": bool(arp_res.get("success")),
+            "message": arp_res.get("message", "Làm mới ARP/NetBIOS"),
+        })
+
+        # 3. DNS switch chỉ khi DNS fail và người dùng chủ động (apply_dns=True).
+        # Auto-path giữ allow_elevation=False để không bật UAC thầm.
+        dns_applied = False
+        if apply_dns and "dns_fail" in health.get("issues", []):
+            best = cls.apply_best_dns(allow_elevation=False)
+            dns_applied = bool(best.get("success"))
+            steps.append({
+                "action": "apply_best_dns",
+                "success": dns_applied,
+                "message": best.get("message", "Áp dụng DNS tốt nhất"),
+            })
+        else:
+            skipped.append(
+                "Không đổi DNS tự động (tránh UAC và thay đổi khó hoàn tác). "
+                "Dùng nút «Đổi DNS Siêu Tốc» nếu DNS vẫn lỗi."
+            )
+
+        skipped.append("Không khởi động lại card mạng / không reset Winsock (thao tác nặng).")
+
+        ping_after = SystemMonitor.measure_ping_now()
+        recovered = ping_after > 0
+        applied_ok = any(s.get("success") for s in steps)
+
+        issue_text = health.get("summary", "Ping không đo được.")
+        if recovered:
+            msg = (
+                f"{issue_text} Đã làm mới DNS cache và ARP. "
+                f"Ping đo được lại: {ping_after:.0f} ms."
+            )
+        else:
+            msg = (
+                f"{issue_text} Đã làm mới DNS cache và ARP. "
+                "Ping vẫn chưa đo được — hãy kiểm tra Wi-Fi/cáp hoặc đổi DNS thủ công."
+            )
+
+        logger.info(f"[NetworkOptimizer] Missing-ping repair: recovered={recovered} ping_after={ping_after}")
+        return {
+            "success": applied_ok or recovered,
+            "repaired": True,
+            "recovered": recovered,
+            "reason": "ping_missing",
+            "message": msg,
+            "issues": health.get("issues", []),
+            "steps": steps,
+            "skipped": skipped,
+            "health_before": health,
+            "ping_before": ping_before,
+            "ping_after": ping_after,
+            "dns_applied": dns_applied,
+            "duration_ms": round((time.time() - t0) * 1000, 1),
+            "timestamp": datetime_str(),
+        }
 
     @staticmethod
     def terminate_process(pid: int) -> Dict[str, Any]:

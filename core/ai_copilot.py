@@ -108,7 +108,7 @@ class TelemetryCollector:
             "ram": {"percent": 50.0, "used_gb": 4.0, "total_gb": 8.0, "free_mb": 4096},
             "cpu": {"percent": 20.0, "count": os.cpu_count() or 4},
             "disk": {"free_gb": 50.0, "total_gb": 256.0, "free_percent": 20.0},
-            "net": {"ping_ms": -1.0},
+            "net": {"ping_ms": -1.0, "ping_status": "unknown", "ping_measured": False, "adapter": ""},
             "battery": {"percent": 100, "power_plugged": True},
             "top_ram_procs": [],
             "top_cpu_procs": [],
@@ -145,6 +145,25 @@ class TelemetryCollector:
                 "free_gb": round(free_gb, 1),
                 "total_gb": round(total_gb, 1),
                 "free_percent": round(free_pct, 1),
+            }
+        except Exception:
+            pass
+
+        # Network ping — reuse SystemMonitor so Copilot never stays stuck at -1
+        # just because the meter was never called.
+        try:
+            from core.system_monitor import SystemMonitor
+            net_info = SystemMonitor.get_network_info()
+            ping_ms = float(net_info.get("ping_ms", -1.0))
+            ping_measured = bool(net_info.get("ping_measured", False))
+            if not ping_measured:
+                ping_ms = float(SystemMonitor.measure_ping_now())
+                ping_measured = True
+            result["net"] = {
+                "ping_ms": ping_ms,
+                "ping_status": SystemMonitor._ping_status,
+                "ping_measured": ping_measured,
+                "adapter": net_info.get("adapter") or SystemMonitor._cached_adapter or "",
             }
         except Exception:
             pass
@@ -246,6 +265,11 @@ class OfflineExpertBrain:
         bat_pct = bat.get("percent", 100)
         bat_plugged = bat.get("power_plugged", True)
 
+        net = telemetry.get("net", {})
+        ping_ms = float(net.get("ping_ms", -1.0))
+        ping_measured = bool(net.get("ping_measured", ping_ms > 0))
+        ping_status = str(net.get("ping_status", "unknown"))
+
         score = health_report.score if health_report else 85
         grade = health_report.grade if health_report else "TỐT"
 
@@ -325,16 +349,48 @@ class OfflineExpertBrain:
 
         # ── 4. Câu hỏi về Mạng / Ping / Wifi / Internet ──
         if any(k in norm_text for k in ("mang", "mạng", "ping", "lag mang", "lag mạng", "cham mang", "chậm mạng", "dns", "wifi", "internet", "mat mang", "mất mạng")):
+            if ping_ms > 0:
+                ping_line = f"- **Ping hiện tại:** **{ping_ms:.0f} ms**"
+                if ping_ms < 50:
+                    ping_line += " (thấp — mạng mượt)"
+                elif ping_ms < 120:
+                    ping_line += " (ổn định)"
+                else:
+                    ping_line += " (cao — dễ giật lag)"
+            elif ping_measured:
+                ping_line = (
+                    f"- **Ping hiện tại:** **không đo được** "
+                    f"({ping_status or 'timeout'}) — mạng có thể mất kết nối, DNS lỗi, hoặc firewall chặn."
+                )
+            else:
+                ping_line = "- **Ping hiện tại:** đang đo..."
+
             reply_lines = [
                 f"### 🌐 Tình Trạng Kết Nối Mạng & Băng Thông",
-                "Hệ thống tự động kiểm tra độ trễ mạng Internet và máy chủ DNS.",
-                "\n**Giải pháp khắc phục giật lag mạng:**\n"
-                "1. **Xóa DNS Cache (`ipconfig /flushdns`)**: Loại bỏ các bản ghi phân giải tên miền cũ hoặc bị lỗi.\n"
-                "2. **Chuyển sang DNS Siêu Tốc (Cloudflare 1.1.1.1 hoặc Google 8.8.8.8)**: "
-                "Tăng tốc độ tải trang web lên 20 - 40% và giảm hiện tượng nghẽn mạng giờ cao điểm."
+                ping_line,
+                "Hệ thống tự động kiểm tra độ trễ mạng Internet, DNS, gateway và card mạng.",
             ]
-            actions.append(CopilotAction(key="optimize_network", label="📶 Tối Ưu Mạng Ngay", icon="📶"))
-            actions.append(CopilotAction(key="switch_dns", label="🌐 Đổi DNS Siêu Tốc", icon="🌐"))
+            if ping_measured and ping_ms <= 0:
+                reply_lines.append(
+                    "\n> ⚠️ **Ping không có:** Tôi sẽ kiểm tra mạng rồi làm mới DNS cache / ARP "
+                    "(không reset Winsock, không restart card)."
+                )
+                reply_lines.append(
+                    "\n**Các bước an toàn:**\n"
+                    "1. **Kiểm tra & sửa ngay**: flush DNS + làm mới ARP, báo cáo gateway/DNS.\n"
+                    "2. **Đổi DNS Siêu Tốc** nếu phân giải tên miền vẫn lỗi (Cloudflare/Google)."
+                )
+                actions.append(CopilotAction(key="repair_network_now", label="🛠️ Kiểm Tra & Sửa Mạng", icon="🛠️"))
+                actions.append(CopilotAction(key="switch_dns", label="🌐 Đổi DNS Siêu Tốc", icon="🌐"))
+            else:
+                reply_lines.append(
+                    "\n**Giải pháp khắc phục giật lag mạng:**\n"
+                    "1. **Xóa DNS Cache (`ipconfig /flushdns`)**: Loại bỏ các bản ghi phân giải tên miền cũ hoặc bị lỗi.\n"
+                    "2. **Chuyển sang DNS Siêu Tốc (Cloudflare 1.1.1.1 hoặc Google 8.8.8.8)**: "
+                    "Tăng tốc độ tải trang web lên 20 - 40% và giảm hiện tượng nghẽn mạng giờ cao điểm."
+                )
+                actions.append(CopilotAction(key="optimize_network", label="📶 Tối Ưu Mạng Ngay", icon="📶"))
+                actions.append(CopilotAction(key="switch_dns", label="🌐 Đổi DNS Siêu Tốc", icon="🌐"))
             return CopilotResult(reply="\n".join(reply_lines), actions=actions, telemetry_summary=telemetry, source="offline_expert")
 
         # ── 5. Câu hỏi về Nhiệt Độ / Quạt To / Nóng Máy / Pin ──
@@ -615,7 +671,16 @@ class AICopilotEngine:
                     f"Đang dùng Offline Expert Brain.\n\n---\n\n{res.reply}"
                 )
 
-        badge = f"RAM {telemetry.get('ram', {}).get('percent', 0)}% • CPU {telemetry.get('cpu', {}).get('percent', 0)}% • Ổ C {telemetry.get('disk', {}).get('free_gb', 0)}GB"
+        badge = (
+            f"RAM {telemetry.get('ram', {}).get('percent', 0)}% • "
+            f"CPU {telemetry.get('cpu', {}).get('percent', 0)}% • "
+            f"Ổ C {telemetry.get('disk', {}).get('free_gb', 0)}GB"
+        )
+        ping_ms = float(telemetry.get("net", {}).get("ping_ms", -1))
+        if ping_ms > 0:
+            badge += f" • Ping {ping_ms:.0f}ms"
+        elif telemetry.get("net", {}).get("ping_measured"):
+            badge += " • Ping --"
         if cloud_failed:
             badge = f"Cloud lỗi • {badge}"
 
@@ -639,8 +704,11 @@ class AICopilotEngine:
             actions.append(CopilotAction(key="clean_disk", label="🧹 Dọn Rác Ổ C", icon="🧹"))
         if any(k in t for k in ("game", "fps", "boost")):
             actions.append(CopilotAction(key="enable_game_boost", label="🎮 Kích Hoạt Game Boost", icon="🎮"))
-        if any(k in t for k in ("mang", "mạng", "ping", "dns")):
-            actions.append(CopilotAction(key="optimize_network", label="📶 Tối Ưu Mạng", icon="📶"))
+        if any(k in t for k in ("mang", "mạng", "ping", "dns", "mat mang", "mất mạng")):
+            if any(k in t for k in ("khong do", "không đo", "timeout", "mat mang", "mất mạng", "unreachable")):
+                actions.append(CopilotAction(key="repair_network_now", label="🛠️ Kiểm Tra & Sửa Mạng", icon="🛠️"))
+            else:
+                actions.append(CopilotAction(key="optimize_network", label="📶 Tối Ưu Mạng", icon="📶"))
         if any(k in t for k in ("an ninh", "virus", "bao mat", "bảo mật")):
             actions.append(CopilotAction(key="scan_security", label="🛡️ Rà Soát Bảo Mật", icon="🛡️"))
         if not actions:
