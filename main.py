@@ -101,6 +101,17 @@ def main():
     config_path = os.path.join(base_dir, "config.json")
     config_mgr = ConfigManager(config_path)
 
+    # First-run EULA: must accept once before tray / scheduler / main window.
+    from ui.eula_dialog import ensure_eula_accepted
+    if not ensure_eula_accepted(config_mgr):
+        logger.info("Người dùng từ chối Điều khoản sử dụng. Thoát ứng dụng.")
+        try:
+            ipc_server.close()
+            QLocalServer.removeServer(server_name)
+        except Exception:
+            pass
+        sys.exit(0)
+
     # Initialize Central System Monitor Hub (Single Source of Truth)
     from core.system_monitor import SystemMonitorHub
     monitor_hub = SystemMonitorHub()
@@ -212,6 +223,7 @@ def main():
     tray_mgr.check_updates_requested.connect(
         lambda: main_win.check_for_updates(force=True, interactive=True)
     )
+    tray_mgr.show_eula_requested.connect(main_win.open_eula_dialog)
     tray_mgr.exit_requested.connect(on_exit_app)
 
     # Connect Floating Widget Actions

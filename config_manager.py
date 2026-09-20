@@ -91,10 +91,25 @@ DEFAULT_CONFIG = {
     "last_update_check_status": 0,
     "cached_release_payload": {},
     "dismissed_update_tag": "",
+    "eula_accepted": False,
+    "eula_accepted_version": 0,
+    "eula_accepted_at": "",
 }
+
+# Bump when in-app EULA / LICENSE terms change so users re-accept.
+EULA_VERSION = 1
 
 # Keys that must never be written to tracked/shared config.json
 SECRET_KEYS = frozenset({"ai_copilot_gemini_api_key"})
+
+
+def _user_data_dir() -> str:
+    """%%APPDATA%%\\PCAutoCleaner on Windows, ~/.config/PCAutoCleaner elsewhere."""
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return os.path.join(appdata, "PCAutoCleaner")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(xdg, "PCAutoCleaner")
 
 
 def secrets_file_path() -> str:
@@ -102,11 +117,15 @@ def secrets_file_path() -> str:
     override = os.environ.get("PCAUTOCLEANER_SECRETS_PATH", "").strip()
     if override:
         return override
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        return os.path.join(appdata, "PCAutoCleaner", "secrets.json")
-    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(xdg, "PCAutoCleaner", "secrets.json")
+    return os.path.join(_user_data_dir(), "secrets.json")
+
+
+def eula_file_path() -> str:
+    """Persisted EULA acceptance (%%APPDATA%%\\PCAutoCleaner\\eula.json, overridable)."""
+    override = os.environ.get("PCAUTOCLEANER_EULA_PATH", "").strip()
+    if override:
+        return override
+    return os.path.join(_user_data_dir(), "eula.json")
 
 
 def _deep_merge(target: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
@@ -402,3 +421,64 @@ class ConfigManager:
             self.set("process_whitelist", new_list)
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # EULA / Điều khoản sử dụng (persisted in AppData + local config)
+    # ------------------------------------------------------------------
+
+    def _read_eula_file(self) -> Dict[str, Any]:
+        path = eula_file_path()
+        if not path or not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            print(f"[ConfigManager] Lỗi khi đọc EULA: {e}")
+            return {}
+
+    def _write_eula_file(self, payload: Dict[str, Any]) -> bool:
+        path = eula_file_path()
+        try:
+            parent = os.path.dirname(os.path.abspath(path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=4, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"[ConfigManager] Lỗi khi lưu EULA: {e}")
+            return False
+
+    def is_eula_accepted(self) -> bool:
+        """True if the current EULA version was accepted and stored on disk."""
+        data = self._read_eula_file()
+        try:
+            file_ver = int(data.get("version") or 0)
+        except (TypeError, ValueError):
+            file_ver = 0
+        if data.get("accepted") is True and file_ver >= EULA_VERSION:
+            return True
+        try:
+            cfg_ver = int(self.config.get("eula_accepted_version") or 0)
+        except (TypeError, ValueError):
+            cfg_ver = 0
+        return bool(self.config.get("eula_accepted")) and cfg_ver >= EULA_VERSION
+
+    def accept_eula(self) -> bool:
+        """Persist EULA acceptance to AppData eula.json and local config.json."""
+        from datetime import datetime
+        accepted_at = datetime.now().isoformat(timespec="seconds")
+        payload = {
+            "accepted": True,
+            "version": EULA_VERSION,
+            "accepted_at": accepted_at,
+            "copyright_holder": "mrkiss-it",
+        }
+        ok_file = self._write_eula_file(payload)
+        self.config["eula_accepted"] = True
+        self.config["eula_accepted_version"] = EULA_VERSION
+        self.config["eula_accepted_at"] = accepted_at
+        ok_cfg = self.save_config()
+        return bool(ok_file or ok_cfg)

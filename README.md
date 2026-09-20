@@ -4,7 +4,7 @@
 [![PyQt5 Modern GUI](https://img.shields.io/badge/UI-PyQt5%20Fluent%20Dark-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://pypi.org/project/PyQt5/)
 [![Platform Windows](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://microsoft.com)
 [![Tests Passing](https://img.shields.io/badge/Tests-20%2F20%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com)
-[![License MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+[![License Proprietary](https://img.shields.io/badge/License-Proprietary%20%7C%20All%20Rights%20Reserved-red?style=for-the-badge)](LICENSE)
 
 **Phần mềm toàn diện tối ưu hóa Windows, tự động dọn dẹp rác, giải phóng RAM, tăng tốc Gaming, đo tốc độ DNS song song, kiểm tra sức khỏe ổ cứng SSD S.M.A.R.T, đo độ chai pin laptop (Battery Health & Cycles), xuất báo cáo pin HTML Windows, giám sát CPU đa nhân thời gian thực, nhận diện GPU, dọn dẹp an toàn Registry, quét bảo mật hệ thống và bảo vệ quyền riêng tư (Windows Tweaks & Privacy Shield).**
 
@@ -156,8 +156,9 @@
 ```text
 pc_cleaner_optimizer/
 │
+├── LICENSE                     # Giấy phép độc quyền (All Rights Reserved) — không MIT
 ├── main.py                     # Entry point, IPC Single-Instance, CLI & UI switcher
-├── config_manager.py           # Quản lý cấu hình JSON, whitelist & thiết lập tự động
+├── config_manager.py           # Quản lý cấu hình JSON, whitelist, EULA (AppData) & thiết lập tự động
 ├── startup_manager.py          # Quản lý khởi động cùng Windows (Registry Run Key)
 ├── build_exe.py                # Pipeline đóng gói PyInstaller độc lập (asInvoker mode)
 ├── build_exe.bat               # Batch script đóng gói nhanh 1-click
@@ -196,6 +197,7 @@ pc_cleaner_optimizer/
     ├── main_window.py          # Cửa sổ trung tâm điều khiển 8 tab tích hợp
     ├── floating_widget.py      # Widget nổi Desktop kéo thả & điều chỉnh độ mờ
     ├── tray_icon.py            # Biểu tượng khay hệ thống với menu điều khiển nhanh
+    ├── eula_dialog.py          # Điều khoản sử dụng (EULA) lần đầu + xem lại
     ├── hardware_dialog.py      # Hộp thoại Sức khỏe Pin Laptop & Cảm biến phần cứng CPU/GPU
     ├── network_dialog.py       # Hộp thoại đo tốc độ DNS & Tối ưu mạng
     ├── disk_registry_dialog.py # Hộp thoại Sức khỏe ổ đĩa & Dọn dẹp Registry
@@ -215,6 +217,8 @@ pc_cleaner_optimizer/
 - Python: Phiên bản `3.8` trở lên (nếu chạy từ mã nguồn).
 
 ### 1. Chạy từ Mã Nguồn (Development Mode)
+Mã nguồn trên GitHub là độc quyền — clone để chạy/xem **không** cấp quyền sửa đổi hay tái phân phối. Xem [LICENSE](LICENSE).
+
 1. **Clone repository về máy**:
    ```bash
    git clone https://github.com/mrkiss-it/pc-cleaner-optimizer.git
@@ -304,7 +308,14 @@ All 19 tests passed successfully! (100% PASS RATE)
 
 ## 📄 Bản Quyền (License)
 
-Dự án được phát hành theo giấy phép [MIT License](LICENSE). Tự do sử dụng, chỉnh sửa và đóng góp cho cộng đồng.
+Phần mềm này là **độc quyền (proprietary) — All Rights Reserved**, không phải MIT hay giấy phép mã nguồn mở.
+
+- Chủ sở hữu bản quyền: **[mrkiss-it](https://github.com/mrkiss-it)**.
+- **Không** được sao chép, sửa đổi, phân phối lại, hoặc sử dụng thương mại khi chưa có sự cho phép **bằng văn bản** từ chủ sở hữu bản quyền.
+- Người dùng cuối được phép chạy bản phát hành chính thức trên máy của mình sau khi đồng ý Điều khoản sử dụng (EULA) trong ứng dụng (lần đầu; trạng thái đồng ý được lưu tại `%APPDATA%\PCAutoCleaner`).
+- Chi tiết đầy đủ (tiếng Việt + English): xem tệp [LICENSE](LICENSE).
+
+Kho GitHub công khai **không** đồng nghĩa với quyền tái sử dụng mã nguồn.
 
 ---
 

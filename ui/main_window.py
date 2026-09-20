@@ -317,8 +317,18 @@ class MainWindow(QMainWindow):
             border: 1px solid #059669;
         """)
 
+        self.btn_eula = QPushButton("📜 Điều khoản")
+        self.btn_eula.setProperty("class", "btn-secondary")
+        self.btn_eula.setCursor(Qt.PointingHandCursor)
+        self.btn_eula.setToolTip("Xem Điều khoản sử dụng (EULA) và bản quyền độc quyền")
+        self.btn_eula.setStyleSheet(
+            "padding: 6px 14px; font-size: 12px; font-weight: 600; min-width: 0;"
+        )
+        self.btn_eula.clicked.connect(self.open_eula_dialog)
+
         layout.addLayout(title_box)
         layout.addStretch()
+        layout.addWidget(self.btn_eula)
         layout.addWidget(self.badge_status)
         return layout
 
@@ -944,6 +954,35 @@ class MainWindow(QMainWindow):
         layout_upd.addWidget(self.lbl_update_status)
         layout.addWidget(card_update)
 
+        # Card: Bản quyền & Điều khoản sử dụng
+        card_eula = QFrame()
+        card_eula.setObjectName("SettingCard")
+        card_eula.setStyleSheet(card_style)
+        layout_eula = QVBoxLayout(card_eula)
+        layout_eula.setContentsMargins(18, 16, 18, 16)
+        layout_eula.setSpacing(10)
+
+        lbl_eula_title = QLabel("📜 Bản quyền & Điều khoản sử dụng")
+        lbl_eula_title.setStyleSheet("font-weight: bold; font-size: 14px; color: #38bdf8;")
+        lbl_eula_desc = QLabel(
+            "Phần mềm độc quyền của mrkiss-it (All Rights Reserved) — không phải MIT. "
+            "Không được sao chép, sửa đổi, phân phối lại hoặc dùng thương mại khi chưa có "
+            "sự cho phép bằng văn bản. Bạn đã đồng ý điều khoản khi lần đầu mở ứng dụng; "
+            "có thể xem lại bất kỳ lúc nào."
+        )
+        lbl_eula_desc.setWordWrap(True)
+        lbl_eula_desc.setStyleSheet("color: #64748b; font-size: 11px;")
+
+        self.btn_view_eula = QPushButton("Xem điều khoản (EULA)")
+        self.btn_view_eula.setProperty("class", "btn-secondary")
+        self.btn_view_eula.setCursor(Qt.PointingHandCursor)
+        self.btn_view_eula.clicked.connect(self.open_eula_dialog)
+
+        layout_eula.addWidget(lbl_eula_title)
+        layout_eula.addWidget(lbl_eula_desc)
+        layout_eula.addWidget(self.btn_view_eula, alignment=Qt.AlignLeft)
+        layout.addWidget(card_eula)
+
         layout.addStretch()
         scroll.setWidget(scroll_content)
         outer_layout.addWidget(scroll, 1)
@@ -1508,6 +1547,12 @@ class MainWindow(QMainWindow):
     def open_hardware_dialog(self):
         """Mở hộp thoại Quản Lý Sức Khỏe Pin Laptop & Cảm Biến Phần Cứng (v3.2 Pro)."""
         dialog = HardwareMonitorDialog(self)
+        dialog.exec_()
+
+    def open_eula_dialog(self):
+        """Mở lại Điều khoản sử dụng (EULA) — không bắt buộc đồng ý lần nữa."""
+        from ui.eula_dialog import EulaDialog
+        dialog = EulaDialog(self.config_manager, parent=self, require_accept=False)
         dialog.exec_()
 
     def open_ai_advisor_dialog(self):
