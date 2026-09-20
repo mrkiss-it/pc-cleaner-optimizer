@@ -412,10 +412,14 @@ class PredictiveDashboard(QFrame):
                 self.lbl_disk_trend.setStyleSheet("color: #3fb950; border: none; background: transparent;")
 
             # 2. Auto-Pilot State / Habit Profile
+            # AutoPilotState uses `label` / `description` (not mode_label / reason).
             try:
                 auto_state = self._advisor.get_autopilot_state()
-                self.lbl_habit_mode.setText(auto_state.mode_label)
-                self.lbl_habit_desc.setText(auto_state.reason)
+                self.lbl_habit_mode.setText(auto_state.label)
+                desc = auto_state.description or ""
+                if auto_state.active_process:
+                    desc = f"{auto_state.active_process} | {desc}"
+                self.lbl_habit_desc.setText(desc)
             except Exception:
                 hb = engine.get_habit_profile()
                 self.lbl_habit_mode.setText(hb.predicted_workload)

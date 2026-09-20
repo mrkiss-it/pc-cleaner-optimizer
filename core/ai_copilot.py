@@ -423,12 +423,18 @@ class CloudAIBrain:
         user_prompt: str,
         telemetry: Dict[str, Any],
         health_report: Optional[AIHealthReport] = None,
-        timeout: float = 8.0
+        timeout: float = 8.0,
+        model: str = "gemini-2.5-flash",
     ) -> Optional[str]:
         if not api_key:
             return None
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        # Gemini 1.5 Flash has been shut down. Send the key in a header so it is
+        # not written to proxy/access logs as a query parameter.
+        model = (model or "gemini-2.5-flash").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
+            model = "gemini-2.5-flash"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
         ram = telemetry.get("ram", {})
         cpu = telemetry.get("cpu", {})
@@ -460,7 +466,10 @@ class CloudAIBrain:
             req = urllib.request.Request(
                 url,
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key,
+                },
                 method="POST"
             )
             with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -547,11 +556,13 @@ class AICopilotEngine:
             api_key = str(self.config_manager.get("ai_copilot_gemini_api_key", "")).strip()
 
         if is_cloud_enabled and api_key:
+            model = str(self.config_manager.get("ai_copilot_gemini_model", "gemini-2.5-flash")).strip()
             cloud_reply = CloudAIBrain.query_gemini(
                 api_key=api_key,
                 user_prompt=user_prompt_clean,
                 telemetry=telemetry,
-                health_report=health_report
+                health_report=health_report,
+                model=model or "gemini-2.5-flash",
             )
 
         # 5. Nếu có phản hồi từ Cloud AI, sử dụng và trích xuất action buttons
