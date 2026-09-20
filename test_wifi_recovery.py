@@ -52,6 +52,10 @@ from core.wifi_recovery import (
     classify_wifi_cause,
     is_filtering_or_custom_dns,
     parse_wlan_interfaces,
+    parse_wifi_signal,
+    resolve_overlay_wifi_status,
+    overlay_word_for_cause,
+    is_genuine_link_loss,
 )
 from core.system_monitor import SystemMonitor, format_ping_overlay_text
 from core.network_optimizer import NetworkOptimizer
@@ -161,10 +165,143 @@ def test_classify_and_filtering_dns():
 
 
 def test_overlay_wifi_words():
-    assert format_ping_overlay_text(28, True, "ok", wifi_status="reconnect_loop") == "rớt"
-    assert format_ping_overlay_text(-1, True, "link_loss") == "rớt"
-    assert format_ping_overlay_text(40, True, "ok", wifi_status="weak_link") == "yếu"
+    # Have a ping reading → always keep the number (never replace with only yếu/rớt).
+    assert format_ping_overlay_text(28, True, "ok", wifi_status="reconnect_loop") == "28 ms"
+    assert format_ping_overlay_text(40, True, "ok", wifi_status="weak_link") == "40 ms · yếu"
     assert format_ping_overlay_text(28, True, "ok") == "28 ms"
+    assert format_ping_overlay_text(300, True, "ok", wifi_status="adapter_down") == "300 ms"
+    assert "rớt" not in format_ping_overlay_text(300, True, "ok", wifi_status="weak_link")
+    # No ping + genuine drop → rớt. No ping + only weak → timeout, not rớt.
+    assert format_ping_overlay_text(-1, True, "ok", wifi_status="reconnect_loop") == "rớt"
+    assert format_ping_overlay_text(-1, True, "link_loss") == "rớt"
+    assert format_ping_overlay_text(-1, True, "timeout", wifi_status="weak_link") == "timeout"
+    assert overlay_word_for_cause("link_loss") == "rớt"
+    assert overlay_word_for_cause("weak_link") == "yếu"
+    assert overlay_word_for_cause("ok") == ""
+
+
+def test_classify_connected_low_rate_is_weak_not_link_loss():
+    """User PC: MT7921 Up, ~13–26 Mbps, no WLAN flap → yếu, never rớt."""
+    weak_snap = _wifi_snap(
+        status_flaps=0, wlan_flaps=0, link_mbps=26.0, link_loss=False,
+        state="connected", ssid="Ba Duong L2", is_up=True, signal="45%",
+    )
+    cause, label = classify_wifi_cause(weak_snap)
+    assert cause == "weak_link"
+    assert "yếu" in label or "thấp" in label
+    assert is_genuine_link_loss(weak_snap) is False
+    assert overlay_word_for_cause(cause) == "yếu"
+    assert format_ping_overlay_text(300, True, "ok", wifi_status=cause) == "300 ms · yếu"
+    assert "rớt" not in format_ping_overlay_text(300, True, "ok", wifi_status=cause)
+
+    # Empty SSID + adapter Status "up" + usable PHY (netsh gap) is NOT link_loss.
+    gap = _wifi_snap(
+        status_flaps=0, wlan_flaps=0, link_mbps=19.0, link_loss=True,
+        state="up", ssid="", is_up=True, signal="",
+    )
+    gap_cause, _ = classify_wifi_cause(gap)
+    assert gap_cause == "weak_link", f"netsh gap was {gap_cause}, expected weak_link"
+    assert is_genuine_link_loss(gap) is False
+
+    rssi_snap = _wifi_snap(
+        status_flaps=0, wlan_flaps=0, link_mbps=200.0, link_loss=False,
+        state="connected", ssid="Ba Duong L2", is_up=True, signal="-71 dBm",
+    )
+    rssi_cause, _ = classify_wifi_cause(rssi_snap)
+    assert rssi_cause == "weak_link"
+    pct, rssi = parse_wifi_signal("-71 dBm")
+    assert rssi == -71.0
+    assert pct is None
+
+
+def test_overlay_priority_flap_beats_weak_and_stale_report():
+    WifiRecovery.reset_state()
+    weak = WifiRecovery.detect_wifi_instability(
+        snapshot=_wifi_snap(
+            status_flaps=0, wlan_flaps=0, link_mbps=13.0, link_loss=False,
+            unstable=False, cause="ok",
+        ),
+        include_events=False,
+        health={"checks": {"ping": {"ok": True, "ping_ms": 300}}, "issues": []},
+    )
+    assert weak["cause"] == "weak_link"
+    assert weak["overlay"] == "yếu"
+    # Stale repair report of link_loss must not keep the badge on rớt.
+    stale = {"cause": "link_loss", "cause_label": "mất liên kết Wi-Fi (không còn SSID / link)"}
+    assert resolve_overlay_wifi_status(weak, last_report=stale) == "weak_link"
+    WifiRecovery.last_detect = weak
+    WifiRecovery.last_wifi_drop_report = stale
+    assert WifiRecovery.overlay_wifi_status(last_report=stale) == "weak_link"
+    assert format_ping_overlay_text(
+        300, True, "ok", wifi_status=WifiRecovery.overlay_wifi_status(last_report=stale)
+    ) == "300 ms · yếu"
+
+    flap = WifiRecovery.detect_wifi_instability(
+        snapshot=_wifi_snap(status_flaps=4, wlan_flaps=5, link_mbps=13.0),
+        include_events=False,
+    )
+    assert flap["cause"] == "reconnect_loop"
+    assert flap["overlay"] == "rớt"
+    assert resolve_overlay_wifi_status(flap) == "reconnect_loop"
+    assert format_ping_overlay_text(28, True, "ok", wifi_status="reconnect_loop") == "28 ms"
+    assert format_ping_overlay_text(-1, True, "ok", wifi_status="reconnect_loop") == "rớt"
+
+    down = WifiRecovery.detect_wifi_instability(
+        snapshot=_wifi_snap(
+            is_up=False, state="disconnected", ssid="", link_mbps=-1,
+            status_flaps=0, wlan_flaps=0, link_loss=True,
+        ),
+        include_events=False,
+    )
+    assert down["cause"] == "adapter_down"
+    assert overlay_word_for_cause(down["cause"]) == "rớt"
+
+    lost = classify_wifi_cause(_wifi_snap(
+        is_up=True, state="authenticating", ssid="", link_mbps=-1,
+        status_flaps=0, wlan_flaps=0, link_loss=True,
+    ))[0]
+    assert lost == "link_loss"
+    assert overlay_word_for_cause(lost) == "rớt"
+
+    # Timeout-only with healthy Wi-Fi → no Wi-Fi overlay (keep timeout).
+    healthy = WifiRecovery.detect_wifi_instability(
+        snapshot=_wifi_snap(
+            status_flaps=0, wlan_flaps=0, link_mbps=400, link_loss=False,
+            state="connected", ssid="NhaMinh", is_up=True, signal="90%",
+        ),
+        include_events=False,
+        health={"checks": {"ping": {"ok": False, "ping_ms": -1, "status": "timeout"}},
+                "issues": ["ping_missing"]},
+    )
+    assert healthy["cause"] == "ok"
+    token = resolve_overlay_wifi_status(healthy)
+    assert token == ""
+    assert format_ping_overlay_text(-1, True, "timeout", wifi_status=token) == "timeout"
+    WifiRecovery.reset_state()
+
+
+def test_snapshot_empty_netsh_keeps_up_adapter_as_weak():
+    WifiRecovery.reset_state()
+    snap = WifiRecovery.get_wifi_snapshot(
+        adapters=[{
+            "Name": "Wi-Fi",
+            "Status": "Up",
+            "LinkSpeed": "26 Mbps",
+            "InterfaceDescription": "MediaTek Wi-Fi 6 MT7921 Wireless LAN Card",
+        }],
+        wlan_text="",
+        event_text="",
+        include_events=False,
+        now=5000.0,
+        dns_text="",
+    )
+    assert snap["is_up"] is True
+    assert snap["link_mbps"] == 26.0
+    det = WifiRecovery.detect_wifi_instability(snapshot=snap, include_events=False)
+    assert det["cause"] == "weak_link"
+    assert det["overlay"] == "yếu"
+    assert det["cause"] != "link_loss"
+    WifiRecovery.reset_state()
 
 
 def test_stability_window_fake_clock():
@@ -456,6 +593,35 @@ def test_missing_ping_routes_to_wifi():
         _restore_wifi_repair(orig)
 
 
+def test_connected_weak_skips_ssid_reconnect():
+    """Sustained weak link while still associated must not self-disconnect."""
+    orig, counts = _patch_wifi_repair()
+    clock = FakeClock(0)
+    try:
+        SystemMonitor._measure_quick_ping = staticmethod(lambda timeout=0.45: 280.0)
+        SystemMonitor.reset_ping_state()
+        WifiRecovery.reset_state()
+        snap = _wifi_snap(
+            status_flaps=0, wlan_flaps=0, link_mbps=13.0, link_loss=False,
+            state="connected", ssid="Ba Duong L2", is_up=True,
+            filtering_dns=False, dns_servers=["8.8.8.8"],
+        )
+        result = WifiRecovery.diagnose_and_repair_wifi_drop(
+            apply_dns=False,
+            snapshot=snap,
+            sleep_fn=clock.sleep,
+            clock_fn=clock.time,
+            stability_sec=2,
+        )
+        assert result["cause"] == "weak_link"
+        assert result.get("overlay") == "yếu"
+        assert counts["recon"] == 0, "Must not reconnect SSID on connected weak link"
+        assert counts["pwr"] >= 1, "Power-save off is still the weak-link fix"
+        assert any("chỉ yếu" in s or "reconnect" in s.lower() for s in result.get("skipped", []))
+    finally:
+        _restore_wifi_repair(orig)
+
+
 def test_config_wifi_defaults():
     assert int(DEFAULT_CONFIG.get("auto_network_wifi_fix_first_cooldown_seconds", 99)) <= 15
     assert int(DEFAULT_CONFIG.get("auto_network_wifi_fix_cooldown_seconds", 0)) >= 60
@@ -670,6 +836,9 @@ if __name__ == "__main__":
         test_parse_helpers,
         test_classify_and_filtering_dns,
         test_overlay_wifi_words,
+        test_classify_connected_low_rate_is_weak_not_link_loss,
+        test_overlay_priority_flap_beats_weak_and_stale_report,
+        test_snapshot_empty_netsh_keeps_up_adapter_as_weak,
         test_stability_window_fake_clock,
         test_reconnect_throttle_and_dhcp_cmds,
         test_power_save_no_nic_toggle,
@@ -678,6 +847,7 @@ if __name__ == "__main__":
         test_should_trigger_wifi_and_wins_over_ping,
         test_detect_reconnect_loop_from_events,
         test_missing_ping_routes_to_wifi,
+        test_connected_weak_skips_ssid_reconnect,
         test_config_wifi_defaults,
         test_location_gpo_detection_mocked_registry,
         test_repair_does_not_auto_unlock_location_gpo,

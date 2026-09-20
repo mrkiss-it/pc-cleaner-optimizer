@@ -1,14 +1,20 @@
 """
 Khôi phục Wi-Fi khi rớt liên tục / vòng reconnect (MediaTek MT7921, v.v.).
 
-Phát hiện: adapter tắt, mất link, tốc độ liên kết yếu (< 50 Mbps),
+Phát hiện: adapter tắt, mất link, tốc độ liên kết yếu (< 50 Mbps / RSSI yếu),
 Up/Down flap, cụm sự kiện WLAN-AutoConfig (11000/11001/8002/8003/11010).
+
+Phân loại badge Ping (cùng thứ tự với cause= trong log):
+  1. Có ping_ms > 0 → luôn hiện số ms (weak-link thêm " · yếu", không thay bằng rớt)
+  2. Không ping + flap / adapter Down / mất association thật → overlay "rớt"
+  3. Không ping + adapter vẫn Up chỉ yếu → timeout/DNS (không gọi rớt)
 
 Sửa theo bậc (không dừng vì một lần Ping may mắn khi đang flap/yếu):
   1. Flush DNS + ARP
   2. DHCP renew (ipconfig /release + /renew đúng một adapter)
   3. Đổi DNS nếu đang dùng AdGuard / DNS lọc / DNS tùy chỉnh
   4. Ngắt rồi kết nối lại đúng SSID hiện tại (giới hạn 90 giây/lần)
+     — bỏ qua khi chỉ yếu mà vẫn kết nối (tránh tự làm rớt)
   5. Tắt tiết kiệm pin Wi-Fi (đảo ngược được, ghi log)
 Không Disable-NetAdapter / bật-tắt NIC trong vòng lặp.
 Sau sửa: cửa sổ ổn định N giây (Up liên tục + probe).
@@ -29,12 +35,33 @@ from core.windows_location import (
 )
 
 WIFI_WEAK_LINK_MBPS = 50.0
+WIFI_WEAK_SIGNAL_PCT = 50.0
+WIFI_WEAK_RSSI_DBM = -70.0
 FLAP_WINDOW_SEC = 120.0
 MIN_STATUS_FLAPS = 4
 MIN_WLAN_EVENTS = 4
 STABILITY_WINDOW_SEC = 8.0
 STABILITY_POLL_SEC = 2.0
 RECONNECT_MIN_INTERVAL_SEC = 90.0
+
+# Ping overlay / cause= log mapping. Keep in sync with format_ping_overlay_text.
+WIFI_OVERLAY_DROP_CAUSES = frozenset({
+    "reconnect_loop", "wifi_drop", "link_loss", "adapter_down",
+})
+WIFI_OVERLAY_WEAK_CAUSES = frozenset({"weak_link"})
+
+# netsh / Get-NetAdapter state tokens (English + common Vietnamese).
+WLAN_CONNECTED_STATES = frozenset({
+    "connected", "up", "đã kết nối", "da ket noi",
+})
+WLAN_DOWN_STATES = frozenset({
+    "disconnected", "disconnecting", "disconnect",
+    "đã ngắt kết nối", "ngắt kết nối", "ngat ket noi",
+})
+WLAN_ASSOCIATING_STATES = frozenset({
+    "authenticating", "associating", "discovering",
+    "đang xác thực", "đang kết nối", "dang xac thuc", "dang ket noi",
+})
 
 WLAN_FLAP_EVENT_IDS = frozenset({11000, 11001, 8002, 8003, 11010})
 
@@ -73,6 +100,154 @@ CAUSE_LABELS = {
 
 _IPV4_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
 _EVENT_ID_RE = re.compile(r"Event\s*ID\s*[:#]?\s*(\d+)", re.IGNORECASE)
+
+
+def overlay_word_for_cause(cause: str) -> str:
+    """UI badge for a Wi-Fi cause: 'rớt' (drop) or 'yếu' (weak). Empty = no override."""
+    token = str(cause or "").strip().lower()
+    if token in WIFI_OVERLAY_DROP_CAUSES:
+        return "rớt"
+    if token in WIFI_OVERLAY_WEAK_CAUSES:
+        return "yếu"
+    return ""
+
+
+def snapshot_link_mbps(snapshot: Dict[str, Any]) -> float:
+    """Read link_mbps without treating 0.0 as missing (0 or -1 → -1)."""
+    raw = snapshot.get("link_mbps") if isinstance(snapshot, dict) else None
+    if raw is None or raw == "":
+        return -1.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return parse_link_mbps(raw)
+    return value if value > 0 else -1.0
+
+
+def parse_wifi_signal(value: Any) -> Tuple[Optional[float], Optional[float]]:
+    """Parse netsh Signal into (percent, rssi_dbm). Either side may be None."""
+    if value is None or value == "":
+        return None, None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        if number < 0:
+            return None, number
+        return number, None
+    text = str(value).strip().lower().replace(",", ".")
+    if not text:
+        return None, None
+    percent: Optional[float] = None
+    rssi: Optional[float] = None
+    pct_match = re.search(r"(-?\d+(?:\.\d+)?)\s*%", text)
+    if pct_match:
+        percent = float(pct_match.group(1))
+    dbm_match = re.search(r"(-\d+(?:\.\d+)?)\s*dBm", text, re.IGNORECASE)
+    if dbm_match:
+        rssi = float(dbm_match.group(1))
+    if rssi is None and percent is None:
+        try:
+            number = float(text.split()[0])
+        except (TypeError, ValueError):
+            return None, None
+        if number < 0:
+            rssi = number
+        else:
+            percent = number
+    return percent, rssi
+
+
+def snapshot_has_weak_radio(snapshot: Dict[str, Any]) -> bool:
+    """Chronically slow PHY or weak RSSI/signal — adapter may still be associated."""
+    mbps = snapshot_link_mbps(snapshot)
+    if 0 < mbps < WIFI_WEAK_LINK_MBPS:
+        return True
+    percent, rssi = parse_wifi_signal(snapshot.get("signal") if isinstance(snapshot, dict) else "")
+    if percent is not None and 0 <= percent < WIFI_WEAK_SIGNAL_PCT:
+        return True
+    if rssi is not None and rssi <= WIFI_WEAK_RSSI_DBM:
+        return True
+    return False
+
+
+def normalize_wlan_state(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def is_wlan_connected_state(state: str) -> bool:
+    return normalize_wlan_state(state) in WLAN_CONNECTED_STATES
+
+
+def is_wlan_down_state(state: str) -> bool:
+    return normalize_wlan_state(state) in WLAN_DOWN_STATES
+
+
+def is_wlan_associating_state(state: str) -> bool:
+    return normalize_wlan_state(state) in WLAN_ASSOCIATING_STATES
+
+
+def is_genuine_link_loss(snapshot: Dict[str, Any]) -> bool:
+    """
+    True only when association is actually gone.
+
+    Empty SSID while the adapter is still Up with a usable PHY rate is a
+    netsh/parse gap (common on MT7921 / localized netsh), NOT link_loss.
+    """
+    if not snapshot.get("is_up"):
+        return False
+    ssid = str(snapshot.get("ssid") or "").strip()
+    state = normalize_wlan_state(snapshot.get("state"))
+    mbps = snapshot_link_mbps(snapshot)
+    flagged = bool(snapshot.get("link_loss"))
+
+    if is_wlan_down_state(state):
+        return True
+    if is_wlan_associating_state(state) and not ssid:
+        return True
+    if flagged and not ssid and mbps <= 0:
+        return True
+    if (
+        not ssid
+        and state
+        and not is_wlan_connected_state(state)
+        and mbps <= 0
+        and (is_wlan_down_state(state) or is_wlan_associating_state(state))
+    ):
+        return True
+    return False
+
+
+def resolve_overlay_wifi_status(
+    detect: Optional[Dict[str, Any]] = None,
+    last_report: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Cause token for the Ping overlay.
+
+    Priority (when both weak radio AND flap/loss are present, the higher row wins):
+      1. ping_ms > 0 → format_ping_overlay_text always keeps the number;
+         this token only adds a weak hint (weak_link) or is ignored for drops.
+      2. No ping + active reconnect flap / adapter Down / genuine link loss → rớt
+      3. No ping + adapter still Up/associated, low Mbps or weak RSSI → weak_link
+         (timeout/missing wording, not rớt)
+      4. No Wi-Fi override → timeout / DNS / ms
+    A stale last_wifi_drop_report must not keep showing rớt after the current
+    snapshot is a connected weak link (or healthy).
+    """
+    det = detect or {}
+    if det.get("is_wifi"):
+        cause = str(det.get("cause") or "").strip().lower()
+        if cause in WIFI_OVERLAY_DROP_CAUSES:
+            return cause
+        if cause in WIFI_OVERLAY_WEAK_CAUSES:
+            return "weak_link"
+        if det.get("is_up") and snapshot_has_weak_radio(det) and not is_genuine_link_loss(det):
+            return "weak_link"
+        return ""
+    report = last_report or {}
+    rcause = str(report.get("cause") or "").strip().lower()
+    if rcause in WIFI_OVERLAY_DROP_CAUSES or rcause in WIFI_OVERLAY_WEAK_CAUSES:
+        return rcause
+    return ""
 
 
 def parse_link_mbps(value: Any) -> float:
@@ -169,8 +344,18 @@ def classify_wifi_cause(
     health: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str]:
     """
-    Nguyên nhân chính (tiếng Việt).
-    Ưu tiên: adapter_down → reconnect_loop → link_loss → weak_link → gateway → DNS → TCP.
+    Nguyên nhân chính (tiếng Việt) — cùng thứ tự với badge Ping overlay:
+
+      1. adapter_down          → rớt khi không đo được ping (card không Up)
+      2. reconnect_loop        → rớt khi không đo được ping (Up↔Down / WLAN flap)
+      3. genuine link_loss     → rớt khi không đo được ping (association thật sự mất)
+      4. weak_link             → yếu (adapter vẫn Up/kết nối, Mbps thấp / RSSI yếu).
+                                 Có ping → hiện số ms + gợi ý yếu; không ping → timeout,
+                                 không gọi là rớt.
+      5. gateway / DNS / TCP   → timeout/DNS/mất như cũ
+      6. ok
+
+    Khi vừa yếu vừa đang flap: bước 2/3 thắng (rớt nếu mất ping). Chỉ yếu, không flap: yếu.
     """
     health = health or {}
     issues = list(health.get("issues") or [])
@@ -180,9 +365,6 @@ def classify_wifi_cause(
     conn = checks.get("connectivity") or {}
 
     is_up = bool(snapshot.get("is_up"))
-    ssid = str(snapshot.get("ssid") or "").strip()
-    state = str(snapshot.get("state") or "").strip().lower()
-    link_mbps = float(snapshot.get("link_mbps") or -1)
     flaps = int(snapshot.get("status_flaps") or 0)
     wlan_flaps = int(snapshot.get("wlan_flaps") or 0)
 
@@ -190,13 +372,9 @@ def classify_wifi_cause(
         cause = "adapter_down"
     elif flaps >= MIN_STATUS_FLAPS or wlan_flaps >= MIN_WLAN_EVENTS:
         cause = "reconnect_loop"
-    elif is_up and (
-        state in ("disconnected", "disconnecting", "authenticating")
-        or (not ssid and state not in ("", "connected"))
-        or snapshot.get("link_loss")
-    ):
+    elif is_genuine_link_loss(snapshot):
         cause = "link_loss"
-    elif is_up and 0 < link_mbps < WIFI_WEAK_LINK_MBPS:
+    elif is_up and snapshot_has_weak_radio(snapshot):
         cause = "weak_link"
     elif "no_gateway" in issues or gateway.get("ok") is False:
         cause = "no_gateway"
@@ -234,7 +412,7 @@ def parse_netadapter_payload(raw: Any) -> List[Dict[str, Any]]:
 
 
 def parse_wlan_interfaces(text: str) -> Dict[str, Any]:
-    """Parse `netsh wlan show interfaces`."""
+    """Parse `netsh wlan show interfaces` (English + Vietnamese keys)."""
     info: Dict[str, Any] = {
         "name": "",
         "ssid": "",
@@ -252,17 +430,23 @@ def parse_wlan_interfaces(text: str) -> Dict[str, Any]:
         key, _, val = line.partition(":")
         key_n = key.strip().lower()
         val = val.strip()
-        if key_n == "name" and not info["name"]:
+        if key_n in ("name", "tên", "ten") and not info["name"]:
             info["name"] = val
-        elif key_n == "description":
+        elif key_n in ("description", "mô tả", "mo ta"):
             info["description"] = val
         elif key_n == "ssid":
             info["ssid"] = val
-        elif key_n == "state":
+        elif key_n in ("state", "trạng thái", "trang thai"):
             info["state"] = val.lower()
-        elif "receive rate" in key_n:
-            info["rx_mbps"] = parse_link_mbps(val if not val.replace(".", "", 1).isdigit() else f"{val} Mbps")
-        elif key_n == "signal":
+        elif (
+            "receive rate" in key_n
+            or "tốc độ nhận" in key_n
+            or "toc do nhan" in key_n
+        ):
+            info["rx_mbps"] = parse_link_mbps(
+                val if not val.replace(".", "", 1).isdigit() else f"{val} Mbps"
+            )
+        elif key_n in ("signal", "tín hiệu", "tin hieu"):
             info["signal"] = val
     return info
 
@@ -278,6 +462,20 @@ def parse_dns_servers(text: str) -> List[str]:
             continue
         found.append(ip)
     return found
+
+
+def _prefer_wifi_adapter(wifi_rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Prefer an Up Wi-Fi NIC with a usable link rate over a disconnected/virtual one."""
+    if not wifi_rows:
+        return {}
+
+    def _score(row: Dict[str, Any]) -> Tuple[int, float]:
+        status = str(row.get("Status") or row.get("status") or "").lower()
+        up = 1 if status in ("up", "connected") else 0
+        speed = parse_link_mbps(row.get("LinkSpeed") if "LinkSpeed" in row else row.get("link_speed"))
+        return (up, speed if speed > 0 else 0.0)
+
+    return max(wifi_rows, key=_score)
 
 
 class WifiRecovery:
@@ -422,7 +620,7 @@ class WifiRecovery:
             if looks_like_wifi_name(name, desc):
                 wifi_rows.append(row)
 
-        chosen = wifi_rows[0] if wifi_rows else {}
+        chosen = _prefer_wifi_adapter(wifi_rows)
         name = str(chosen.get("Name") or chosen.get("name") or "")
         desc = str(chosen.get("InterfaceDescription") or chosen.get("description") or "")
         status = str(chosen.get("Status") or chosen.get("status") or "").lower()
@@ -437,13 +635,17 @@ class WifiRecovery:
         if wlan.get("description") and not desc:
             desc = wlan["description"]
         ssid = str(wlan.get("ssid") or "")
+        wlan_has_info = bool(wlan.get("ssid") or wlan.get("state"))
         state = str(wlan.get("state") or status)
         if wlan.get("rx_mbps", -1) > 0:
             link_mbps = float(wlan["rx_mbps"])
-        if state in ("connected",):
-            is_up = True
-        elif state in ("disconnected", "disconnecting"):
-            is_up = False
+        # Only trust netsh state when it actually parsed; empty netsh must not
+        # flip an Up adapter into "disconnected" (that used to become link_loss → rớt).
+        if wlan_has_info:
+            if is_wlan_connected_state(wlan.get("state")):
+                is_up = True
+            elif is_wlan_down_state(wlan.get("state")):
+                is_up = False
 
         dns_servers: List[str] = []
         if dns_text is not None:
@@ -461,10 +663,13 @@ class WifiRecovery:
         cls.record_status(is_up, now=now_ts)
         status_flaps = count_status_flaps(cls._status_history, now=now_ts)
         wlan_flaps = count_wlan_auth_flaps(event_text or "")
-        link_loss = bool(is_up and not ssid and state in ("disconnected", "disconnecting", "authenticating"))
-        if is_up and state == "disconnected":
-            link_loss = True
-            is_up = False
+        link_loss = is_genuine_link_loss({
+            "is_up": is_up,
+            "ssid": ssid,
+            "state": state,
+            "link_mbps": link_mbps,
+            "link_loss": False,
+        })
 
         location_lock = get_location_lock_status()
         location_blocked = bool(wlan.get("location_blocked")) or looks_like_location_permission_error(
@@ -519,6 +724,7 @@ class WifiRecovery:
                 "unstable": False,
                 "cause": "ok",
                 "cause_label": CAUSE_LABELS["ok"],
+                "overlay": "",
             })
             cls.last_detect = snap
             return snap
@@ -545,9 +751,34 @@ class WifiRecovery:
             weak_with_pain = False
         snap["cause"] = cause
         snap["cause_label"] = label
+        snap["overlay"] = overlay_word_for_cause(cause)
         snap["unstable"] = bool(loop_like or weak_with_pain)
+        prev = cls.last_detect or {}
+        if prev.get("cause") != cause or prev.get("overlay") != snap["overlay"]:
+            logger.info(
+                f"[WifiRecovery] detect cause={cause} overlay={snap['overlay'] or '-'} "
+                f"unstable={snap['unstable']} link_mbps={snap.get('link_mbps')} "
+                f"ssid={snap.get('ssid') or '-'} flaps={flaps}/{wlan_flaps}"
+            )
         cls.last_detect = snap
         return snap
+
+    @classmethod
+    def overlay_wifi_status(cls, last_report: Optional[Dict[str, Any]] = None) -> str:
+        """Cause token currently shown on the Ping overlay (matches cause= logs)."""
+        report = last_report
+        if report is None:
+            report = cls.last_wifi_drop_report or None
+            try:
+                from core.network_optimizer import NetworkOptimizer
+                report = (
+                    report
+                    or getattr(NetworkOptimizer, "last_wifi_drop_report", None)
+                    or getattr(NetworkOptimizer, "last_missing_ping_report", None)
+                )
+            except Exception:
+                pass
+        return resolve_overlay_wifi_status(cls.last_detect, report)
 
     @classmethod
     def renew_dhcp(cls, adapter_name: str) -> Dict[str, Any]:
@@ -814,6 +1045,7 @@ class WifiRecovery:
         cause, cause_label = classify_wifi_cause(snap, health)
         snap["cause"] = cause
         snap["cause_label"] = cause_label
+        snap["overlay"] = overlay_word_for_cause(cause)
         sticky = cause in ("reconnect_loop", "weak_link", "link_loss")
         ping_before = float(((health.get("checks") or {}).get("ping") or {}).get("ping_ms") or -1)
         steps: List[Dict[str, Any]] = []
@@ -824,6 +1056,7 @@ class WifiRecovery:
         stopped_at = ""
         adapter = str(snap.get("name") or "")
         ssid = str(snap.get("ssid") or "")
+        overlay = snap["overlay"]
         if needs_location_unlock:
             # Never silently edit GPO / ConsentStore on a Wi-Fi flap — user must click the button.
             skipped.append(
@@ -843,6 +1076,7 @@ class WifiRecovery:
                 "reason": reason,
                 "cause": cause,
                 "cause_label": cause_label,
+                "overlay": overlay,
                 "applied_summary": applied,
                 "message": msg,
                 "issues": list(health.get("issues") or []) + (["wifi_unstable"] if snap.get("unstable") else []),
@@ -925,11 +1159,31 @@ class WifiRecovery:
             skipped.append("Không đổi DNS — không phải AdGuard/DNS lọc. Dùng «Đổi DNS Siêu Tốc» nếu cần.")
 
         # 4. Reconnect cùng SSID (không bật-tắt NIC)
-        if cause in ("reconnect_loop", "link_loss", "adapter_down", "weak_link"):
+        # Connected + chronically weak (no flap) → do not disconnect; that
+        # would turn "yếu" into a real drop and the overlay would show rớt.
+        flaps = int(snap.get("status_flaps") or 0)
+        wlan_flaps = int(snap.get("wlan_flaps") or 0)
+        connected_weak_only = (
+            cause == "weak_link"
+            and bool(snap.get("is_up"))
+            and bool(str(snap.get("ssid") or "").strip())
+            and flaps < MIN_STATUS_FLAPS
+            and wlan_flaps < MIN_WLAN_EVENTS
+        )
+        if cause in ("reconnect_loop", "link_loss", "adapter_down"):
             recon = cls.reconnect_wifi_profile(ssid, adapter_name=adapter, now=clock_fn())
             steps.append(recon)
             if recon.get("location_blocked") or recon.get("location_gpo_locked"):
                 needs_location_unlock = True
+        elif cause == "weak_link" and not connected_weak_only:
+            recon = cls.reconnect_wifi_profile(ssid, adapter_name=adapter, now=clock_fn())
+            steps.append(recon)
+            if recon.get("location_blocked") or recon.get("location_gpo_locked"):
+                needs_location_unlock = True
+        elif cause == "weak_link":
+            skipped.append(
+                "Không reconnect SSID — adapter vẫn Up/kết nối, chỉ yếu (tránh tự làm rớt)."
+            )
         else:
             skipped.append("Không reconnect SSID vì không phải mất link / vòng reconnect.")
 
@@ -976,7 +1230,10 @@ class WifiRecovery:
             else:
                 confirm = " Nếu vẫn rớt, kiểm tra router / kênh Wi-Fi — ứng dụng không tắt-bật card."
             msg = f"Nguyên nhân: {cause_label}. Đã sửa: {applied}. Wi-Fi chưa ổn định hẳn.{confirm}"
-        logger.info(f"[WifiRecovery] wifi-drop repair recovered={recovered} ping_after={ping_after} cause={cause}")
+        logger.info(
+            f"[WifiRecovery] wifi-drop repair recovered={recovered} ping_after={ping_after} "
+            f"cause={cause} overlay={overlay or overlay_word_for_cause(cause)}"
+        )
         return _pack(ping_after, recovered, True, "wifi_drop", msg)
 
     @staticmethod
