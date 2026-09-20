@@ -7,10 +7,14 @@ from typing import Dict, Any, Optional
 
 # Gemini 2.5 Flash 404s for many new AI Studio keys (Sep 2026). Never persist it.
 DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
-DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_OLLAMA_MODEL = "qwen2.5:3b"
-COPILOT_PROVIDERS = ("auto", "gemini", "ollama")
-_OLLAMA_MODEL_ID_RE = re.compile(r"[A-Za-z0-9._:/-]+")
+COPILOT_PROVIDERS = ("auto", "gemini")
+# Dropped Ollama / Hybrid-local keys — never re-save them.
+RETIRED_COPILOT_KEYS = frozenset({
+    "ai_copilot_ollama_base_url",
+    "ai_copilot_ollama_model",
+    "ai_copilot_ollama_host",
+    "ai_copilot_ollama_enabled",
+})
 RETIRED_GEMINI_MODELS = frozenset({
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
@@ -36,7 +40,7 @@ def canonicalize_gemini_model(model: Optional[str]) -> str:
 
 
 def canonicalize_copilot_provider(value: Optional[str]) -> str:
-    """Persistable Copilot backend: auto | gemini | ollama."""
+    """Persistable Copilot backend: auto | gemini (retired Ollama aliases → auto)."""
     raw = str(value or "").strip().lower()
     aliases = {
         "tu dong": "auto",
@@ -46,38 +50,15 @@ def canonicalize_copilot_provider(value: Optional[str]) -> str:
         "google": "gemini",
         "cloud": "gemini",
         "online": "gemini",
-        "local": "ollama",
-        "offline": "ollama",
-        "localhost": "ollama",
+        "ollama": "auto",
+        "local": "auto",
+        "offline": "auto",
+        "localhost": "auto",
     }
     raw = aliases.get(raw, raw)
     if raw in COPILOT_PROVIDERS:
         return raw
     return "auto"
-
-
-def canonicalize_ollama_base_url(url: Optional[str]) -> str:
-    """Allow only http(s) Ollama endpoints; default to localhost."""
-    raw = str(url or "").strip()
-    if not raw:
-        return DEFAULT_OLLAMA_BASE_URL
-    raw = raw.rstrip("/")
-    lowered = raw.lower()
-    if lowered.startswith("http://") or lowered.startswith("https://"):
-        return raw
-    return DEFAULT_OLLAMA_BASE_URL
-
-
-def canonicalize_ollama_model(model: Optional[str]) -> str:
-    """Sanitize a local Ollama model tag (e.g. qwen2.5:3b)."""
-    raw = str(model or "").strip()
-    if raw.lower().startswith("ollama run "):
-        raw = raw[11:].strip()
-    if raw.lower().startswith("ollama pull "):
-        raw = raw[12:].strip()
-    if not raw or not _OLLAMA_MODEL_ID_RE.fullmatch(raw):
-        return DEFAULT_OLLAMA_MODEL
-    return raw
 
 
 DEFAULT_CONFIG = {
@@ -139,8 +120,6 @@ DEFAULT_CONFIG = {
     "ai_copilot_cloud_enabled": False,
     "ai_copilot_provider": "auto",
     "ai_copilot_gemini_model": DEFAULT_GEMINI_MODEL,
-    "ai_copilot_ollama_base_url": DEFAULT_OLLAMA_BASE_URL,
-    "ai_copilot_ollama_model": DEFAULT_OLLAMA_MODEL,
     "ai_autopilot_enabled": True,
     "ai_autopilot_mode": "auto",
     "companion_enabled": True,
@@ -265,6 +244,7 @@ class ConfigManager:
         self._load_secrets()
         self._migrate_secrets_from_config()
         self._migrate_retired_gemini_model()
+        self._migrate_retired_copilot_keys()
 
     def _sanitize_gemini_model_in(self, data: Dict[str, Any]) -> bool:
         """Coerce retired Gemini ids so dist/AppData config can never re-save 2.5-flash."""
@@ -292,6 +272,34 @@ class ConfigManager:
         if disk_stale:
             self.save_config()
 
+    def _strip_retired_copilot_keys(self, data: Dict[str, Any]) -> bool:
+        """Drop Ollama Hybrid keys and coerce retired provider ids to auto/gemini."""
+        dirty = False
+        for key in RETIRED_COPILOT_KEYS:
+            if key in data:
+                data.pop(key, None)
+                dirty = True
+        if "ai_copilot_provider" in data:
+            fixed = canonicalize_copilot_provider(data.get("ai_copilot_provider"))
+            if data.get("ai_copilot_provider") != fixed:
+                data["ai_copilot_provider"] = fixed
+                dirty = True
+        return dirty
+
+    def _migrate_retired_copilot_keys(self) -> None:
+        """Rewrite dist/AppData config if it still stores Ollama Hybrid fields."""
+        dirty = self._strip_retired_copilot_keys(self.config)
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    disk = json.load(f)
+                if isinstance(disk, dict) and self._strip_retired_copilot_keys(disk):
+                    dirty = True
+            except Exception:
+                pass
+        if dirty:
+            self.save_config()
+
     def load_config(self) -> Dict[str, Any]:
         """Tải cấu hình với cơ chế Deep Merge để bảo toàn mọi thiết lập cũ."""
         merged = copy.deepcopy(DEFAULT_CONFIG)
@@ -304,6 +312,7 @@ class ConfigManager:
             except Exception as e:
                 print(f"[ConfigManager] Lỗi khi đọc file cấu hình: {e}")
         self._sanitize_gemini_model_in(merged)
+        self._strip_retired_copilot_keys(merged)
         return merged
 
     def save_config(self) -> bool:
@@ -314,10 +323,12 @@ class ConfigManager:
                 os.makedirs(parent_dir, exist_ok=True)
 
             self._sanitize_gemini_model_in(self.config)
+            self._strip_retired_copilot_keys(self.config)
             to_write = copy.deepcopy(self.config)
             for k in SECRET_KEYS:
                 to_write.pop(k, None)
             self._sanitize_gemini_model_in(to_write)
+            self._strip_retired_copilot_keys(to_write)
 
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(to_write, f, indent=4, ensure_ascii=False)
@@ -388,14 +399,15 @@ class ConfigManager:
                 self.config.pop(key, None)
                 self.save_config()
             return
+        if key in RETIRED_COPILOT_KEYS:
+            if key in self.config:
+                self.config.pop(key, None)
+                self.save_config()
+            return
         if key == "ai_copilot_gemini_model":
             value = canonicalize_gemini_model(value)
         elif key == "ai_copilot_provider":
             value = canonicalize_copilot_provider(value)
-        elif key == "ai_copilot_ollama_base_url":
-            value = canonicalize_ollama_base_url(value)
-        elif key == "ai_copilot_ollama_model":
-            value = canonicalize_ollama_model(value)
         self.config[key] = value
         self.save_config()
 

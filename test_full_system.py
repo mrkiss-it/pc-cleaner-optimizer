@@ -1087,7 +1087,7 @@ print(" [PASS] 42. On-Screen HUD Toast Notifications: Floating Acrylic Frame, An
 # ==============================================================================
 print("\n[TEST 43] Kiem tra AI Copilot & AI Health Score (0-100) & Auto-Pilot Engine...")
 
-from core.ai_copilot import AICopilotEngine, ChatMessage, CopilotAction, TelemetryCollector, OfflineExpertBrain, CloudAIBrain, OllamaAIBrain
+from core.ai_copilot import AICopilotEngine, ChatMessage, CopilotAction, TelemetryCollector, OfflineExpertBrain, CloudAIBrain
 from core.predictive_ai import AIHealthReport, AutoPilotState, MODE_GAMING, MODE_ECO, MODE_WORK, MODE_BALANCED, HabitLearner
 from ui.ai_copilot_widget import AICopilotWidget, ChatBubbleWidget
 from ui.ai_advisor_dialog import AIAdvisorDialog
@@ -1235,20 +1235,20 @@ assert save_cfg.saves == 1, "Khong duoc ghi config.json lai o moi mau 800ms"
 # H. Cloud Gemini: Flash alias + header key, khong dung 1.5 da shut down
 import inspect
 from core.ai_copilot import DEFAULT_GEMINI_MODEL, GEMINI_FALLBACK_MODELS, parse_gemini_error_message, format_gemini_http_error, gemini_http_should_fallback
-from config_manager import DEFAULT_CONFIG as _DEFAULT_CFG, DEFAULT_OLLAMA_BASE_URL as _OLLAMA_URL, DEFAULT_OLLAMA_MODEL as _OLLAMA_MODEL
+from config_manager import DEFAULT_CONFIG as _DEFAULT_CFG, RETIRED_COPILOT_KEYS as _RETIRED_COPILOT
 gemini_src = inspect.getsource(CloudAIBrain.query_gemini)
 assert "models/{candidate}:generateContent" in gemini_src or "models/{model}:generateContent" in gemini_src
 assert "models/gemini-1.5" not in gemini_src, "Khong duoc goi model Gemini 1.5 da shut down"
 assert DEFAULT_GEMINI_MODEL == "gemini-flash-latest"
 assert _DEFAULT_CFG.get("ai_copilot_gemini_model") == "gemini-flash-latest"
 assert _DEFAULT_CFG.get("ai_copilot_provider") == "auto"
-assert _DEFAULT_CFG.get("ai_copilot_ollama_base_url") == _OLLAMA_URL
-assert _DEFAULT_CFG.get("ai_copilot_ollama_model") == _OLLAMA_MODEL
-assert _OLLAMA_URL.startswith("http://127.0.0.1:11434")
-assert _OLLAMA_MODEL in ("qwen2.5:3b", "llama3.2:3b") or _OLLAMA_MODEL.endswith(":3b")
+assert "ai_copilot_ollama_base_url" not in _DEFAULT_CFG
+assert "ai_copilot_ollama_model" not in _DEFAULT_CFG
+for _rk in _RETIRED_COPILOT:
+    assert _rk not in _DEFAULT_CFG
 assert _DEFAULT_CFG.get("companion_enabled") is True
 assert _DEFAULT_CFG.get("companion_may_propose_actions") is True
-assert "extra_context" in gemini_src, "Gemini/Ollama chia se extra_context cho nhat ky dong hanh"
+assert "extra_context" in gemini_src, "Gemini nhan extra_context cho nhat ky dong hanh"
 assert GEMINI_FALLBACK_MODELS == (
     "gemini-flash-latest",
     "gemini-3.1-flash-lite",
@@ -1259,10 +1259,16 @@ assert "?key=" not in gemini_src, "API key khong duoc gan vao query string"
 assert "x-goog-api-key" in gemini_src, "API key phai gui qua header x-goog-api-key"
 assert "gemini_http_should_fallback" in gemini_src, "HTTP 404/429/503 phai di tiep model fallback"
 assert "Không tìm thấy mô hình Gemini" in gemini_src or "Không tìm thấy mô hình Gemini" in inspect.getsource(CloudAIBrain)
-ollama_src = inspect.getsource(OllamaAIBrain.query)
-assert "/api/chat" in ollama_src
-assert "127.0.0.1:11434" in inspect.getsource(OllamaAIBrain) or "11434" in ollama_src
-assert "/api/tags" in inspect.getsource(OllamaAIBrain.list_models)
+import core.ai_copilot as _copilot_mod
+assert not hasattr(_copilot_mod, "OllamaAIBrain")
+_copilot_file = inspect.getsource(_copilot_mod)
+assert "127.0.0.1:11434" not in _copilot_file
+assert "/api/tags" not in _copilot_file
+assert "ollama.com" not in _copilot_file
+assert "ollama pull" not in _copilot_file
+welcome_txt = copilot.chat_history[0].content
+assert "Ollama" not in welcome_txt
+assert "Gemini" in welcome_txt
 
 # Parsed Google error.message, not truncated raw JSON
 _raw_404 = (
@@ -1398,7 +1404,8 @@ class _CloudCfg:
         return default
 cloud_copilot = AICopilotEngine(config_manager=_CloudCfg(), predictive_engine=pred_engine)
 cloud_msg = cloud_copilot.ask("Kham suc khoe")
-assert "Cloud Gemini lỗi" in cloud_msg.content or "Cloud Gemini" in cloud_msg.content
+assert "API key" in cloud_msg.content or "cần mạng" in cloud_msg.content.lower()
+assert "Gemini" in cloud_msg.content
 assert "Offline" in cloud_msg.content or "Hồ Sơ" in cloud_msg.content or "sức khỏe" in cloud_msg.content.lower() or "RAM" in cloud_msg.content
 
 # C. Secrets never land in tracked config.json
@@ -1676,18 +1683,18 @@ assert len(_urls_403) == 1
 assert "Permission denied" in CloudAIBrain.last_error
 assert "quá tải trên mọi model" not in CloudAIBrain.last_error
 
-# API config dialog exposes Gemini model combo + Hybrid provider / Ollama fields
+# API config dialog exposes Gemini model combo + Auto/Gemini provider (no Ollama)
 _api_dlg = _APICfgDlg(config_manager=win.config_manager)
 assert hasattr(_api_dlg, "combo_model"), "APIConfigDialog phai co combo chon model Gemini"
-assert hasattr(_api_dlg, "combo_provider"), "APIConfigDialog phai co combo nha cung cap Tự động/Gemini/Ollama"
-assert hasattr(_api_dlg, "txt_ollama_url"), "APIConfigDialog phai co Ollama base URL"
-assert hasattr(_api_dlg, "txt_ollama_model"), "APIConfigDialog phai co ten model Ollama"
+assert hasattr(_api_dlg, "combo_provider"), "APIConfigDialog phai co combo nha cung cap Tự động/Gemini"
+assert not hasattr(_api_dlg, "txt_ollama_url"), "APIConfigDialog khong con Ollama URL"
+assert not hasattr(_api_dlg, "txt_ollama_model"), "APIConfigDialog khong con ten model Ollama"
 combo_items = [_api_dlg.combo_model.itemText(i) for i in range(_api_dlg.combo_model.count())]
 assert "gemini-flash-latest" in combo_items
 assert "gemini-3.1-flash-lite" in combo_items
 prov_items = [_api_dlg.combo_provider.itemText(i) for i in range(_api_dlg.combo_provider.count())]
 assert any("Tự động" in t for t in prov_items)
-assert any("Ollama" in t for t in prov_items)
+assert not any("Ollama" in t for t in prov_items)
 assert any("Gemini" in t for t in prov_items)
 assert "Pro" not in _api_dlg.windowTitle()
 from app_meta import APP_NAME as _DLG_APP

@@ -72,7 +72,7 @@ Cài lại giữa hai lần. Kiểm **cả hai lối**.
 ## 6. Tùy chọn / Optional (không chặn phát hành)
 
 - [ ] Có Gemini API key (Copilot) → chat chạy, không crash
-- [ ] Copilot Hybrid: Cấu Hình AI chọn **Tự động / Gemini / Ollama**; Ollama localhost trả lời khi daemon + model sẵn sàng; nếu chưa cài / chưa `ollama pull qwen2.5:3b` thì hiện hướng dẫn tiếng Việt (không bịa câu trả lời)
+- [ ] Copilot: Cấu Hình AI chọn **Tự động / Gemini**; Gemini online khi có mạng + API key; nếu mất mạng / chưa có key thì hiện hướng dẫn tiếng Việt (cần mạng / API key) — không bịa câu trả lời LLM
 - [ ] Wi-Fi yếu → thẻ/tip **Ổn định Wi-Fi** hiện; toast **không spam** (cooldown ~30 phút)
 - [ ] **Nhiệt laptop**: dashboard / Pin & Phần cứng hiện số khi có cảm biến; empty-state tiếng Việt nếu không (không bịa °C); Settings có ngưỡng ~90°C
 - [ ] Dashboard **Trước thi / họp**: bật → badge ĐANG TẬP TRUNG; tắt → khôi phục. Không đổi DNS/Wi-Fi

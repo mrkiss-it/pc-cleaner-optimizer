@@ -95,6 +95,14 @@ Một nút trên **Bảng Điều Khiển** (và khay hệ thống) để chuẩ
 
 ---
 
+### 3c. 🤖 AI Copilot (Google Gemini) & AI đồng hành
+
+- **Copilot** dùng **Google Gemini** khi có mạng và API key (Cấu Hình AI).
+- Nếu Gemini không dùng được (mất mạng / chưa có key), app **nói thật** — cần mạng / API key — rồi dùng Offline Expert Brain. Không bịa câu trả lời LLM.
+- **AI đồng hành**: nhật ký / giai đoạn / kỹ năng / sổ tay **local trên máy này**, tiêm vào prompt Gemini qua `extra_context`. Copilot hiện giai đoạn 0→3 tiếng Việt. Settings có **Phản tỉnh / Viết sổ tay** và xem/xóa bộ nhớ (có xác nhận). Cài mới hiện empty-state — không bịa kỷ niệm, không phải AGI, không tự huấn luyện mô hình.
+
+---
+
 ### 4. 🌐 Network Optimizer & Parallel DNS Benchmark (Tối Ưu Mạng & DNS)
 - **Đo tốc độ DNS song song (Parallel Benchmark)**: Kiểm tra đồng thời độ trễ (latency ms) của các DNS hàng đầu thế giới:
   - 🚀 Cloudflare DNS (`1.1.1.1`)
@@ -355,6 +363,9 @@ Bộ kiểm thử tự động (không thay thế smoke-test trên Windows):
 
 ```bash
 python test_full_system.py
+python test_companion_ai.py
+python test_copilot_gemini.py
+python test_gemini_http_fallback.py
 python test_update_checker.py
 python test_update_installer.py
 python test_setup_wizard.py

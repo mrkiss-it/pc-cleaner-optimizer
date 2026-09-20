@@ -3,12 +3,9 @@ core/ai_copilot.py – Interactive AI System Copilot & Doctor Engine
 ==================================================================
 Trợ lý AI tương tác thông minh cho PC Auto Cleaner & Optimizer:
   - Tự động trích xuất telemetry phần cứng thời gian thực (CPU, RAM, Ổ C, Ping, Pin, Tiến trình).
-  - Kiến trúc Hybrid:
-      1. Google Gemini (online) khi có mạng + API key; HTTP 404/429/503 thử model kế tiếp.
-      2. Ollama localhost (offline) khi chọn local, hoặc khi Gemini không tới được.
-      3. Offline Expert Brain: suy luận chuyên gia máy tính, siêu tốc, 100% riêng tư.
-  - Không bịa câu trả lời LLM: nếu Ollama chưa cài / chưa kéo model thì hướng dẫn thật.
-  - Extension point: extra_context / extra_context_provider khi dựng prompt (companion sau này).
+  - Google Gemini (online) khi có mạng + API key; HTTP 404/429/503 thử model kế tiếp.
+  - Offline Expert Brain khi Gemini không dùng được — nói thật (cần mạng / API key), không bịa LLM.
+  - Extension point: extra_context / extra_context_provider (nhật ký đồng hành, giai đoạn, kỹ năng).
   - Sinh các nút tương tác 1-Click Actionable Buttons trực tiếp trong câu trả lời.
 """
 from __future__ import annotations
@@ -33,12 +30,8 @@ from core.predictive_ai import (
 )
 from config_manager import (
     DEFAULT_GEMINI_MODEL,
-    DEFAULT_OLLAMA_BASE_URL,
-    DEFAULT_OLLAMA_MODEL,
     canonicalize_copilot_provider,
     canonicalize_gemini_model,
-    canonicalize_ollama_base_url,
-    canonicalize_ollama_model,
 )
 
 # Gemini 2.5 Flash returns HTTP 404 for many new AI Studio keys (Sep 2026).
@@ -61,9 +54,10 @@ GEMINI_KNOWN_MODELS = (
 )
 _GEMINI_MODEL_RE = re.compile(r"[A-Za-z0-9._-]+")
 _GEMINI_ERROR_MSG_MAX = 240
-OLLAMA_SUGGESTED_MODELS = ("qwen2.5:3b", "llama3.2:3b")
-OLLAMA_INSTALL_URL = "https://ollama.com"
-_OLLAMA_ERROR_MSG_MAX = 240
+GEMINI_NEEDS_NETWORK_MSG = (
+    "Copilot dùng Google Gemini (online) — cần mạng internet và API key. "
+    "Ứng dụng không bịa câu trả lời LLM khi Gemini không dùng được."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +89,7 @@ class ChatMessage:
     timestamp: float = field(default_factory=time.time)
     actions: List[CopilotAction] = field(default_factory=list)
     telemetry_badge: Optional[str] = None
-    source: str = "offline_expert"   # "offline_expert" | "cloud_gemini" | "local_ollama"
+    source: str = "offline_expert"   # "offline_expert" | "cloud_gemini"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -671,12 +665,12 @@ def copilot_system_instruction(
     health_report: Optional[AIHealthReport] = None,
     extra_context: Optional[Any] = None,
 ) -> str:
-    """Shared Vietnamese system prompt for Gemini and Ollama, using APP_NAME.
+    """Vietnamese system prompt for Gemini, using APP_NAME.
 
-    ``extra_context`` is an extension point for later layers (companion diary,
-    maturity stage, skills, reflection notes): a string, list of strings, or
-    the already-normalized list from :func:`collect_extra_prompt_context`.
-    Empty/None is a no-op so Hybrid routing stays unchanged.
+    ``extra_context`` is an extension point for companion diary, maturity stage,
+    skills, and reflection notes: a string, list of strings, or the already-
+    normalized list from :func:`collect_extra_prompt_context`. Empty/None is a
+    no-op so Gemini routing stays unchanged.
     """
     ram = telemetry.get("ram", {}) if isinstance(telemetry, dict) else {}
     cpu = telemetry.get("cpu", {}) if isinstance(telemetry, dict) else {}
@@ -767,8 +761,9 @@ def collect_extra_prompt_context(
 
 def resolve_copilot_provider(config_manager: Optional[Any] = None) -> str:
     """
-    Tự động | Gemini | Ollama.
+    Tự động | Gemini.
     Config cũ chỉ có ai_copilot_cloud_enabled=True (không có provider) → gemini.
+    Retired Ollama / Hybrid-local ids canonicalize to auto.
     """
     if config_manager is None:
         return "auto"
@@ -965,303 +960,6 @@ class CloudAIBrain:
 
 
 # ---------------------------------------------------------------------------
-# Local Ollama Brain (HTTP API on localhost — no bundled LLM binary)
-# ---------------------------------------------------------------------------
-
-def parse_ollama_error_message(body: str) -> str:
-    """Extract Ollama JSON error string (or a compact fallback) from an HTTP body."""
-    raw = (body or "").strip()
-    if not raw:
-        return ""
-    try:
-        data = json.loads(raw)
-    except Exception:
-        data = None
-    message = ""
-    if isinstance(data, dict):
-        err = data.get("error")
-        if isinstance(err, dict):
-            message = str(err.get("message") or err.get("error") or "").strip()
-        elif isinstance(err, str):
-            message = err.strip()
-        if not message:
-            message = str(data.get("message") or "").strip()
-    if not message:
-        message = re.sub(r"\s+", " ", raw)
-    message = re.sub(r"\s+", " ", message).strip()
-    if len(message) > _OLLAMA_ERROR_MSG_MAX:
-        message = message[: _OLLAMA_ERROR_MSG_MAX - 1].rstrip() + "…"
-    return message
-
-
-def format_ollama_not_running(base_url: str) -> str:
-    url = canonicalize_ollama_base_url(base_url)
-    return (
-        f"Không kết nối được Ollama tại {url}. "
-        f"Cài Ollama từ {OLLAMA_INSTALL_URL}, mở ứng dụng Ollama trên máy này, "
-        f"rồi tải một mô hình nhỏ: ollama pull {DEFAULT_OLLAMA_MODEL} "
-        f"(hoặc llama3.2:3b)."
-    )
-
-
-def format_ollama_no_model(model: str, available: Optional[List[str]] = None) -> str:
-    wanted = canonicalize_ollama_model(model)
-    extra = ""
-    names = [str(n).strip() for n in (available or []) if str(n).strip()]
-    if names:
-        shown = ", ".join(names[:6])
-        extra = f" Mô hình sẵn có: {shown}."
-    return (
-        f"Ollama đang chạy nhưng chưa có mô hình '{wanted}'.{extra} "
-        f"Chạy lệnh: ollama pull {wanted} "
-        f"(gợi ý nhỏ: {DEFAULT_OLLAMA_MODEL} hoặc llama3.2:3b)."
-    )
-
-
-def format_ollama_empty_library() -> str:
-    return (
-        "Ollama đang chạy nhưng chưa tải mô hình nào. "
-        f"Chạy lệnh: ollama pull {DEFAULT_OLLAMA_MODEL} "
-        f"(hoặc llama3.2:3b)."
-    )
-
-
-class OllamaAIBrain:
-    """Gọi mô hình ngôn ngữ cục bộ qua HTTP API của Ollama (127.0.0.1:11434)."""
-
-    last_error: str = ""
-    last_error_short: str = ""
-    last_working_model: str = ""
-    _down_until: float = 0.0
-    _down_base: str = ""
-
-    @classmethod
-    def query(
-        cls,
-        user_prompt: str,
-        telemetry: Dict[str, Any],
-        health_report: Optional[AIHealthReport] = None,
-        timeout: float = 45.0,
-        base_url: str = DEFAULT_OLLAMA_BASE_URL,
-        model: str = DEFAULT_OLLAMA_MODEL,
-        probe_timeout: float = 1.2,
-        extra_context: Optional[Any] = None,
-    ) -> Optional[str]:
-        cls.last_error = ""
-        cls.last_error_short = ""
-        cls.last_working_model = ""
-
-        base = canonicalize_ollama_base_url(base_url)
-        wanted = canonicalize_ollama_model(model)
-        now = time.time()
-        if cls._down_until > now and cls._down_base == base:
-            cls.last_error = format_ollama_not_running(base)
-            cls.last_error_short = "Không kết nối được Ollama trên máy này."
-            return None
-
-        available = cls.list_models(base, timeout=probe_timeout)
-        if available is None:
-            cls._down_until = now + 20.0
-            cls._down_base = base
-            cls.last_error = format_ollama_not_running(base)
-            cls.last_error_short = "Không kết nối được Ollama trên máy này."
-            return None
-        cls._down_until = 0.0
-        cls._down_base = ""
-        if not available:
-            cls.last_error = format_ollama_empty_library()
-            cls.last_error_short = "Ollama chưa có mô hình — hãy ollama pull qwen2.5:3b."
-            return None
-
-        name_set = {n.lower() for n in available}
-        if wanted.lower() not in name_set:
-            # Tags sometimes omit :latest; still try POST if a close match exists.
-            close = cls._match_available_model(wanted, available)
-            if close is None:
-                cls.last_error = format_ollama_no_model(wanted, available)
-                cls.last_error_short = f"Ollama chưa có mô hình {wanted}."
-                return None
-            wanted = close
-
-        system_instruction = copilot_system_instruction(
-            telemetry, health_report, extra_context=extra_context
-        )
-        payload_bytes = json.dumps({
-            "model": wanted,
-            "messages": [
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": user_prompt},
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.4,
-                "num_predict": 600,
-            },
-        }).encode("utf-8")
-
-        url = f"{base}/api/chat"
-        try:
-            req = urllib.request.Request(
-                url,
-                data=payload_bytes,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                raw = response.read().decode("utf-8")
-                status = int(getattr(response, "status", 200) or 200)
-                if status != 200:
-                    return cls._fail_http(status, raw, wanted, available, base)
-                return cls._parse_chat_payload(raw, wanted)
-        except urllib.error.HTTPError as e:
-            body = ""
-            try:
-                body = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            return cls._fail_http(int(e.code), body, wanted, available, base)
-        except urllib.error.URLError as e:
-            cls.last_error = format_ollama_not_running(base)
-            cls.last_error_short = "Không kết nối được Ollama trên máy này."
-            logger.debug(f"[OllamaAI] URLError: {e}")
-            return None
-        except TimeoutError:
-            cls.last_error = (
-                f"Ollama không trả lời kịp (timeout). Mô hình '{wanted}' có thể đang tải lần đầu — thử lại sau vài giây."
-            )
-            cls.last_error_short = "Ollama timeout — model có thể đang tải."
-            return None
-        except Exception as e:
-            cls.last_error = f"{type(e).__name__}: {e}"
-            cls.last_error_short = "Ollama gặp lỗi không xác định."
-            logger.debug(f"[OllamaAI] query error: {e}")
-            return None
-
-    @classmethod
-    def list_models(cls, base_url: str = DEFAULT_OLLAMA_BASE_URL, timeout: float = 2.0) -> Optional[List[str]]:
-        """
-        Return installed Ollama model names, [] if daemon is up but empty,
-        or None if Ollama is not reachable (not installed / not running).
-        """
-        base = canonicalize_ollama_base_url(base_url)
-        url = f"{base}/api/tags"
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"Accept": "application/json"},
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                raw = response.read().decode("utf-8")
-                status = int(getattr(response, "status", 200) or 200)
-                if status != 200:
-                    logger.debug(f"[OllamaAI] /api/tags HTTP {status}: {raw[:180]}")
-                    return None
-                data = json.loads(raw)
-        except urllib.error.HTTPError as e:
-            logger.debug(f"[OllamaAI] /api/tags HTTPError: {e}")
-            return None
-        except urllib.error.URLError as e:
-            logger.debug(f"[OllamaAI] /api/tags URLError: {e}")
-            return None
-        except Exception as e:
-            logger.debug(f"[OllamaAI] /api/tags error: {e}")
-            return None
-
-        models = data.get("models") if isinstance(data, dict) else None
-        if not isinstance(models, list):
-            return []
-        names: List[str] = []
-        seen = set()
-        for item in models:
-            name = ""
-            if isinstance(item, dict):
-                name = str(item.get("name") or item.get("model") or "").strip()
-            elif isinstance(item, str):
-                name = item.strip()
-            if not name:
-                continue
-            key = name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            names.append(name)
-        return names
-
-    @staticmethod
-    def _match_available_model(wanted: str, available: List[str]) -> Optional[str]:
-        want = (wanted or "").strip().lower()
-        if not want:
-            return None
-        for name in available:
-            if name.lower() == want:
-                return name
-        # qwen2.5:3b vs qwen2.5:3b-q4_K_M
-        for name in available:
-            low = name.lower()
-            if low.startswith(want + "-") or low.startswith(want + ":"):
-                return name
-        if ":" not in want:
-            for name in available:
-                if name.lower().startswith(want + ":"):
-                    return name
-        return None
-
-    @classmethod
-    def _parse_chat_payload(cls, raw: str, wanted: str) -> Optional[str]:
-        try:
-            data = json.loads(raw)
-        except Exception:
-            cls.last_error = "Ollama trả về dữ liệu không phải JSON."
-            cls.last_error_short = cls.last_error
-            return None
-        if not isinstance(data, dict):
-            cls.last_error = "Ollama trả về phản hồi rỗng."
-            cls.last_error_short = cls.last_error
-            return None
-        if data.get("error"):
-            detail = parse_ollama_error_message(raw)
-            cls.last_error = detail or "Ollama báo lỗi."
-            cls.last_error_short = cls.last_error
-            return None
-        message = data.get("message") if isinstance(data.get("message"), dict) else {}
-        text = str(message.get("content") or data.get("response") or "").strip()
-        if text:
-            cls.last_error = ""
-            cls.last_error_short = ""
-            cls.last_working_model = wanted
-            return text
-        cls.last_error = "Ollama trả về rỗng (no text)."
-        cls.last_error_short = cls.last_error
-        return None
-
-    @classmethod
-    def _fail_http(
-        cls,
-        code: int,
-        body: str,
-        wanted: str,
-        available: List[str],
-        base: str,
-    ) -> None:
-        detail = parse_ollama_error_message(body)
-        blob = f"{body or ''} {detail}".lower()
-        if int(code) == 404 or "not found" in blob or "try pulling" in blob:
-            cls.last_error = format_ollama_no_model(wanted, available)
-            cls.last_error_short = f"Ollama chưa có mô hình {wanted}."
-            return None
-        if detail:
-            cls.last_error = f"HTTP {code}: {detail}"
-        else:
-            cls.last_error = f"HTTP {code} từ Ollama tại {base}."
-        cls.last_error_short = cls.last_error
-        return None
-
-
-# ---------------------------------------------------------------------------
 # Master AI Copilot Engine
 # ---------------------------------------------------------------------------
 
@@ -1270,7 +968,7 @@ class AICopilotEngine:
     Điều phối viên trung tâm AI Copilot:
     - Quản lý lịch sử hội thoại.
     - Tự động lấy telemetry thời gian thực.
-    - Hybrid: Gemini online → Ollama localhost → Offline Expert Brain.
+    - Google Gemini (online) + Offline Expert Brain khi Gemini không dùng được.
     - Gắn các nút hành động tương tác 1-click.
     """
 
@@ -1283,7 +981,7 @@ class AICopilotEngine:
         self.config_manager = config_manager
         self.predictive_engine = predictive_engine
         # Optional companion hook: () or (user_prompt=, telemetry=, health_report=) → str | list[str]
-        # None → default diary/stage/skills injection for Gemini + Ollama.
+        # None → default diary/stage/skills injection for Gemini.
         self.extra_context_provider = extra_context_provider
         self.chat_history: List[ChatMessage] = []
         self._init_welcome_message()
@@ -1292,8 +990,8 @@ class AICopilotEngine:
         """Tin nhắn chào mừng ban đầu."""
         welcome_text = (
             f"Xin chào! Tôi là AI Copilot của {APP_NAME}.\n\n"
-            "Hybrid: Google Gemini khi có mạng + API key; Ollama trên máy khi offline "
-            "(không giả lập LLM nếu Ollama chưa cài).\n\n"
+            "Google Gemini khi có mạng + API key. Nếu Gemini không dùng được "
+            "(mất mạng / chưa có key), ứng dụng nói thật — không bịa câu trả lời LLM.\n\n"
             "AI đồng hành: nhật ký local trên máy này, lớn dần theo ngày dùng — "
             "không phải AGI, không tự huấn luyện mô hình. Nhật ký trống nếu đây là lần đầu.\n\n"
             "Hỏi về máy tính, hoặc bấm câu hỏi nhanh bên dưới."
@@ -1335,7 +1033,7 @@ class AICopilotEngine:
         telemetry: Optional[Dict[str, Any]] = None,
         health_report: Optional[AIHealthReport] = None,
     ) -> str:
-        """Shared companion memory for Gemini and Ollama (diary, stage, skills, sổ tay)."""
+        """Companion memory for Gemini (diary, stage, skills, sổ tay)."""
         try:
             from core.companion import build_prompt_context
             return build_prompt_context(
@@ -1378,24 +1076,13 @@ class AICopilotEngine:
         )
 
         cloud_reply = None
-        ollama_reply = None
         gemini_attempted = False
-        ollama_attempted = False
         provider = resolve_copilot_provider(self.config_manager)
         api_key = ""
-        ollama_base = DEFAULT_OLLAMA_BASE_URL
-        ollama_model = DEFAULT_OLLAMA_MODEL
         if self.config_manager:
             api_key = str(self.config_manager.get("ai_copilot_gemini_api_key", "")).strip()
-            ollama_base = canonicalize_ollama_base_url(
-                str(self.config_manager.get("ai_copilot_ollama_base_url", DEFAULT_OLLAMA_BASE_URL) or "")
-            )
-            ollama_model = canonicalize_ollama_model(
-                str(self.config_manager.get("ai_copilot_ollama_model", DEFAULT_OLLAMA_MODEL) or "")
-            )
 
-        try_gemini = provider == "gemini" or (provider == "auto" and bool(api_key))
-        try_ollama = provider in ("auto", "ollama")
+        try_gemini = provider in ("auto", "gemini")
 
         if try_gemini:
             gemini_attempted = True
@@ -1423,8 +1110,11 @@ class AICopilotEngine:
                     extra_context=extra_prompt,
                 )
             else:
-                CloudAIBrain.last_error = "Đã bật Cloud Gemini nhưng chưa nhập API Key."
-                CloudAIBrain.last_error_short = CloudAIBrain.last_error
+                CloudAIBrain.last_error = (
+                    "Chưa có Gemini API Key — Copilot cần mạng internet và API key "
+                    "từ Google AI Studio."
+                )
+                CloudAIBrain.last_error_short = "Cần mạng / Gemini API key."
 
         memory_reply = ""
         try:
@@ -1441,58 +1131,28 @@ class AICopilotEngine:
             source = "cloud_gemini"
             reply_text = cloud_reply
             actions = self._extract_actions_from_text(reply_text + " " + user_prompt_clean)
+        elif memory_reply:
+            source = "offline_expert"
+            reply_text = memory_reply
+            actions = self._extract_actions_from_text(reply_text + " " + user_prompt_clean)
         else:
-            if try_ollama:
-                ollama_attempted = True
-                ollama_reply = OllamaAIBrain.query(
-                    user_prompt=user_prompt_clean,
-                    telemetry=telemetry,
-                    health_report=health_report,
-                    base_url=ollama_base,
-                    model=ollama_model,
-                    extra_context=extra_prompt,
+            res = OfflineExpertBrain.answer(
+                user_text=user_prompt_clean,
+                telemetry=telemetry,
+                health_report=health_report,
+                autopilot_state=autopilot_state
+            )
+            reply_text = self._attach_companion_postscript(res.reply, user_prompt_clean)
+            actions = res.actions
+            source = res.source
+            if gemini_attempted:
+                err = CloudAIBrain.last_error or "Cloud Gemini không phản hồi."
+                reply_text = (
+                    f"⚠️ {err}\n"
+                    f"{GEMINI_NEEDS_NETWORK_MSG}\n\n"
+                    "Đang dùng Offline Expert Brain.\n\n---\n\n"
+                    f"{reply_text}"
                 )
-            if ollama_reply:
-                source = "local_ollama"
-                reply_text = ollama_reply
-                if gemini_attempted:
-                    reply_text = (
-                        "🔁 Gemini không dùng được — đã chuyển sang Ollama (localhost).\n\n"
-                        + ollama_reply
-                    )
-                actions = self._extract_actions_from_text(reply_text + " " + user_prompt_clean)
-            elif memory_reply:
-                source = "offline_expert"
-                reply_text = memory_reply
-                actions = self._extract_actions_from_text(reply_text + " " + user_prompt_clean)
-            else:
-                res = OfflineExpertBrain.answer(
-                    user_text=user_prompt_clean,
-                    telemetry=telemetry,
-                    health_report=health_report,
-                    autopilot_state=autopilot_state
-                )
-                reply_text = self._attach_companion_postscript(res.reply, user_prompt_clean)
-                actions = res.actions
-                source = res.source
-                if provider == "ollama":
-                    err = OllamaAIBrain.last_error or format_ollama_not_running(ollama_base)
-                    reply_text = (
-                        f"⚠️ {err}\n\n"
-                        "Ứng dụng không bịa câu trả lời LLM khi Ollama chưa sẵn sàng.\n\n"
-                        "---\n"
-                        "Trong lúc chờ, bộ não chuyên gia cục bộ vẫn có thể giúp câu hỏi về RAM / ổ đĩa / mạng:\n\n"
-                        f"{reply_text}"
-                    )
-                elif gemini_attempted:
-                    err = CloudAIBrain.last_error or "Cloud Gemini không phản hồi."
-                    extra = ""
-                    if ollama_attempted and OllamaAIBrain.last_error:
-                        extra = f"\nOllama: {OllamaAIBrain.last_error}"
-                    reply_text = (
-                        f"⚠️ Cloud Gemini lỗi: {err}{extra}\n"
-                        f"Đang dùng Offline Expert Brain.\n\n---\n\n{reply_text}"
-                    )
 
         try:
             from core.companion import companion_actions
@@ -1521,14 +1181,12 @@ class AICopilotEngine:
         elif telemetry.get("net", {}).get("ping_measured"):
             status = telemetry.get("net", {}).get("ping_status") or "timeout"
             badge += f" • Ping {status}"
-        if source == "local_ollama":
-            model_note = OllamaAIBrain.last_working_model or ollama_model
-            prefix = "Ollama (dự phòng)" if gemini_attempted else f"Ollama {model_note}"
-            badge = f"{prefix} • {badge}"
-        elif gemini_attempted and source != "cloud_gemini":
-            badge = f"Cloud lỗi • {badge}"
-        elif provider == "ollama" and source != "local_ollama":
-            badge = f"Ollama chưa sẵn sàng • {badge}"
+        if gemini_attempted and source != "cloud_gemini":
+            hint = CloudAIBrain.last_error_short or CloudAIBrain.last_error or ""
+            if "API Key" in hint or "API key" in hint or "mạng" in hint.lower() or "network" in hint.lower():
+                badge = f"Cần mạng / API key • {badge}"
+            else:
+                badge = f"Cloud lỗi • {badge}"
 
         assistant_msg = ChatMessage(
             role="assistant",
