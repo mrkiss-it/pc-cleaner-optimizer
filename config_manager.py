@@ -7,6 +7,10 @@ from typing import Dict, Any, Optional
 
 # Gemini 2.5 Flash 404s for many new AI Studio keys (Sep 2026). Never persist it.
 DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:3b"
+COPILOT_PROVIDERS = ("auto", "gemini", "ollama")
+_OLLAMA_MODEL_ID_RE = re.compile(r"[A-Za-z0-9._:/-]+")
 RETIRED_GEMINI_MODELS = frozenset({
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
@@ -28,6 +32,51 @@ def canonicalize_gemini_model(model: Optional[str]) -> str:
         return DEFAULT_GEMINI_MODEL
     if raw.lower() in RETIRED_GEMINI_MODELS or raw in RETIRED_GEMINI_MODELS:
         return DEFAULT_GEMINI_MODEL
+    return raw
+
+
+def canonicalize_copilot_provider(value: Optional[str]) -> str:
+    """Persistable Copilot backend: auto | gemini | ollama."""
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "tu dong": "auto",
+        "tự động": "auto",
+        "automatic": "auto",
+        "hybrid": "auto",
+        "google": "gemini",
+        "cloud": "gemini",
+        "online": "gemini",
+        "local": "ollama",
+        "offline": "ollama",
+        "localhost": "ollama",
+    }
+    raw = aliases.get(raw, raw)
+    if raw in COPILOT_PROVIDERS:
+        return raw
+    return "auto"
+
+
+def canonicalize_ollama_base_url(url: Optional[str]) -> str:
+    """Allow only http(s) Ollama endpoints; default to localhost."""
+    raw = str(url or "").strip()
+    if not raw:
+        return DEFAULT_OLLAMA_BASE_URL
+    raw = raw.rstrip("/")
+    lowered = raw.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return raw
+    return DEFAULT_OLLAMA_BASE_URL
+
+
+def canonicalize_ollama_model(model: Optional[str]) -> str:
+    """Sanitize a local Ollama model tag (e.g. qwen2.5:3b)."""
+    raw = str(model or "").strip()
+    if raw.lower().startswith("ollama run "):
+        raw = raw[11:].strip()
+    if raw.lower().startswith("ollama pull "):
+        raw = raw[12:].strip()
+    if not raw or not _OLLAMA_MODEL_ID_RE.fullmatch(raw):
+        return DEFAULT_OLLAMA_MODEL
     return raw
 
 
@@ -88,7 +137,10 @@ DEFAULT_CONFIG = {
     },
     "last_active_tab": 0,
     "ai_copilot_cloud_enabled": False,
+    "ai_copilot_provider": "auto",
     "ai_copilot_gemini_model": DEFAULT_GEMINI_MODEL,
+    "ai_copilot_ollama_base_url": DEFAULT_OLLAMA_BASE_URL,
+    "ai_copilot_ollama_model": DEFAULT_OLLAMA_MODEL,
     "ai_autopilot_enabled": True,
     "ai_autopilot_mode": "auto",
     "check_for_updates_enabled": True,
@@ -321,6 +373,12 @@ class ConfigManager:
             return
         if key == "ai_copilot_gemini_model":
             value = canonicalize_gemini_model(value)
+        elif key == "ai_copilot_provider":
+            value = canonicalize_copilot_provider(value)
+        elif key == "ai_copilot_ollama_base_url":
+            value = canonicalize_ollama_base_url(value)
+        elif key == "ai_copilot_ollama_model":
+            value = canonicalize_ollama_model(value)
         self.config[key] = value
         self.save_config()
 

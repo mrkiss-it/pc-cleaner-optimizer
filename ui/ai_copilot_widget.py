@@ -1,12 +1,12 @@
 """
-ui/ai_copilot_widget.py – Interactive AI Copilot & System Doctor Widget (v4.5 Pro)
-===================================================================================
+ui/ai_copilot_widget.py – Interactive AI Copilot & System Doctor Widget
+=======================================================================
 Giao diện trò chuyện tương tác Fluent Dark Acrylic với AI Copilot:
   - Bảng chỉ số Telemetry & Điểm sức khỏe AI Health Score (0-100) thời gian thực.
   - Khung bong bóng hội thoại người dùng & trợ lý thông minh.
   - Nút bấm hành động trực tiếp 1-Click Action Buttons.
   - Các gợi ý câu hỏi nhanh (Quick Prompt Chips).
-  - Tùy chọn cấu hình Gemini API hoặc dùng bộ não Offline Expert Brain.
+  - Hybrid: Google Gemini (online) + Ollama localhost (offline) + Offline Expert Brain.
 """
 from __future__ import annotations
 
@@ -22,8 +22,16 @@ from PyQt5.QtWidgets import (
 
 from core.ai_copilot import (
     AICopilotEngine, ChatMessage, CopilotAction, QUICK_PROMPTS, CloudAIBrain,
-    DEFAULT_GEMINI_MODEL, GEMINI_KNOWN_MODELS, normalize_gemini_model,
+    OllamaAIBrain, DEFAULT_GEMINI_MODEL, GEMINI_KNOWN_MODELS, normalize_gemini_model,
+    resolve_copilot_provider,
 )
+from config_manager import (
+    DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_MODEL,
+    canonicalize_ollama_base_url,
+    canonicalize_ollama_model,
+)
+from app_meta import APP_NAME
 from core.predictive_ai import PredictiveAIEngine, AIHealthReport, AutoPilotState
 
 
@@ -46,13 +54,13 @@ _ACCENT_PURPLE = "#a371f7"
 # ---------------------------------------------------------------------------
 
 class APIConfigDialog(QDialog):
-    """Hộp thoại cấu hình Cloud Gemini API Key."""
+    """Hộp thoại cấu hình Hybrid Copilot: Gemini online + Ollama offline."""
 
     def __init__(self, config_manager=None, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
-        self.setWindowTitle("⚙️ Cấu Hình Trí Tuệ Nhân Tạo (AI Engine Settings)")
-        self.resize(480, 320)
+        self.setWindowTitle(f"⚙️ Cấu Hình AI Copilot — {APP_NAME}")
+        self.resize(540, 580)
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: {_SURFACE};
@@ -103,21 +111,50 @@ class APIConfigDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(14)
 
-        title = QLabel("🤖 Tùy Chọn Bộ Não AI Copilot")
+        title = QLabel("🤖 Tùy Chọn Bộ Não AI Copilot (Hybrid)")
         title.setFont(QFont("Segoe UI Semibold", 13, QFont.Bold))
         layout.addWidget(title)
 
         desc = QLabel(
-            "Mặc định ứng dụng sử dụng **Offline Expert Brain** (nhanh, riêng tư, không cần mạng/key).\n"
-            "Bạn có thể kích hoạt **Google Gemini Flash API** để AI đối thoại sâu hơn."
+            f"{APP_NAME} ưu tiên Google Gemini khi có mạng và API key; "
+            "khi offline hoặc Gemini không tới được thì chuyển Ollama trên localhost. "
+            "Nếu Ollama chưa cài hoặc chưa kéo model, ứng dụng nói thật — không bịa câu trả lời."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 12px;")
         layout.addWidget(desc)
 
-        self.chk_cloud = QCheckBox("Kích hoạt Google Gemini API (Cloud LLM)")
+        provider_row = QHBoxLayout()
+        lbl_provider = QLabel("Nhà cung cấp:")
+        lbl_provider.setStyleSheet(f"color: {_TEXT_MUTED};")
+        self.combo_provider = QComboBox()
+        self._provider_values = ["auto", "gemini", "ollama"]
+        self.combo_provider.addItems([
+            "Tự động (Gemini online, Ollama offline)",
+            "Google Gemini (trực tuyến)",
+            "Ollama (localhost, không cần mạng)",
+        ])
+        cur_provider = resolve_copilot_provider(self.config_manager)
+        if cur_provider in self._provider_values:
+            self.combo_provider.setCurrentIndex(self._provider_values.index(cur_provider))
+        self.combo_provider.setToolTip(
+            "Tự động: dùng Gemini khi có key và mạng; nếu Gemini lỗi / không key / mất mạng thì Ollama. "
+            "Gemini: chỉ cloud (vẫn thử model khác khi HTTP 404/429/503). "
+            "Ollama: chỉ localhost, không giả lập nếu daemon chưa chạy."
+        )
+        self.combo_provider.currentIndexChanged.connect(self._sync_provider_fields)
+        provider_row.addWidget(lbl_provider)
+        provider_row.addWidget(self.combo_provider, stretch=1)
+        layout.addLayout(provider_row)
+
+        self.chk_cloud = QCheckBox("Cho phép Google Gemini khi chọn Tự động / Gemini")
         is_cloud = bool(self.config_manager.get("ai_copilot_cloud_enabled", False)) if self.config_manager else False
+        if cur_provider == "gemini":
+            is_cloud = True
+        elif cur_provider == "ollama":
+            is_cloud = False
         self.chk_cloud.setChecked(is_cloud)
+        self.chk_cloud.setToolTip("Giữ tương thích cấu hình cũ. Tự động vẫn gọi Gemini khi có API key.")
         layout.addWidget(self.chk_cloud)
 
         self.txt_api_key = QLineEdit()
@@ -153,6 +190,42 @@ class APIConfigDialog(QDialog):
         model_row.addWidget(lbl_model)
         model_row.addWidget(self.combo_model, stretch=1)
         layout.addLayout(model_row)
+
+        ollama_url_row = QHBoxLayout()
+        lbl_ollama_url = QLabel("Ollama URL:")
+        lbl_ollama_url.setStyleSheet(f"color: {_TEXT_MUTED};")
+        self.txt_ollama_url = QLineEdit()
+        self.txt_ollama_url.setPlaceholderText(DEFAULT_OLLAMA_BASE_URL)
+        ollama_url = DEFAULT_OLLAMA_BASE_URL
+        if self.config_manager:
+            ollama_url = canonicalize_ollama_base_url(
+                str(self.config_manager.get("ai_copilot_ollama_base_url", DEFAULT_OLLAMA_BASE_URL) or "")
+            )
+        self.txt_ollama_url.setText(ollama_url)
+        self.txt_ollama_url.setToolTip("HTTP API của Ollama trên máy này. Không đóng gói file LLM trong ứng dụng.")
+        ollama_url_row.addWidget(lbl_ollama_url)
+        ollama_url_row.addWidget(self.txt_ollama_url, stretch=1)
+        layout.addLayout(ollama_url_row)
+
+        ollama_model_row = QHBoxLayout()
+        lbl_ollama_model = QLabel("Mô hình Ollama:")
+        lbl_ollama_model.setStyleSheet(f"color: {_TEXT_MUTED};")
+        self.txt_ollama_model = QLineEdit()
+        self.txt_ollama_model.setPlaceholderText(DEFAULT_OLLAMA_MODEL)
+        ollama_model = DEFAULT_OLLAMA_MODEL
+        if self.config_manager:
+            ollama_model = canonicalize_ollama_model(
+                str(self.config_manager.get("ai_copilot_ollama_model", DEFAULT_OLLAMA_MODEL) or "")
+            )
+        self.txt_ollama_model.setText(ollama_model)
+        self.txt_ollama_model.setToolTip(
+            "Tên model đã kéo bằng ollama pull. Gợi ý nhẹ: qwen2.5:3b hoặc llama3.2:3b."
+        )
+        ollama_model_row.addWidget(lbl_ollama_model)
+        ollama_model_row.addWidget(self.txt_ollama_model, stretch=1)
+        layout.addLayout(ollama_model_row)
+
+        self._sync_provider_fields()
 
         self.chk_autopilot = QCheckBox("Bật AI Auto-Pilot (tự bật/tắt Game Boost an toàn, có hoàn tác)")
         ap_on = bool(self.config_manager.get("ai_autopilot_enabled", True)) if self.config_manager else True
@@ -194,12 +267,52 @@ class APIConfigDialog(QDialog):
 
         layout.addLayout(btn_row)
 
+    def _current_provider(self) -> str:
+        idx = self.combo_provider.currentIndex()
+        if 0 <= idx < len(self._provider_values):
+            return self._provider_values[idx]
+        return "auto"
+
+    def _sync_provider_fields(self, *_args):
+        provider = self._current_provider()
+        gemini_on = provider in ("auto", "gemini")
+        ollama_on = provider in ("auto", "ollama")
+        if hasattr(self, "chk_cloud"):
+            self.chk_cloud.setEnabled(gemini_on)
+            if provider == "gemini":
+                self.chk_cloud.setChecked(True)
+            elif provider == "ollama":
+                self.chk_cloud.setChecked(False)
+        if hasattr(self, "txt_api_key"):
+            self.txt_api_key.setEnabled(gemini_on)
+        if hasattr(self, "combo_model"):
+            self.combo_model.setEnabled(gemini_on)
+        if hasattr(self, "txt_ollama_url"):
+            self.txt_ollama_url.setEnabled(ollama_on)
+        if hasattr(self, "txt_ollama_model"):
+            self.txt_ollama_model.setEnabled(ollama_on)
+
     def _save_settings(self):
         if self.config_manager:
-            self.config_manager.set("ai_copilot_cloud_enabled", self.chk_cloud.isChecked())
+            provider = self._current_provider()
+            self.config_manager.set("ai_copilot_provider", provider)
+            cloud_on = bool(self.chk_cloud.isChecked())
+            if provider == "gemini":
+                cloud_on = True
+            elif provider == "ollama":
+                cloud_on = False
+            self.config_manager.set("ai_copilot_cloud_enabled", cloud_on)
             self.config_manager.set("ai_copilot_gemini_api_key", self.txt_api_key.text().strip())
             chosen_model = normalize_gemini_model(self.combo_model.currentText())
             self.config_manager.set("ai_copilot_gemini_model", chosen_model)
+            self.config_manager.set(
+                "ai_copilot_ollama_base_url",
+                canonicalize_ollama_base_url(self.txt_ollama_url.text()),
+            )
+            self.config_manager.set(
+                "ai_copilot_ollama_model",
+                canonicalize_ollama_model(self.txt_ollama_model.text()),
+            )
             self.config_manager.set("ai_autopilot_enabled", self.chk_autopilot.isChecked())
             idx = self.combo_ap_mode.currentIndex()
             mode = self._ap_mode_values[idx] if 0 <= idx < len(self._ap_mode_values) else "auto"
@@ -271,7 +384,12 @@ class ChatBubbleWidget(QFrame):
             hdr_lay.addWidget(lbl_name)
             hdr_lay.addStretch(1)
         else:
-            source_badge = " [Cloud Gemini]" if self.message.source == "cloud_gemini" else " [Offline Brain]"
+            source_map = {
+                "cloud_gemini": " [Cloud Gemini]",
+                "local_ollama": " [Ollama]",
+                "offline_expert": " [Offline Brain]",
+            }
+            source_badge = source_map.get(self.message.source, " [Offline Brain]")
             lbl_name = QLabel(f"🤖 AI Copilot & Bác Sĩ Hệ Thống{source_badge}")
             lbl_name.setFont(QFont("Segoe UI Semibold", 9, QFont.Bold))
             lbl_name.setStyleSheet(f"color: {_ACCENT_GREEN}; background: transparent; border: none;")
@@ -636,13 +754,25 @@ class AICopilotWidget(QWidget):
             )
             self.copilot_engine.chat_history.append(err)
         self._refresh_chat_display()
-        if CloudAIBrain.last_error and hasattr(self, "lbl_busy"):
-            # Keep a non-blocking hint if cloud failed but offline replied
-            if "Cloud Gemini lỗi" in (self.copilot_engine.chat_history[-1].content if self.copilot_engine.chat_history else ""):
+        last_content = ""
+        last_source = ""
+        if self.copilot_engine.chat_history:
+            last = self.copilot_engine.chat_history[-1]
+            last_content = last.content or ""
+            last_source = last.source or ""
+        if last_source == "local_ollama" and hasattr(self, "lbl_busy"):
+            hint = OllamaAIBrain.last_working_model or "Ollama localhost"
+            self._set_status_text(f"Ollama • {hint}", is_error=False)
+        elif CloudAIBrain.last_error and hasattr(self, "lbl_busy"):
+            if "Cloud Gemini lỗi" in last_content:
                 hint = CloudAIBrain.last_error_short or CloudAIBrain.last_error
                 self._set_status_text(hint, is_error=True)
                 if CloudAIBrain.last_error:
                     self.lbl_busy.setToolTip(CloudAIBrain.last_error)
+        elif last_source != "local_ollama" and OllamaAIBrain.last_error and "Ollama" in last_content:
+            hint = OllamaAIBrain.last_error_short or OllamaAIBrain.last_error
+            self._set_status_text(hint, is_error=True)
+            self.lbl_busy.setToolTip(OllamaAIBrain.last_error)
 
     def _refresh_chat_display(self):
         # Xóa các widget cũ trong chat_lay (trừ spacer cuối)
