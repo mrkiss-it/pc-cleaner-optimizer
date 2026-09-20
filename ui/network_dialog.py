@@ -320,7 +320,23 @@ class NetworkOptimizerDialog(QDialog):
         self.card_up._lbl_val.setText(net["up_speed_str"])
 
         ping = net.get("ping_ms", -1)
-        if ping > 0:
+        wifi_status = ""
+        wifi_label = ""
+        try:
+            from core.wifi_recovery import WifiRecovery
+            det = getattr(WifiRecovery, "last_detect", None) or {}
+            if det.get("unstable"):
+                wifi_status = str(det.get("cause") or "")
+                wifi_label = str(det.get("cause_label") or "")
+        except Exception:
+            wifi_status = ""
+        if wifi_status:
+            from core.system_monitor import format_ping_overlay_text
+            overlay = format_ping_overlay_text(ping, True, wifi_status, wifi_status=wifi_status)
+            self.card_ping._lbl_val.setText(overlay)
+            self.card_ping._lbl_val.setStyleSheet("color: #f43f5e; font-size: 20px; font-weight: bold;")
+            self.card_ping._lbl_sub.setText(wifi_label or "Wi-Fi rớt / yếu")
+        elif ping > 0:
             self.card_ping._lbl_val.setText(f"{ping:.1f} ms")
             if ping < 50:
                 self.card_ping._lbl_val.setStyleSheet("color: #34d399; font-size: 20px; font-weight: bold;")
@@ -337,18 +353,29 @@ class NetworkOptimizerDialog(QDialog):
         else:
             from core.system_monitor import format_ping_overlay_text
             status = net.get("ping_status") or net.get("ping_error") or "timeout"
-            overlay = format_ping_overlay_text(-1, True, status)
-            self.card_ping._lbl_val.setText(overlay)
-            self.card_ping._lbl_val.setStyleSheet("color: #94a3b8; font-size: 20px; font-weight: bold;")
+            wifi_status = ""
             cause_bit = ""
             try:
+                from core.wifi_recovery import WifiRecovery
                 from core.network_optimizer import NetworkOptimizer
-                report = getattr(NetworkOptimizer, "last_missing_ping_report", None) or {}
+                det = getattr(WifiRecovery, "last_detect", None) or {}
+                report = (
+                    getattr(NetworkOptimizer, "last_wifi_drop_report", None)
+                    or getattr(NetworkOptimizer, "last_missing_ping_report", None)
+                    or {}
+                )
+                if det.get("unstable"):
+                    wifi_status = str(det.get("cause") or "")
                 if report.get("cause_label"):
                     cause_bit = f" • {report.get('cause_label')}"
+                elif det.get("cause_label"):
+                    cause_bit = f" • {det.get('cause_label')}"
             except Exception:
                 cause_bit = ""
-            self.card_ping._lbl_sub.setText(f"Không đo được ({status}){cause_bit}")
+            overlay = format_ping_overlay_text(-1 if ping <= 0 else ping, True, status, wifi_status=wifi_status)
+            self.card_ping._lbl_val.setText(overlay)
+            self.card_ping._lbl_val.setStyleSheet("color: #94a3b8; font-size: 20px; font-weight: bold;")
+            self.card_ping._lbl_sub.setText(f"Không đo được ({status}){cause_bit}" if ping <= 0 else f"Wi-Fi {wifi_status or status}{cause_bit}")
 
         tot_mb = net.get("total_recv_mb", 0) + net.get("total_sent_mb", 0)
         self.card_total._lbl_val.setText(f"{tot_mb:.1f} MB")

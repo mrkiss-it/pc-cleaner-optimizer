@@ -261,7 +261,14 @@ def main():
             except Exception:
                 pass
         if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
-            if kind == "ping_missing":
+            if kind == "wifi_drop":
+                recovered = info.get("recovered")
+                title = "Wi-Fi đã ổn định" if recovered else "Tự sửa Wi-Fi rớt"
+                level = "success" if recovered else "warning"
+                needs_dns = bool(info.get("needs_dns_confirm")) and not recovered
+                action_text = "🌐 Đổi DNS Siêu Tốc" if needs_dns else "📶 Xem Mạng"
+                action_cb = main_win.apply_fast_dns if needs_dns else main_win.open_network_dialog
+            elif kind == "ping_missing":
                 recovered = info.get("recovered")
                 title = "Ping đã đo được lại" if recovered else "Tự kiểm tra & sửa mạng"
                 level = "success" if recovered else "warning"

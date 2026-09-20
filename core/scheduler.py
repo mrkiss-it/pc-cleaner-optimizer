@@ -31,6 +31,11 @@ class BackgroundScheduler(QObject):
         self.ping_fix_first_cooldown_seconds = 8
         self.ping_fix_unrecovered = 0
         self.ping_fix_max_unrecovered = 2
+        self.last_wifi_fix_trigger = datetime.now() - timedelta(minutes=30)
+        self.wifi_fix_cooldown_seconds = 300
+        self.wifi_fix_first_cooldown_seconds = 12
+        self.wifi_fix_unrecovered = 0
+        self.wifi_fix_max_unrecovered = 2
         self.last_dns_trigger = datetime.now() - timedelta(hours=2)
         self.dns_cooldown_seconds = 7200
         self.last_security_trigger = datetime.now() - timedelta(hours=23)  # Run first scan sooner
@@ -74,6 +79,15 @@ class BackgroundScheduler(QObject):
         if ping > 0:
             self.ping_fix_unrecovered = 0
 
+        wifi_snap = {}
+        try:
+            from core.wifi_recovery import WifiRecovery
+            wifi_snap = WifiRecovery.detect_wifi_instability(include_events=True)
+            if not wifi_snap.get("unstable"):
+                self.wifi_fix_unrecovered = 0
+        except Exception:
+            wifi_snap = {}
+
         if config.get("auto_network_optimize_enabled", True):
             ping_threshold = config.get("auto_network_ping_threshold_ms", 180)
             if ping > ping_threshold and ping > 0:
@@ -82,7 +96,33 @@ class BackgroundScheduler(QObject):
                     self.last_net_trigger = now
                     self.run_auto_network_boost(ping, ping_threshold)
 
-        # 3b. Missing / failed ping → diagnose + escalating repair (first fix almost immediate)
+        # 3b. Wi-Fi rớt / vòng reconnect — ưu tiên hơn missing-ping nếu cùng tick
+        wifi_first_cd = float(config.get(
+            "auto_network_wifi_fix_first_cooldown_seconds",
+            self.wifi_fix_first_cooldown_seconds
+        ))
+        wifi_repeat_cd = float(config.get(
+            "auto_network_wifi_fix_cooldown_seconds",
+            self.wifi_fix_cooldown_seconds
+        ))
+        ping_fix_enabled = bool(config.get("auto_network_ping_fix_enabled", True))
+        wifi_fix_due = False
+        try:
+            from core.wifi_recovery import WifiRecovery
+            wifi_fix_due = WifiRecovery.should_trigger_wifi_drop_fix(
+                enabled=ping_fix_enabled,
+                unstable=bool(wifi_snap.get("unstable")),
+                now_ts=now.timestamp(),
+                last_trigger_ts=self.last_wifi_fix_trigger.timestamp(),
+                cooldown_sec=wifi_repeat_cd,
+                unrecovered_repairs=self.wifi_fix_unrecovered,
+                max_unrecovered=self.wifi_fix_max_unrecovered,
+                first_cooldown_sec=wifi_first_cd,
+            )
+        except Exception:
+            wifi_fix_due = False
+
+        # 3c. Missing / failed ping → diagnose + escalating repair (first fix almost immediate)
         first_cd = float(config.get(
             "auto_network_ping_fix_first_cooldown_seconds",
             self.ping_fix_first_cooldown_seconds
@@ -91,8 +131,8 @@ class BackgroundScheduler(QObject):
             "auto_network_ping_fix_cooldown_seconds",
             self.ping_fix_cooldown_seconds
         ))
-        if self.should_trigger_missing_ping_fix(
-            enabled=bool(config.get("auto_network_ping_fix_enabled", True)),
+        ping_fix_due = self.should_trigger_missing_ping_fix(
+            enabled=ping_fix_enabled,
             ping_ms=float(ping),
             ping_measured=bool(net_info.get("ping_measured", False)),
             fail_streak=int(net_info.get("ping_fail_streak", 0)),
@@ -103,7 +143,11 @@ class BackgroundScheduler(QObject):
             unrecovered_repairs=self.ping_fix_unrecovered,
             max_unrecovered=self.ping_fix_max_unrecovered,
             first_cooldown_sec=first_cd,
-        ):
+        )
+        if wifi_fix_due:
+            self.last_wifi_fix_trigger = now
+            self.run_auto_wifi_drop_fix(wifi_snap)
+        elif ping_fix_due:
             self.last_ping_fix_trigger = now
             self.run_auto_missing_ping_fix()
 
@@ -315,6 +359,59 @@ class BackgroundScheduler(QObject):
                 logger.error(f"[Scheduler] Lỗi khi tự sửa mạng (Ping missing): {e}")
 
         threading.Thread(target=_worker, daemon=True, name="MissingPingFix").start()
+
+    def run_auto_wifi_drop_fix(self, wifi_snap=None):
+        """
+        Tự động sửa Wi-Fi rớt / vòng reconnect (DHCP, SSID, tắt tiết kiệm pin).
+        Ưu tiên hơn missing-ping khi cả hai cùng đến hạn.
+        """
+        import threading
+
+        def _worker():
+            try:
+                from core.network_optimizer import NetworkOptimizer
+                from core.wifi_recovery import WifiRecovery
+                from core.logger import logger
+                result = WifiRecovery.diagnose_and_repair_wifi_drop(
+                    apply_dns=False,
+                    snapshot=wifi_snap,
+                )
+                recovered = bool(result.get("recovered"))
+                if recovered:
+                    self.wifi_fix_unrecovered = 0
+                    self.ping_fix_unrecovered = 0
+                elif result.get("repaired"):
+                    self.wifi_fix_unrecovered += 1
+                    logger.info(
+                        f"[Scheduler] Wi-Fi drop repair chưa ổn định "
+                        f"(lần {self.wifi_fix_unrecovered}/{self.wifi_fix_max_unrecovered})."
+                    )
+                NetworkOptimizer.last_wifi_drop_report = result
+                self.network_optimized.emit({
+                    "type": "wifi_drop",
+                    "success": result.get("success", False),
+                    "repaired": result.get("repaired", False),
+                    "recovered": recovered,
+                    "ping_before": result.get("ping_before", -1),
+                    "ping_after": result.get("ping_after", -1),
+                    "issues": result.get("issues", []),
+                    "cause": result.get("cause", ""),
+                    "cause_label": result.get("cause_label", ""),
+                    "applied_summary": result.get("applied_summary", ""),
+                    "needs_dns_confirm": result.get("needs_dns_confirm", False),
+                    "steps": result.get("steps", []),
+                    "skipped": result.get("skipped", []),
+                    "details": result,
+                    "message": result.get(
+                        "message",
+                        "Đã kiểm tra Wi-Fi vì phát hiện rớt / vòng reconnect."
+                    ),
+                })
+            except Exception as e:
+                from core.logger import logger
+                logger.error(f"[Scheduler] Lỗi khi tự sửa Wi-Fi: {e}")
+
+        threading.Thread(target=_worker, daemon=True, name="WifiDropFix").start()
 
     def run_auto_best_dns(self):
         """

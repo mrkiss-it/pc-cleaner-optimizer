@@ -189,27 +189,44 @@ class FloatingWidget(QWidget):
         ping_val = net_info.get("ping_ms", -1)
         ping_measured = bool(net_info.get("ping_measured"))
         ping_status = str(net_info.get("ping_status") or net_info.get("ping_error") or "")
+        wifi_status = ""
+        cause_tip = ""
+        try:
+            from core.wifi_recovery import WifiRecovery
+            from core.network_optimizer import NetworkOptimizer
+            det = getattr(WifiRecovery, "last_detect", None) or {}
+            report = (
+                getattr(NetworkOptimizer, "last_wifi_drop_report", None)
+                or getattr(NetworkOptimizer, "last_missing_ping_report", None)
+                or {}
+            )
+            if det.get("unstable"):
+                wifi_status = str(det.get("cause") or "")
+            elif str(report.get("cause") or "") in ("reconnect_loop", "weak_link", "link_loss"):
+                wifi_status = str(report.get("cause") or "")
+            if report.get("cause_label"):
+                cause_tip = f"\nNguyên nhân: {report.get('cause_label')}"
+            if report.get("applied_summary"):
+                cause_tip += f"\nĐã sửa: {report.get('applied_summary')}"
+            elif det.get("cause_label"):
+                cause_tip = f"\nNguyên nhân: {det.get('cause_label')}"
+        except Exception:
+            cause_tip = ""
         self.ping_ms = ping_val
-        ping_text = format_ping_overlay_text(ping_val, ping_measured, ping_status)
-        if ping_val <= 0:
-            ping_color = "#64748b"   # Xám - không đo được
-            if ping_measured:
-                err = net_info.get("ping_error") or ping_status or "timeout"
-                cause_tip = ""
-                try:
-                    from core.network_optimizer import NetworkOptimizer
-                    report = getattr(NetworkOptimizer, "last_missing_ping_report", None) or {}
-                    if report.get("cause_label"):
-                        cause_tip = f"\nNguyên nhân: {report.get('cause_label')}"
-                    if report.get("applied_summary"):
-                        cause_tip += f"\nĐã sửa: {report.get('applied_summary')}"
-                except Exception:
-                    cause_tip = ""
+        ping_text = format_ping_overlay_text(ping_val, ping_measured, ping_status, wifi_status=wifi_status)
+        if ping_val <= 0 or wifi_status:
+            ping_color = "#64748b"   # Xám - không đo được / Wi-Fi rớt
+            if wifi_status in ("reconnect_loop", "link_loss", "wifi_drop"):
+                ping_color = "#f43f5e"
+            elif wifi_status == "weak_link":
+                ping_color = "#fb923c"
+            if ping_measured or wifi_status:
+                err = net_info.get("ping_error") or ping_status or wifi_status or "timeout"
                 self.lbl_ping_title.setToolTip(
-                    f"Ping không đo được ({err}).{cause_tip}"
+                    f"Ping không đo được ({err}).{cause_tip}" if ping_val <= 0 else f"Wi-Fi: {wifi_status}.{cause_tip}"
                 )
                 self.lbl_ping_val.setToolTip(
-                    f"Lỗi đo Ping: {err}.{cause_tip}"
+                    f"Lỗi đo Ping: {err}.{cause_tip}" if ping_val <= 0 else f"Wi-Fi: {wifi_status}.{cause_tip}"
                 )
             else:
                 self.lbl_ping_title.setToolTip("Đang đo Ping...")
@@ -225,7 +242,7 @@ class FloatingWidget(QWidget):
         else:
             ping_color = "#f43f5e"   # Đỏ - rất cao
 
-        if ping_val > 0:
+        if ping_val > 0 and not wifi_status:
             self.lbl_ping_title.setToolTip(f"Ping {ping_val:.0f} ms")
             self.lbl_ping_val.setToolTip(f"Ping {ping_val:.0f} ms")
 
@@ -236,20 +253,10 @@ class FloatingWidget(QWidget):
 
         # Tooltip chi tiết khi rê chuột
         ram_info = stats.get("ram", {})
-        ping_str = format_ping_overlay_text(ping_val, ping_measured, ping_status)
-        if ping_val > 0:
+        ping_str = format_ping_overlay_text(ping_val, ping_measured, ping_status, wifi_status=wifi_status)
+        if ping_val > 0 and not wifi_status:
             ping_str = f"{ping_val:.0f}ms"
-        repair_line = ""
-        try:
-            from core.network_optimizer import NetworkOptimizer
-            report = getattr(NetworkOptimizer, "last_missing_ping_report", None) or {}
-            if report.get("cause_label") or report.get("applied_summary"):
-                repair_line = (
-                    f"\nChẩn đoán: {report.get('cause_label') or '—'}"
-                    f"\nĐã sửa: {report.get('applied_summary') or '—'}"
-                )
-        except Exception:
-            repair_line = ""
+        repair_line = cause_tip
         ram_detail = (
             f"RAM: {self.ram_pct:.1f}% ({ram_info.get('used_gb', 0):.1f}/{ram_info.get('total_gb', 0):.1f} GB)\n"
             f"CPU: {self.cpu_pct:.1f}%\n"

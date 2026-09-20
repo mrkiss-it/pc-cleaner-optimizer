@@ -63,6 +63,8 @@ DEFAULT_CONFIG = {
     "auto_network_ping_fail_streak": 1,
     "auto_network_ping_fix_first_cooldown_seconds": 8,
     "auto_network_ping_fix_cooldown_seconds": 300,
+    "auto_network_wifi_fix_first_cooldown_seconds": 12,
+    "auto_network_wifi_fix_cooldown_seconds": 300,
     "auto_best_dns_enabled": False,
     "auto_best_dns_interval_hours": 2,
     "auto_security_scan_enabled": True,

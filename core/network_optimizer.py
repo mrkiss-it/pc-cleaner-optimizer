@@ -751,6 +751,16 @@ class NetworkOptimizer:
             ),
         }
 
+        # Wi-Fi snapshot without wevtutil on the ping path (scheduler gathers events).
+        wifi = {"ok": True, "is_wifi": False, "unstable": False, "cause": "ok", "detail": "Không phải Wi-Fi."}
+        try:
+            from core.wifi_recovery import WifiRecovery
+            wifi = WifiRecovery.detect_wifi_instability(include_events=False, event_text="")
+            wifi.setdefault("detail", wifi.get("cause_label") or "")
+            wifi["ok"] = not bool(wifi.get("unstable"))
+        except Exception:
+            wifi = {"ok": True, "is_wifi": False, "unstable": False, "cause": "ok", "detail": ""}
+
         issues = []
         if not adapter["ok"]:
             issues.append("adapter_down")
@@ -762,13 +772,15 @@ class NetworkOptimizer:
             issues.append("no_connectivity")
         if not ping["ok"]:
             issues.append("ping_missing")
+        if wifi.get("unstable"):
+            issues.append("wifi_unstable")
 
         cause, cause_label = cls.classify_missing_ping_cause(
             {"issues": issues, "checks": {
                 "adapter": adapter, "gateway": gateway, "dns": dns,
-                "connectivity": connectivity, "ping": ping,
+                "connectivity": connectivity, "ping": ping, "wifi": wifi,
             }}
-        ) if not ping_ok else ("ok", "mạng ổn định")
+        ) if (not ping_ok or wifi.get("unstable")) else ("ok", "mạng ổn định")
 
         overall_ok = ping_ok and connectivity_ok
         if not issues:
@@ -790,6 +802,7 @@ class NetworkOptimizer:
                 "dns": dns,
                 "connectivity": connectivity,
                 "ping": ping,
+                "wifi": wifi,
             },
         }
 
@@ -801,10 +814,14 @@ class NetworkOptimizer:
         "firewall_or_no_route": "firewall / không có tuyến mạng (no route)",
         "meter_timeout": "đồng hồ Ping quá thời gian (probe chậm hoặc bị chặn)",
         "ping_missing": "không đo được Ping",
+        "reconnect_loop": "Wi-Fi rớt liên tục / vòng reconnect (WLAN flap)",
+        "weak_link": "Wi-Fi tín hiệu yếu / tốc độ liên kết thấp",
+        "link_loss": "mất liên kết Wi-Fi (không còn SSID / link)",
         "ok": "mạng ổn định",
     }
 
     last_missing_ping_report: Dict[str, Any] = {}
+    last_wifi_drop_report: Dict[str, Any] = {}
 
     @classmethod
     def classify_missing_ping_cause(
@@ -831,8 +848,17 @@ class NetworkOptimizer:
             "10051", "10065", "forbidden", "firewall", "permission denied",
         )
         looks_firewall = any(m in conn_err for m in firewall_markers)
+        wifi = checks.get("wifi") or {}
 
-        if "adapter_down" in issues:
+        if wifi.get("unstable") and wifi.get("cause") in (
+            "reconnect_loop", "weak_link", "link_loss",
+        ):
+            cause = str(wifi.get("cause") or "reconnect_loop")
+        elif "wifi_unstable" in issues and wifi.get("cause") in (
+            "reconnect_loop", "weak_link", "link_loss", "adapter_down",
+        ):
+            cause = str(wifi.get("cause") or "reconnect_loop")
+        elif "adapter_down" in issues:
             cause = "adapter_down"
         elif "no_gateway" in issues:
             cause = "no_gateway"
@@ -860,6 +886,10 @@ class NetworkOptimizer:
             "purge_arp_netbios": "làm mới ARP/NetBIOS",
             "apply_best_dns": "đổi DNS siêu tốc",
             "optimize_tcp_stack": "tinh chỉnh TCP stack",
+            "renew_dhcp": "renew DHCP",
+            "reconnect_ssid": "ngắt rồi kết nối lại SSID",
+            "disable_wifi_power_saving": "tắt tiết kiệm pin Wi-Fi",
+            "wait_stable_link": "cửa sổ ổn định Wi-Fi",
         }
         parts = []
         for step in steps or []:
@@ -887,11 +917,32 @@ class NetworkOptimizer:
           3. Áp dụng DNS tốt nhất (không UAC ẩn; UAC chỉ khi apply_dns=True)
           4. Tinh chỉnh TCP stack nhẹ (đã có sẵn)
         Không reset Winsock, không restart adapter trừ khi người dùng xác nhận riêng.
+        Nếu Wi-Fi đang flap / yếu / mất link: chuyển sang lộ trình WifiRecovery
+        (DHCP, reconnect SSID, tắt tiết kiệm pin, cửa sổ ổn định).
         """
         from core.system_monitor import SystemMonitor, PING_REPAIR_TIMEOUT
+        from core.wifi_recovery import WifiRecovery
 
         t0 = time.time()
         health = cls.run_health_check(measure_ping=True)
+        wifi_snap = (health.get("checks") or {}).get("wifi") or {}
+        if not wifi_snap.get("is_wifi"):
+            try:
+                wifi_snap = WifiRecovery.detect_wifi_instability(
+                    include_events=True,
+                    health=health,
+                )
+            except Exception:
+                wifi_snap = {}
+        if wifi_snap.get("unstable"):
+            report = WifiRecovery.diagnose_and_repair_wifi_drop(
+                apply_dns=apply_dns,
+                snapshot=wifi_snap,
+                health=health,
+            )
+            cls.last_wifi_drop_report = report
+            cls.last_missing_ping_report = report
+            return report
         ping_before = float(health["checks"]["ping"]["ping_ms"])
         down_bps = 0.0
         try:

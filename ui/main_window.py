@@ -596,7 +596,7 @@ class MainWindow(QMainWindow):
         self.chk_auto_net.setStyleSheet("font-weight: bold; font-size: 14px; color: #38bdf8;")
 
         self.chk_auto_ping_fix = QCheckBox(
-            "Khi Ping không đo được: tự chẩn đoán nguyên nhân và sửa ngay (Flush DNS / ARP / Đổi DNS)"
+            "Khi Ping / Wi-Fi rớt: tự chẩn đoán và sửa ngay (Flush DNS, DHCP, reconnect SSID, tắt tiết kiệm pin Wi-Fi)"
         )
         self.chk_auto_ping_fix.setStyleSheet("font-weight: bold; font-size: 13px; color: #7dd3fc;")
         self.chk_auto_ping_fix.setChecked(self.config_manager.get("auto_network_ping_fix_enabled", True))
@@ -613,8 +613,10 @@ class MainWindow(QMainWindow):
         lbl_net_desc = QLabel(
             "Tự động xóa DNS cache khi dọn định kỳ hoặc khi Ping cao. "
             "Nếu Ping timeout: chẩn đoán (card, gateway, DNS, TCP) rồi sửa ngay lần đầu "
-            "(flush DNS → ARP → đổi DNS tốt nhất nếu vẫn lỗi). Không reset Winsock, "
-            "không restart card trừ khi bạn xác nhận. Có thể tắt bên dưới."
+            "(flush DNS → ARP → đổi DNS tốt nhất nếu vẫn lỗi). "
+            "Nếu Wi-Fi rớt liên tục / tín hiệu yếu: renew DHCP, reconnect đúng SSID, "
+            "tắt tiết kiệm pin Wi-Fi, rồi chờ vài giây link Up ổn định. "
+            "Không reset Winsock, không tắt-bật card trong vòng lặp. Có thể tắt bên dưới."
         )
         lbl_net_desc.setStyleSheet("color: #64748b; font-size: 11px;")
         lbl_net_desc.setWordWrap(True)
@@ -1564,14 +1566,21 @@ class MainWindow(QMainWindow):
             from ui.toast_notification import ToastManager, LEVEL_SUCCESS, LEVEL_WARNING
             recovered = bool(result.get("recovered"))
             needs_dns = bool(result.get("needs_dns_confirm"))
+            is_wifi = str(result.get("type") or result.get("reason") or "") == "wifi_drop" or str(result.get("cause") or "") in (
+                "reconnect_loop", "weak_link", "link_loss",
+            )
             if needs_dns and not recovered:
                 action_text = "🌐 Đổi DNS Siêu Tốc"
                 action_cb = self.apply_fast_dns
             else:
                 action_text = "📶 Xem Mạng"
                 action_cb = self.open_network_dialog
+            if is_wifi:
+                title = "Wi-Fi đã ổn định" if recovered else "Đã kiểm tra / sửa Wi-Fi"
+            else:
+                title = "Ping đã đo được" if recovered else "Đã kiểm tra / sửa mạng"
             ToastManager.show_toast(
-                title="Ping đã đo được" if recovered else "Đã kiểm tra / sửa mạng",
+                title=title,
                 message=msg,
                 level=LEVEL_SUCCESS if recovered else LEVEL_WARNING,
                 icon="🌐",
