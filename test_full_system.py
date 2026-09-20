@@ -763,7 +763,105 @@ QApplication.processEvents()
 
 print(" [PASS] 42. On-Screen HUD Toast Notifications: Floating Acrylic Frame, Animated Stacking, Hover Pause, 1-Click Action & Config Integration hoat dong xuat sac 100%!")
 
-print("\n>>> TAT CA 42 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE & HUD TOAST NOTIFICATIONS DEU THANH CONG 100%! <<<")
+# ==============================================================================
+# 43. KIEM TRA AI COPILOT & HEALTH SCORE & AUTO-PILOT ENGINE (v4.5 Pro)
+# ==============================================================================
+print("\n[TEST 43] Kiem tra AI Copilot & AI Health Score (0-100) & Auto-Pilot Engine...")
+
+from core.ai_copilot import AICopilotEngine, ChatMessage, CopilotAction, TelemetryCollector, OfflineExpertBrain
+from core.predictive_ai import AIHealthReport, AutoPilotState, MODE_GAMING, MODE_ECO, MODE_WORK, MODE_BALANCED
+from ui.ai_copilot_widget import AICopilotWidget, ChatBubbleWidget
+from ui.ai_advisor_dialog import AIAdvisorDialog
+
+# A. Test Telemetry Collector
+telemetry = TelemetryCollector.collect()
+assert "ram" in telemetry and "percent" in telemetry["ram"], "Telemetry phai chua thong so RAM"
+assert "cpu" in telemetry and "percent" in telemetry["cpu"], "Telemetry phai chua thong so CPU"
+assert "disk" in telemetry and "free_gb" in telemetry["disk"], "Telemetry phai chua thong so Disk C:"
+
+# B. Test AI Health Score (0 - 100)
+pred_engine = win._ai_advisor.predictive_engine
+health = pred_engine.calculate_health_score(stats=telemetry, force_refresh=True)
+assert isinstance(health, AIHealthReport), "calculate_health_score phai tra ve instance AIHealthReport"
+assert 0 <= health.score <= 100, f"Diem suc khoe phai nam trong khoang 0 - 100 (nhan duoc: {health.score})"
+assert health.grade in ("XUẤT SẮC", "TỐT", "CẦN TỐI ƯU", "NGUY CƠ"), f"Xep loai phai hop le (nhan duoc: {health.grade})"
+assert len(health.prescription) > 0, "Toa thuoc AI phai co it nhat 1 giai phap toi uu"
+assert health.predicted_score_after >= health.score, "Diem sau khi toi uu phai lon hon hoac bang diem hien tai"
+
+# C. Test AI Auto-Pilot Context Engine
+# Test Gaming detection
+state_game = pred_engine.get_autopilot_state(
+    current_stats=telemetry,
+    running_process_names=["cs2.exe", "explorer.exe"]
+)
+assert state_game.mode == MODE_GAMING, f"Phai nhan dien mode GAMING khi co game chay (nhan duoc: {state_game.mode})"
+
+# Test Eco battery detection
+state_eco = pred_engine.get_autopilot_state(
+    current_stats=telemetry,
+    on_battery=True,
+    battery_pct=35,
+    running_process_names=["notepad.exe"]
+)
+assert state_eco.mode == MODE_ECO, f"Phai nhan dien mode ECO khi rut sac pin duoi 50% (nhan duoc: {state_eco.mode})"
+
+# Test Work detection
+state_work = pred_engine.get_autopilot_state(
+    current_stats=telemetry,
+    on_battery=False,
+    running_process_names=["code.exe", "antigravity.exe"]
+)
+assert state_work.mode == MODE_WORK, f"Phai nhan dien mode WORK khi co IDE lam viec (nhan duoc: {state_work.mode})"
+
+# D. Test AI Copilot Engine
+copilot = AICopilotEngine(config_manager=win.config_manager, predictive_engine=pred_engine)
+assert len(copilot.chat_history) > 0, "AI Copilot phai co loi chao mac dinh"
+
+# Hoi ve RAM
+res_ram = copilot.ask("Tai sao may toi bi ngon RAM?")
+assert isinstance(res_ram, ChatMessage), "ask phai tra ve ChatMessage"
+assert any(a.key == "optimize_ram" for a in res_ram.actions), "Cau hoi ve RAM phai dinh kem action optimize_ram"
+
+# Hoi ve Game
+res_game = copilot.ask("Lam sao de choi game muot hon?")
+assert any(a.key == "toggle_game_boost" for a in res_game.actions), "Cau hoi ve Game phai dinh kem action toggle_game_boost"
+
+# Hoi ve O C
+res_disk = copilot.ask("O C bi day can xoa gi?")
+assert any(a.key in ("clean_disk", "winsxs_cleanup") for a in res_disk.actions), "Cau hoi ve O C phai dinh kem action clean_disk/winsxs"
+
+# Hoi Tong quan suc khoe
+res_health = copilot.ask("Kham benh may tinh tong quan")
+assert "AI Health Score" in res_health.content or "Sức Khỏe" in res_health.content or "Hồ Sơ" in res_health.content, "Kham benh phai co Health Score"
+
+# E. Test AICopilotWidget UI & Dialog Tab
+copilot_widget = AICopilotWidget(config_manager=win.config_manager, predictive_engine=pred_engine)
+assert hasattr(copilot_widget, "txt_input"), "AICopilotWidget phai co o nhap txt_input"
+assert hasattr(copilot_widget, "btn_send"), "AICopilotWidget phai co nut btn_send"
+
+# Test action signal
+action_received = []
+copilot_widget.action_triggered.connect(lambda k: action_received.append(k))
+copilot_widget._on_action_dispatched("optimize_ram")
+assert "optimize_ram" in action_received, "Signal action_triggered phai phat dung action_key"
+
+# Test AIAdvisorDialog Copilot tab
+adv_dlg = AIAdvisorDialog(advisor=win._ai_advisor, action_dispatcher=win._ai_action_dispatcher)
+assert "COPILOT" in adv_dlg._tab_btns, "AIAdvisorDialog phai co tab COPILOT"
+assert hasattr(adv_dlg, "_copilot_widget"), "AIAdvisorDialog phai chua _copilot_widget"
+assert hasattr(adv_dlg._dashboard, "lbl_health_score"), "Dashboard phai co lbl_health_score"
+
+# Switch to Copilot tab
+adv_dlg._set_filter("COPILOT", adv_dlg._tab_btns["COPILOT"])
+assert not adv_dlg._copilot_widget.isHidden(), "Chuyen sang tab COPILOT thi _copilot_widget phai khong bi an"
+assert adv_dlg._scroll.isHidden(), "Chuyen sang tab COPILOT thi _scroll phai an"
+
+adv_dlg.close()
+
+print(" [PASS] 43. AI Copilot & Real-time Telemetry & Health Score 0-100 & Auto-Pilot Context Engine hoat dong xuat sac 100%!")
+
+print("\n>>> TAT CA 43 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST & AI COPILOT/AUTO-PILOT DEU THANH CONG 100%! <<<")
+
 
 
 

@@ -2,13 +2,13 @@
     "auto_clean_enabled": true,
     "interval_minutes": 60,
     "auto_ram_optimize_enabled": true,
-    "ram_threshold_percent": 80,
+    "ram_threshold_percent": 77,
     "floating_widget_enabled": true,
-    "run_on_startup": false,
+    "run_on_startup": true,
     "minimize_to_tray_on_close": true,
     "show_notifications": true,
     "instant_screen_notifications_enabled": true,
-    "notification_sound_enabled": false,
+    "notification_sound_enabled": true,
     "notification_duration_ms": 4500,
     "targets": {
         "user_temp": true,
@@ -41,7 +41,7 @@
         "critical_count": 0,
         "warning_count": 0,
         "ok_count": 11,
-        "timestamp": "20/09/2026 09:30:00"
+        "timestamp": "20/09/2026 09:48:02"
     },
     "window_geometry": {
         "x": 120,
@@ -51,6 +51,10 @@
         "is_maximized": false
     },
     "last_active_tab": 0,
+    "ai_copilot_cloud_enabled": false,
+    "ai_copilot_gemini_api_key": "",
+    "ai_autopilot_enabled": true,
+    "ai_autopilot_mode": "auto",
     "predictive_disk_history": [
         {
             "ts": 1789868656.2400045,
@@ -81,13 +85,18 @@
             "ts": 1789871411.3654478,
             "free_gb": 52.63,
             "total_gb": 274.39
+        },
+        {
+            "ts": 1789872230.8783145,
+            "free_gb": 52.63,
+            "total_gb": 274.39
         }
     ],
     "predictive_habits_profile": {
         "morning": {
-            "cpu_sum": 5040.0,
-            "ram_sum": 10440.0,
-            "samples": 117,
+            "cpu_sum": 7840.0,
+            "ram_sum": 16240.0,
+            "samples": 182,
             "gaming_hits": 0
         },
         "afternoon": {

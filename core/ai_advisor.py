@@ -201,6 +201,42 @@ class AIAdvisor:
             PRIORITY_TIP:      sum(1 for s in sug if s.priority == PRIORITY_TIP),
         }
 
+    def get_health_report(self, force_refresh: bool = False):
+        """Trả về AIHealthReport tổng thể 0-100 điểm kèm Toa Thuốc AI."""
+        latest_snap = self._buffer[-1] if self._buffer else None
+        stats = {}
+        if latest_snap:
+            stats = {
+                "ram": {"percent": latest_snap.ram_pct},
+                "cpu": {"percent": latest_snap.cpu_pct},
+                "disk": {"free_gb": latest_snap.disk_free_gb, "total_gb": 256.0},
+                "net": {"ping_ms": latest_snap.net_ping_ms},
+                "process_count": latest_snap.process_count,
+            }
+        return self.predictive_engine.calculate_health_score(
+            stats=stats,
+            leaks=self._last_leak_info,
+            security_info=self._last_security_info,
+            force_refresh=force_refresh
+        )
+
+    def get_autopilot_state(self):
+        """Trả về trạng thái AutoPilotState từ PredictiveEngine."""
+        latest_snap = self._buffer[-1] if self._buffer else None
+        stats = {}
+        if latest_snap:
+            stats = {
+                "ram": {"percent": latest_snap.ram_pct},
+                "cpu": {"percent": latest_snap.cpu_pct},
+            }
+        battery_pct = int(self._last_battery_info.get("percent", 100)) if self._last_battery_info else 100
+        on_battery = not bool(self._last_battery_info.get("power_plugged", True)) if self._last_battery_info else False
+        return self.predictive_engine.get_autopilot_state(
+            current_stats=stats,
+            on_battery=on_battery,
+            battery_pct=battery_pct
+        )
+
     # ------------------------------------------------------------------
     # Rule Engine (private)
     # ------------------------------------------------------------------

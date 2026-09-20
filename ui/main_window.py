@@ -1310,36 +1310,40 @@ class MainWindow(QMainWindow):
         dialog.exec_()
 
     def _ai_action_dispatcher(self, action_key: str):
-        """Xử lý action từ AI Advisor khi user click 'Áp Dụng Ngay'."""
+        """Xử lý action từ AI Advisor & AI Copilot khi user click vào nút hành động."""
         try:
             self.raise_()
             self.activateWindow()
-            if action_key == "optimize_ram":
+            if action_key in ("optimize_ram", "optimize_ram_only"):
                 self.tabs.setCurrentWidget(self.tab_dashboard)
                 self.optimize_ram_only()
-            elif action_key == "clean_junk":
+            elif action_key in ("clean_junk", "clean_disk"):
                 self.tabs.setCurrentWidget(self.tab_dashboard)
                 self.start_full_clean()
-            elif action_key == "enable_game_boost":
-                from core.game_booster import GameBooster
-                if not GameBooster.is_active():
-                    self.toggle_game_boost()
-            elif action_key == "open_network_dialog":
+            elif action_key in ("enable_game_boost", "toggle_game_boost"):
+                self.toggle_game_boost()
+            elif action_key in ("open_network_dialog", "optimize_network", "switch_dns"):
                 self.open_network_dialog()
-            elif action_key == "open_hardware_dialog":
+            elif action_key in ("open_hardware_dialog", "view_hardware", "battery_saver"):
                 self.open_hardware_dialog()
-            elif action_key == "open_services_dialog":
+            elif action_key in ("open_services_dialog", "manage_services", "manage_startup"):
                 self.open_services_context_dialog()
-            elif action_key == "open_uninstaller_dialog":
+            elif action_key in ("open_uninstaller_dialog", "manage_uninstaller"):
                 self.open_uninstaller_dialog()
-            elif action_key == "open_winsxs_dialog":
+            elif action_key in ("open_winsxs_dialog", "winsxs_cleanup"):
                 self.open_winsxs_dialog()
-            elif action_key == "open_security_dialog":
+            elif action_key in ("open_security_dialog", "scan_security"):
                 if hasattr(self, "tab_security"):
                     self.tabs.setCurrentWidget(self.tab_security)
-            elif action_key == "open_process_tab":
+                elif hasattr(self, "run_security_scan"):
+                    self.run_security_scan()
+            elif action_key in ("open_process_tab", "manage_processes"):
                 if hasattr(self, "tab_performance"):
                     self.tabs.setCurrentWidget(self.tab_performance)
+            elif action_key == "auto_optimize_all":
+                self.tabs.setCurrentWidget(self.tab_dashboard)
+                self.optimize_ram_only()
+                self.start_full_clean()
             elif action_key.startswith("whitelist_proc:"):
                 proc_name = action_key.split(":", 1)[1]
                 self.config_manager.add_to_whitelist(proc_name)
@@ -1351,11 +1355,17 @@ class MainWindow(QMainWindow):
             logging.error(f"[AI Advisor] Action dispatch error: {e}")
 
     def _update_ai_badge(self):
-        """Cập nhật màu/text button AI theo số lượng suggestions nghiêm trọng."""
+        """Cập nhật màu/text button AI theo số lượng suggestions nghiêm trọng và AI Health Score."""
         try:
             counts = self._ai_advisor.get_suggestions_count_by_priority()
             critical = counts.get("CRITICAL", 0)
             warning  = counts.get("WARNING", 0)
+            health = self._ai_advisor.get_health_report()
+            autopilot = self._ai_advisor.get_autopilot_state()
+
+            tooltip = f"AI Copilot & Bác Sĩ Hệ Thống | Sức Khỏe: {health.score}/100 ({health.grade}) | Auto-Pilot: {autopilot.label}"
+            self.btn_ai_advisor.setToolTip(tooltip)
+
             if critical > 0:
                 self.btn_ai_advisor.setText(f"🤖 AI Gợi Ý 🔴{critical}")
                 self.btn_ai_advisor.setStyleSheet(
@@ -1371,9 +1381,12 @@ class MainWindow(QMainWindow):
                     "QPushButton:hover { background: #e3b34144; }"
                 )
             else:
-                self.btn_ai_advisor.setText("🤖 AI Gợi Ý")
-                self.btn_ai_advisor.setStyleSheet("")
-                self.btn_ai_advisor.setProperty("class", "btn-secondary")
+                self.btn_ai_advisor.setText(f"🤖 AI Gợi Ý • Copilot ({health.score}đ)")
+                self.btn_ai_advisor.setStyleSheet(
+                    f"QPushButton {{ color: {health.grade_color}; border: 1px solid {health.grade_color}66; "
+                    f"border-radius: 8px; padding: 4px 8px; background: {health.grade_color}11; }}"
+                    f"QPushButton:hover {{ background: {health.grade_color}33; }}"
+                )
         except Exception:
             pass
 

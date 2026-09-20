@@ -62,12 +62,14 @@ def build():
         "--hidden-import=core.uninstaller_manager",
         "--hidden-import=core.winsxs_cleaner",
         "--hidden-import=core.predictive_ai",
+        "--hidden-import=core.ai_copilot",
         "--hidden-import=ui.hardware_dialog",
         "--hidden-import=ui.ai_advisor_dialog",
         "--hidden-import=ui.service_context_dialog",
         "--hidden-import=ui.uninstaller_dialog",
         "--hidden-import=ui.winsxs_dialog",
         "--hidden-import=ui.toast_notification",
+        "--hidden-import=ui.ai_copilot_widget",
         main_script
     ]
 

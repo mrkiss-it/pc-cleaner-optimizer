@@ -44,7 +44,11 @@ DEFAULT_CONFIG = {
         "height": 680,
         "is_maximized": False
     },
-    "last_active_tab": 0
+    "last_active_tab": 0,
+    "ai_copilot_cloud_enabled": False,
+    "ai_copilot_gemini_api_key": "",
+    "ai_autopilot_enabled": True,
+    "ai_autopilot_mode": "auto"
 }
 
 

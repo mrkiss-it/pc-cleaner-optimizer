@@ -65,9 +65,81 @@ KNOWN_SAFE_PROCESSES = {
 }
 
 
+MODE_GAMING   = "GAMING"
+MODE_WORK     = "WORK"
+MODE_ECO      = "ECO"
+MODE_QUIET    = "QUIET"
+MODE_BALANCED = "BALANCED"
+
+KNOWN_GAME_PROCESSES = {
+    "steam.exe", "steamwebhelper.exe", "epicgameslauncher.exe", "riotclientservices.exe",
+    "leagueclient.exe", "leagueclientux.exe", "valorant.exe", "cs2.exe", "dota2.exe",
+    "genshinimpact.exe", "starrail.exe", "robloxplayerbeta.exe", "minecraft.exe",
+    "gta5.exe", "fifa.exe", "fc24.exe", "fc25.exe", "pubg.exe", "tslgame.exe",
+    "overwatch.exe", "apex.exe", "r5apex.exe", "eldenring.exe", "cyberpunk2077.exe"
+}
+
+KNOWN_WORK_PROCESSES = {
+    "antigravity ide.exe", "antigravity.exe", "code.exe", "cursor.exe", "windsurf.exe",
+    "pycharm64.exe", "idea64.exe", "devenv.exe", "studio64.exe", "photoshop.exe",
+    "illustrator.exe", "premiere.exe", "afterfx.exe", "blender.exe", "autocad.exe",
+    "figma.exe", "excel.exe", "winword.exe", "powerpnt.exe"
+}
+
+
 # ---------------------------------------------------------------------------
 # Data Models
 # ---------------------------------------------------------------------------
+
+@dataclass
+class AIHealthReport:
+    """Báo cáo chỉ số sức khỏe hệ thống toàn diện 0 - 100 điểm."""
+    score: int = 100
+    grade: str = "XUẤT SẮC"
+    grade_color: str = "#3fb950"
+    summary_text: str = ""
+    breakdown: Dict[str, int] = field(default_factory=dict)
+    issues: List[str] = field(default_factory=list)
+    prescription: List[Dict[str, Any]] = field(default_factory=list)
+    predicted_score_after: int = 100
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "score": self.score,
+            "grade": self.grade,
+            "grade_color": self.grade_color,
+            "summary_text": self.summary_text,
+            "breakdown": self.breakdown,
+            "issues": self.issues,
+            "prescription": self.prescription,
+            "predicted_score_after": self.predicted_score_after,
+        }
+
+
+@dataclass
+class AutoPilotState:
+    """Trạng thái chế độ thích ứng ngữ cảnh tự động."""
+    mode: str = MODE_BALANCED
+    label: str = "Chế Độ Cân Bằng"
+    icon: str = "⚖️"
+    badge_text: str = "⚖️ AI Auto-Pilot: Cân Bằng"
+    description: str = ""
+    active_process: Optional[str] = None
+    recommended_tuning: List[str] = field(default_factory=list)
+    is_auto_applied: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "label": self.label,
+            "icon": self.icon,
+            "badge_text": self.badge_text,
+            "description": self.description,
+            "active_process": self.active_process,
+            "recommended_tuning": self.recommended_tuning,
+            "is_auto_applied": self.is_auto_applied,
+        }
+
 
 @dataclass
 class DiskForecast:
@@ -611,10 +683,127 @@ class ProcessAnomalyDetector:
 # 4. Master Engine Orchestrator: PredictiveAIEngine
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 4. Context-Aware AI Auto-Pilot Engine
+# ---------------------------------------------------------------------------
+
+class AIAutoPilotEngine:
+    """
+    Engine AI tự động thích ứng ngữ cảnh (Gaming vs Work vs Battery Eco vs Quiet Night).
+    Nhận diện tiến trình đang chạy và môi trường năng lượng để đề xuất hoặc tự động điều chỉnh.
+    """
+
+    def __init__(self, config_manager: Optional[Any] = None):
+        self.config_manager = config_manager
+        self._current_state = AutoPilotState()
+        self._last_evaluated_ts = 0.0
+
+    def evaluate_context(
+        self,
+        current_stats: Optional[Dict[str, Any]] = None,
+        on_battery: bool = False,
+        battery_pct: int = 100,
+        running_process_names: Optional[List[str]] = None
+    ) -> AutoPilotState:
+        stats = current_stats or {}
+        cpu_pct = float(stats.get("cpu", {}).get("percent", 0.0))
+
+        # Lấy danh sách tên tiến trình nếu chưa có
+        if running_process_names is None:
+            try:
+                running_process_names = [p.name().lower() for p in psutil.process_iter(['name'])]
+            except Exception:
+                running_process_names = []
+
+        proc_set = set(running_process_names)
+        hour = datetime.now().hour
+
+        # 1. Kiểm tra Gaming Mode (Ưu tiên cao nhất khi phát hiện Game đang mở)
+        active_game = next((p for p in KNOWN_GAME_PROCESSES if p in proc_set), None)
+        if active_game:
+            state = AutoPilotState(
+                mode=MODE_GAMING,
+                label="Chế Độ Game Thần Tốc (Game Boost)",
+                icon="🎮",
+                badge_text="🎮 AI Auto-Pilot: Game Boost",
+                description=f"Phát hiện game đang chạy ({active_game}). Tự động thu hồi RAM standby và ưu tiên 100% CPU.",
+                active_process=active_game,
+                recommended_tuning=["Tối ưu RAM standby", "Ưu tiên luồng CPU cao nhất", "Tạm dừng tác vụ nền"],
+                is_auto_applied=True
+            )
+            self._current_state = state
+            return state
+
+        # 2. Kiểm tra Eco Battery Mode (Khi rút sạc và pin dưới 50%)
+        if on_battery and battery_pct <= 50:
+            state = AutoPilotState(
+                mode=MODE_ECO,
+                label="Chế Độ Tiết Kiệm Pin Cơ Động (Eco Saver)",
+                icon="🔋",
+                badge_text="🔋 AI Auto-Pilot: Tiết Kiệm Pin",
+                description=f"Đang dùng pin ({battery_pct}%). Giảm xung nhịp nhàn rỗi và hạn chế quét ổ đĩa nền.",
+                active_process=None,
+                recommended_tuning=["Hạ tải I/O đĩa", "Giảm tác vụ ngầm", "Tắt hoạt ảnh nặng"],
+                is_auto_applied=True
+            )
+            self._current_state = state
+            return state
+
+        # 3. Kiểm tra Work / Coding / Design Mode
+        active_work = next((p for p in KNOWN_WORK_PROCESSES if p in proc_set), None)
+        if active_work:
+            state = AutoPilotState(
+                mode=MODE_WORK,
+                label="Chế Độ Làm Việc & Sáng Tạo (Workstation)",
+                icon="💼",
+                badge_text="💼 AI Auto-Pilot: Làm Việc",
+                description=f"Phát hiện ứng dụng công việc ({active_work}). Cân đối phân bổ RAM cho bộ đệm tập tin.",
+                active_process=active_work,
+                recommended_tuning=["Cấp phát RAM ổn định", "Ổn định mạng độ trễ thấp", "Tối ưu I/O đĩa"],
+                is_auto_applied=True
+            )
+            self._current_state = state
+            return state
+
+        # 4. Kiểm tra Quiet Night Mode (Ban đêm 23h - 6h sáng)
+        if (hour >= 23 or hour < 6) and cpu_pct < 40.0:
+            state = AutoPilotState(
+                mode=MODE_QUIET,
+                label="Chế Độ Ban Đêm Tĩnh Lặng (Quiet Night)",
+                icon="🌙",
+                badge_text="🌙 AI Auto-Pilot: Ban Đêm",
+                description="Khung giờ đêm muộn. Tắt âm thanh thông báo và kích hoạt dọn rác tự động nhàn rỗi.",
+                active_process=None,
+                recommended_tuning=["Tắt âm thanh cảnh báo", "Dọn rác tự động nhàn rỗi"],
+                is_auto_applied=True
+            )
+            self._current_state = state
+            return state
+
+        # 5. Chế độ cân bằng mặc định
+        state = AutoPilotState(
+            mode=MODE_BALANCED,
+            label="Chế Độ Cân Bằng Thông Minh (Balanced)",
+            icon="⚖️",
+            badge_text="⚖️ AI Auto-Pilot: Cân Bằng",
+            description="Hệ thống đang hoạt động ở mức tải tiêu chuẩn, tự động cân bằng giữa hiệu năng và nhiệt độ.",
+            active_process=None,
+            recommended_tuning=["Duy trì trạng thái tối ưu"],
+            is_auto_applied=True
+        )
+        self._current_state = state
+        return state
+
+
+# ---------------------------------------------------------------------------
+# 5. Master Engine Orchestrator: PredictiveAIEngine
+# ---------------------------------------------------------------------------
+
 class PredictiveAIEngine:
     """
     Trạm điều phối trung tâm Trí Tuệ Nhân Tạo Dự Đoán & Nhận Diện Bất Thường.
-    Kết hợp cả 3 mô hình: Dự báo ổ đĩa, Học thói quen, và Phát hiện tiến trình dị biệt.
+    Kết hợp: Dự báo ổ đĩa, Học thói quen, Nhận diện dị biệt tiến trình,
+    AI Auto-Pilot thích ứng ngữ cảnh và Thang điểm AI Health Score (0-100).
     """
 
     def __init__(self, config_manager: Optional[Any] = None):
@@ -622,12 +811,16 @@ class PredictiveAIEngine:
         self.forecaster = DiskForecaster(config_manager)
         self.habit_learner = HabitLearner(config_manager)
         self.anomaly_detector = ProcessAnomalyDetector(config_manager)
+        self.autopilot = AIAutoPilotEngine(config_manager)
 
         self._cached_forecast: Optional[DiskForecast] = None
         self._forecast_cache_ts: float = 0.0
 
         self._cached_anomalies: List[ProcessAnomaly] = []
         self._anomaly_cache_ts: float = 0.0
+
+        self._cached_health: Optional[AIHealthReport] = None
+        self._health_cache_ts: float = 0.0
 
     def feed_snapshot(self, stats: Dict[str, Any]):
         """Nhận dữ liệu từ SystemMonitorHub để huấn luyện mô hình."""
@@ -685,15 +878,245 @@ class PredictiveAIEngine:
         self._anomaly_cache_ts = now
         return self._cached_anomalies
 
+    def get_autopilot_state(
+        self,
+        current_stats: Optional[Dict[str, Any]] = None,
+        on_battery: bool = False,
+        battery_pct: int = 100,
+        running_process_names: Optional[List[str]] = None
+    ) -> AutoPilotState:
+        """Lấy trạng thái chế độ tự động thích ứng ngữ cảnh AI Auto-Pilot."""
+        return self.autopilot.evaluate_context(
+            current_stats=current_stats,
+            on_battery=on_battery,
+            battery_pct=battery_pct,
+            running_process_names=running_process_names
+        )
+
+    def calculate_health_score(
+        self,
+        stats: Optional[Dict[str, Any]] = None,
+        leaks: Optional[List[Dict]] = None,
+        security_info: Optional[Dict[str, Any]] = None,
+        anomalies: Optional[List[ProcessAnomaly]] = None,
+        force_refresh: bool = False
+    ) -> AIHealthReport:
+        """
+        Tính toán chỉ số sức khỏe hệ thống toàn diện từ 0 đến 100 điểm
+        kết hợp từ 6 nhóm chỉ số và sinh Toa Thuốc AI (Prescription).
+        """
+        now = time.time()
+        if not force_refresh and self._cached_health and (now - self._health_cache_ts < 4.0):
+            return self._cached_health
+
+        stats = stats or {}
+        ram = stats.get("ram", {})
+        cpu = stats.get("cpu", {})
+        disk = stats.get("disk", {})
+        net = stats.get("net", {})
+
+        ram_pct = float(ram.get("percent", 50.0))
+        cpu_pct = float(cpu.get("percent", 20.0))
+        disk_free_gb = float(disk.get("free_gb", 50.0))
+        disk_total_gb = float(disk.get("total_gb", 256.0))
+        ping_ms = float(net.get("ping_ms", -1.0))
+
+        leaks_list = leaks or []
+        anom_list = anomalies if anomalies is not None else self.detect_anomalies(limit=3)
+
+        # 1. RAM Score (Max 25 pts)
+        if ram_pct < 60:
+            s_ram = 25
+        elif ram_pct < 75:
+            s_ram = 20
+        elif ram_pct < 85:
+            s_ram = 14
+        else:
+            s_ram = 5
+        if leaks_list:
+            s_ram = max(0, s_ram - 5)
+
+        # 2. CPU Score (Max 20 pts)
+        if cpu_pct < 35:
+            s_cpu = 20
+        elif cpu_pct < 60:
+            s_cpu = 16
+        elif cpu_pct < 80:
+            s_cpu = 10
+        else:
+            s_cpu = 4
+
+        # 3. Disk Score (Max 20 pts)
+        free_pct = (disk_free_gb / disk_total_gb * 100.0) if disk_total_gb > 0 else 20.0
+        if disk_free_gb >= 30.0 or free_pct >= 20.0:
+            s_disk = 20
+        elif disk_free_gb >= 15.0 or free_pct >= 12.0:
+            s_disk = 15
+        elif disk_free_gb >= 8.0:
+            s_disk = 10
+        else:
+            s_disk = 2
+        forecast = self.get_disk_forecast()
+        if forecast.trend_status == STATUS_CRITICAL_DEPLETION:
+            s_disk = max(0, s_disk - 6)
+        elif forecast.trend_status == STATUS_WARNING_DEPLETION:
+            s_disk = max(0, s_disk - 3)
+
+        # 4. Process & Anomaly Score (Max 15 pts)
+        if not anom_list:
+            s_proc = 15
+        elif len(anom_list) == 1 and anom_list[0].risk_level != "HIGH":
+            s_proc = 11
+        else:
+            s_proc = 5
+
+        # 5. Services & System Overhead (Max 10 pts)
+        s_serv = 10
+        if cpu_pct >= 70 or ram_pct >= 85:
+            s_serv = 6
+
+        # 6. Network Score (Max 10 pts)
+        if 0 < ping_ms <= 40:
+            s_net = 10
+        elif 40 < ping_ms <= 100:
+            s_net = 8
+        elif ping_ms > 100:
+            s_net = 4
+        else:
+            s_net = 7
+
+        total_score = s_ram + s_cpu + s_disk + s_proc + s_serv + s_net
+        total_score = max(5, min(100, total_score))
+
+        # Phân loại mức độ
+        if total_score >= 90:
+            grade = "XUẤT SẮC"
+            grade_color = "#3fb950"
+            summary_text = "Hệ thống đang ở trạng thái đỉnh cao, tốc độ mượt mà và tài nguyên dư dả."
+        elif total_score >= 75:
+            grade = "TỐT"
+            grade_color = "#58a6ff"
+            summary_text = "Hệ thống vận hành ổn định. Có thể tinh chỉnh nhẹ để đạt hiệu năng tối đa."
+        elif total_score >= 55:
+            grade = "CẦN TỐI ƯU"
+            grade_color = "#e3b341"
+            summary_text = "Phát hiện tải cao hoặc nghẽn tài nguyên cục bộ. Khuyến nghị chạy tối ưu hóa."
+        else:
+            grade = "NGUY CƠ"
+            grade_color = "#f85149"
+            summary_text = "Cảnh báo quá tải nghiêm trọng! Cần giải phóng RAM/ổ đĩa khẩn cấp để tránh treo máy."
+
+        # Xây dựng danh sách sự cố và Toa Thuốc AI
+        issues = []
+        prescription = []
+        potential_gain = 0
+
+        if ram_pct >= 75 or leaks_list:
+            reason = f"RAM đang chiếm {ram_pct:.1f}%"
+            if leaks_list:
+                reason += f" (có {len(leaks_list)} tiến trình nghi rò rỉ)"
+            issues.append(reason)
+            prescription.append({
+                "title": "Thu Hồi Bộ Nhớ RAM Standby",
+                "desc": "Giải phóng bộ nhớ đệm và hoàn trả ngay ~500MB - 1.5GB RAM trống cho máy.",
+                "action_key": "optimize_ram",
+                "action_label": "⚡ Thu Hồi RAM Ngay",
+                "points_gain": 8
+            })
+            potential_gain += 8
+
+        if disk_free_gb < 20.0 or forecast.trend_status in (STATUS_CRITICAL_DEPLETION, STATUS_WARNING_DEPLETION):
+            issues.append(f"Ổ C chỉ còn {disk_free_gb:.1f} GB trống")
+            prescription.append({
+                "title": "Dọn Dẹp Rác Ổ Đĩa & File Tạm",
+                "desc": "Quét sạch temp, cache trình duyệt, log hỏng và crash dump để mở rộng dung lượng.",
+                "action_key": "clean_disk",
+                "action_label": "🧹 Dọn Rác Ổ C",
+                "points_gain": 7
+            })
+            potential_gain += 7
+
+        if anom_list:
+            issues.append(f"Có {len(anom_list)} tiến trình hoạt động bất thường (Z-score cao)")
+            prescription.append({
+                "title": "Xử Lý Tiến Trình Tiêu Hao Dị Biệt",
+                "desc": f"Kiểm tra và ngăn chặn các tiến trình đột biến ({anom_list[0].name}).",
+                "action_key": "manage_processes",
+                "action_label": "🔄 Xem Tiến Trình",
+                "points_gain": 5
+            })
+            potential_gain += 5
+
+        if cpu_pct >= 60:
+            issues.append(f"CPU đang chịu tải cao ({cpu_pct:.1f}%)")
+            prescription.append({
+                "title": "Kích Hoạt Chế Độ Game Boost",
+                "desc": "Ưu tiên 100% sức mạnh CPU cho ứng dụng bạn đang làm việc.",
+                "action_key": "toggle_game_boost",
+                "action_label": "🎮 Bật Game Boost",
+                "points_gain": 6
+            })
+            potential_gain += 6
+
+        if ping_ms > 100:
+            issues.append(f"Độ trễ mạng cao ({ping_ms:.0f}ms)")
+            prescription.append({
+                "title": "Tối Ưu Hóa Mạng & DNS Siêu Tốc",
+                "desc": "Làm mới DNS Cache và chuyển sang DNS có phản hồi nhanh nhất.",
+                "action_key": "optimize_network",
+                "action_label": "📶 Tối Ưu Mạng",
+                "points_gain": 4
+            })
+            potential_gain += 4
+
+        # Nếu hệ thống quá mượt mà và không có issue
+        if not prescription:
+            prescription.append({
+                "title": "Duy Trì Trạng Thái Đỉnh Cao",
+                "desc": "Chạy quét bảo mật và tối ưu dịch vụ định kỳ để giữ máy luôn nhanh như mới.",
+                "action_key": "auto_optimize_all",
+                "action_label": "✨ Tối Ưu Toàn Diện",
+                "points_gain": 2
+            })
+            potential_gain += 2
+
+        predicted_after = min(100, total_score + potential_gain)
+
+        report = AIHealthReport(
+            score=total_score,
+            grade=grade,
+            grade_color=grade_color,
+            summary_text=summary_text,
+            breakdown={
+                "ram": s_ram,
+                "cpu": s_cpu,
+                "disk": s_disk,
+                "process": s_proc,
+                "services": s_serv,
+                "network": s_net
+            },
+            issues=issues,
+            prescription=prescription,
+            predicted_score_after=predicted_after
+        )
+        self._cached_health = report
+        self._health_cache_ts = now
+        return report
+
     def get_summary(self) -> Dict[str, Any]:
         """Tổng hợp toàn bộ chỉ số AI dự báo phục vụ báo cáo và UI."""
         forecast = self.get_disk_forecast()
         habit = self.get_habit_profile()
         anomalies = self.detect_anomalies(limit=3)
+        health = self.calculate_health_score()
+        autopilot = self.get_autopilot_state()
 
         return {
             "forecast": forecast.to_dict(),
             "habit": habit.to_dict(),
             "anomalies_count": len(anomalies),
             "top_anomaly": anomalies[0].to_dict() if anomalies else None,
+            "health": health.to_dict(),
+            "autopilot": autopilot.to_dict(),
         }
+

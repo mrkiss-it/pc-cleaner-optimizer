@@ -21,6 +21,7 @@ from core.ai_advisor import (
     CATEGORY_ICONS,
     CATEGORY_PREDICTIVE, CATEGORY_ANOMALY,
 )
+from ui.ai_copilot_widget import AICopilotWidget
 
 # ---------------------------------------------------------------------------
 # Color palette
@@ -228,6 +229,43 @@ class PredictiveDashboard(QFrame):
         layout.setContentsMargins(20, 10, 20, 12)
         layout.setSpacing(12)
 
+        # ── Card 0: 🩺 Điểm Sức Khỏe AI ──
+        self.card_health = QFrame()
+        self.card_health.setStyleSheet(f"""
+            QFrame {{
+                background: {_CARD_BG};
+                border: 1px solid {_CARD_BORDER};
+                border-left: 3px solid #3fb950;
+                border-radius: 10px;
+                padding: 6px 10px;
+            }}
+        """)
+        c0_lay = QVBoxLayout(self.card_health)
+        c0_lay.setContentsMargins(4, 4, 4, 4)
+        c0_lay.setSpacing(2)
+
+        c0_header = QHBoxLayout()
+        lbl0_icon = QLabel("🩺")
+        lbl0_icon.setFont(QFont("Segoe UI Emoji", 11))
+        lbl0_title = QLabel("Sức Khỏe AI")
+        lbl0_title.setFont(QFont("Segoe UI Semibold", 8, QFont.Bold))
+        lbl0_title.setStyleSheet("color: #3fb950; border: none; background: transparent;")
+        c0_header.addWidget(lbl0_icon)
+        c0_header.addWidget(lbl0_title, stretch=1)
+        c0_lay.addLayout(c0_header)
+
+        self.lbl_health_score = QLabel("85/100 (TỐT)")
+        self.lbl_health_score.setFont(QFont("Segoe UI Semibold", 10, QFont.Bold))
+        self.lbl_health_score.setStyleSheet(f"color: {_TEXT_PRIMARY}; border: none; background: transparent;")
+        c0_lay.addWidget(self.lbl_health_score)
+
+        self.lbl_health_desc = QLabel("Toa thuốc: Đang đánh giá...")
+        self.lbl_health_desc.setFont(QFont("Segoe UI", 8))
+        self.lbl_health_desc.setStyleSheet(f"color: {_TEXT_MUTED}; border: none; background: transparent;")
+        c0_lay.addWidget(self.lbl_health_desc)
+
+        layout.addWidget(self.card_health)
+
         # ── Card 1: 🔮 Dự Báo Ổ C ──
         self.card_disk = QFrame()
         self.card_disk.setStyleSheet(f"""
@@ -246,7 +284,7 @@ class PredictiveDashboard(QFrame):
         c1_header = QHBoxLayout()
         lbl1_icon = QLabel("🔮")
         lbl1_icon.setFont(QFont("Segoe UI Emoji", 11))
-        lbl1_title = QLabel("Dự Báo Cạn Kiệt Ổ C")
+        lbl1_title = QLabel("Dự Báo Ổ C")
         lbl1_title.setFont(QFont("Segoe UI Semibold", 8, QFont.Bold))
         lbl1_title.setStyleSheet("color: #a371f7; border: none; background: transparent;")
         c1_header.addWidget(lbl1_icon)
@@ -265,7 +303,7 @@ class PredictiveDashboard(QFrame):
 
         layout.addWidget(self.card_disk)
 
-        # ── Card 2: 🎯 Thói Quen Học Máy ──
+        # ── Card 2: 🎯 Auto-Pilot Thích Ứng ──
         self.card_habit = QFrame()
         self.card_habit.setStyleSheet(f"""
             QFrame {{
@@ -283,19 +321,19 @@ class PredictiveDashboard(QFrame):
         c2_header = QHBoxLayout()
         lbl2_icon = QLabel("🎯")
         lbl2_icon.setFont(QFont("Segoe UI Emoji", 11))
-        lbl2_title = QLabel("Học Máy Thói Quen")
+        lbl2_title = QLabel("Auto-Pilot")
         lbl2_title.setFont(QFont("Segoe UI Semibold", 8, QFont.Bold))
         lbl2_title.setStyleSheet("color: #58a6ff; border: none; background: transparent;")
         c2_header.addWidget(lbl2_icon)
         c2_header.addWidget(lbl2_title, stretch=1)
         c2_lay.addLayout(c2_header)
 
-        self.lbl_habit_mode = QLabel("Cân Bằng / Làm Việc")
+        self.lbl_habit_mode = QLabel("Cân Bằng / Tự Động")
         self.lbl_habit_mode.setFont(QFont("Segoe UI Semibold", 10, QFont.Bold))
         self.lbl_habit_mode.setStyleSheet(f"color: {_TEXT_PRIMARY}; border: none; background: transparent;")
         c2_lay.addWidget(self.lbl_habit_mode)
 
-        self.lbl_habit_desc = QLabel("Khung giờ: Đang phân tích")
+        self.lbl_habit_desc = QLabel("Ngữ cảnh: Đang phân tích")
         self.lbl_habit_desc.setFont(QFont("Segoe UI", 8))
         self.lbl_habit_desc.setStyleSheet(f"color: {_TEXT_MUTED}; border: none; background: transparent;")
         c2_lay.addWidget(self.lbl_habit_desc)
@@ -320,7 +358,7 @@ class PredictiveDashboard(QFrame):
         c3_header = QHBoxLayout()
         lbl3_icon = QLabel("🚨")
         lbl3_icon.setFont(QFont("Segoe UI Emoji", 11))
-        lbl3_title = QLabel("Nhận Diện Dị Biệt (Z-Score)")
+        lbl3_title = QLabel("Dị Biệt Z-Score")
         lbl3_title.setFont(QFont("Segoe UI Semibold", 8, QFont.Bold))
         lbl3_title.setStyleSheet("color: #f0883e; border: none; background: transparent;")
         c3_header.addWidget(lbl3_icon)
@@ -344,6 +382,19 @@ class PredictiveDashboard(QFrame):
             return
         engine = self._advisor.predictive_engine
         try:
+            # 0. AI Health Score & Prescription
+            try:
+                report = self._advisor.get_health_report()
+                self.lbl_health_score.setText(f"{report.score}/100 ({report.grade})")
+                self.lbl_health_score.setStyleSheet(f"color: {report.grade_color}; font-weight: bold; border: none; background: transparent;")
+                if report.prescription:
+                    p = report.prescription[0]
+                    self.lbl_health_desc.setText(f"Toa thuốc: {p['title']} (+{p.get('points_gain', 5)}đ)")
+                else:
+                    self.lbl_health_desc.setText("Toa thuốc: Duy trì trạng thái tốt")
+            except Exception:
+                pass
+
             # 1. Disk Forecast
             fc = engine.get_disk_forecast()
             self.lbl_disk_free.setText(f"{fc.current_free_gb:.1f} GB trống ({fc.free_percent:.1f}%)")
@@ -360,11 +411,16 @@ class PredictiveDashboard(QFrame):
                 self.lbl_disk_trend.setText("🟢 Tốc độ tiêu thụ ổn định")
                 self.lbl_disk_trend.setStyleSheet("color: #3fb950; border: none; background: transparent;")
 
-            # 2. Habit Profile
-            hb = engine.get_habit_profile()
-            self.lbl_habit_mode.setText(hb.predicted_workload)
-            slot_name = hb.time_slot_label.split('(')[0].strip()
-            self.lbl_habit_desc.setText(f"{slot_name} | {hb.recommended_mode_label}")
+            # 2. Auto-Pilot State / Habit Profile
+            try:
+                auto_state = self._advisor.get_autopilot_state()
+                self.lbl_habit_mode.setText(auto_state.mode_label)
+                self.lbl_habit_desc.setText(auto_state.reason)
+            except Exception:
+                hb = engine.get_habit_profile()
+                self.lbl_habit_mode.setText(hb.predicted_workload)
+                slot_name = hb.time_slot_label.split('(')[0].strip()
+                self.lbl_habit_desc.setText(f"{slot_name} | {hb.recommended_mode_label}")
 
             # 3. Anomaly Detection
             anoms = engine.detect_anomalies(limit=3)
@@ -571,6 +627,12 @@ class AIAdvisorDialog(QDialog):
         self._tab_btns[CATEGORY_ANOMALY] = anom_btn
         tabs_layout.addWidget(anom_btn)
 
+        # Tab Trợ Lý AI Copilot (💬)
+        copilot_btn = _TabBtn("💬 Trợ Lý AI Copilot", "#38bdf8")
+        copilot_btn.clicked.connect(lambda checked=False, b=copilot_btn: self._set_filter("COPILOT", b))
+        self._tab_btns["COPILOT"] = copilot_btn
+        tabs_layout.addWidget(copilot_btn)
+
         tabs_layout.addStretch()
         root.addWidget(tabs_frame)
 
@@ -579,6 +641,16 @@ class AIAdvisorDialog(QDialog):
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         root.addWidget(self._scroll, stretch=1)
+
+        # ── AI Copilot Interactive Widget ──
+        self._copilot_widget = AICopilotWidget(
+            config_manager=getattr(self._advisor, "_config_manager", None),
+            predictive_engine=getattr(self._advisor, "predictive_engine", None),
+            parent=self
+        )
+        self._copilot_widget.action_triggered.connect(self._dispatch_action)
+        self._copilot_widget.hide()
+        root.addWidget(self._copilot_widget, stretch=1)
 
         # ── Footer ──
         footer = QFrame()
@@ -618,14 +690,24 @@ class AIAdvisorDialog(QDialog):
         self._active_filter = prio
         for k, b in self._tab_btns.items():
             b.set_active(k == prio)
-        self._render_cards(self._advisor.get_suggestions())
+        if prio == "COPILOT":
+            self._scroll.hide()
+            self._copilot_widget.show()
+            self._copilot_widget.update_telemetry_bar()
+        else:
+            self._copilot_widget.hide()
+            self._scroll.show()
+            self._render_cards(self._advisor.get_suggestions())
 
     def _refresh(self):
         self._advisor.invalidate_cache()
         self._dashboard.update_data()
-        suggestions = self._advisor.get_suggestions()
-        self._update_badge(suggestions)
-        self._render_cards(suggestions)
+        if self._active_filter == "COPILOT":
+            self._copilot_widget.update_telemetry_bar()
+        else:
+            suggestions = self._advisor.get_suggestions()
+            self._update_badge(suggestions)
+            self._render_cards(suggestions)
 
     def _update_badge(self, suggestions: List[Suggestion]):
         critical = sum(1 for s in suggestions if s.priority == PRIORITY_CRITICAL)
