@@ -9,6 +9,7 @@ from core.system_monitor import SystemMonitor
 from core.leak_detector import MemoryLeakDetector
 from config_manager import ConfigManager
 from core.wifi_recovery import RecoveryToastGate
+from core.thermal_monitor import ThermalToastGate
 
 class BackgroundScheduler(QObject):
     # Signals for UI notifications
@@ -18,6 +19,8 @@ class BackgroundScheduler(QObject):
     network_optimized = pyqtSignal(dict)
     dns_switched = pyqtSignal(dict)
     security_scan_completed = pyqtSignal(dict)   # Auto Security Scanner signal
+    thermal_warning = pyqtSignal(dict)
+    thermal_snapshot_ready = pyqtSignal(dict)
 
     def __init__(self, config_manager: ConfigManager, parent=None):
         super().__init__(parent)
@@ -38,6 +41,7 @@ class BackgroundScheduler(QObject):
         self.wifi_fix_unrecovered = 0
         self.wifi_fix_max_unrecovered = 2
         self.recovery_toast_gate = RecoveryToastGate()
+        self.thermal_toast_gate = ThermalToastGate()
         self.last_dns_trigger = datetime.now() - timedelta(hours=2)
         self.dns_cooldown_seconds = 7200
         self.last_security_trigger = datetime.now() - timedelta(hours=23)  # Run first scan sooner
@@ -182,6 +186,9 @@ class BackgroundScheduler(QObject):
             if sec_elapsed >= sec_cooldown:
                 self.last_security_trigger = now
                 self.run_auto_security_scan()
+
+        # 6. Laptop thermal warning (cached WMI / nvidia-smi / psutil — never fake)
+        self._maybe_emit_thermal_warning(now, config)
 
     def run_scheduled_clean(self):
         """
@@ -527,3 +534,40 @@ class BackgroundScheduler(QObject):
                 logger.error(f"[Scheduler] Lỗi khi rà soát bảo mật: {e}")
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
+
+    def _maybe_emit_thermal_warning(self, now, config):
+        """Probe temps off the UI thread; toast when hot, with cooldown."""
+        cfg = config if isinstance(config, dict) else {}
+        if not cfg.get("thermal_monitor_enabled", True):
+            return
+        try:
+            warn = float(cfg.get("thermal_warn_celsius", 90))
+        except (TypeError, ValueError):
+            warn = 90.0
+
+        def _done(snap):
+            try:
+                self.thermal_snapshot_ready.emit(snap if isinstance(snap, dict) else {})
+            except Exception:
+                pass
+            if not cfg.get("thermal_warn_toast_enabled", True):
+                return
+            try:
+                from core.thermal_monitor import build_thermal_toast_payload
+                payload = build_thermal_toast_payload(snap, warn_celsius=warn)
+            except Exception:
+                payload = None
+            if not payload:
+                return
+            try:
+                if not self.thermal_toast_gate.allow_from_config(time.time(), cfg):
+                    return
+            except Exception:
+                return
+            self.thermal_warning.emit(payload)
+
+        try:
+            from core.thermal_monitor import ensure_snapshot_async
+            ensure_snapshot_async(_done, force_refresh=False, warn_celsius=warn)
+        except Exception:
+            pass
