@@ -959,8 +959,12 @@ assert "models/{candidate}:generateContent" in gemini_src or "models/{model}:gen
 assert "models/gemini-1.5" not in gemini_src, "Khong duoc goi model Gemini 1.5 da shut down"
 assert DEFAULT_GEMINI_MODEL == "gemini-flash-latest"
 assert _DEFAULT_CFG.get("ai_copilot_gemini_model") == "gemini-flash-latest"
-assert "gemini-flash-latest" in GEMINI_FALLBACK_MODELS
-assert "gemini-3.1-flash-lite" in GEMINI_FALLBACK_MODELS
+assert GEMINI_FALLBACK_MODELS == (
+    "gemini-flash-latest",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-2.0-flash",
+)
 assert "?key=" not in gemini_src, "API key khong duoc gan vao query string"
 assert "x-goog-api-key" in gemini_src, "API key phai gui qua header x-goog-api-key"
 assert "Không tìm thấy mô hình Gemini" in gemini_src or "Không tìm thấy mô hình Gemini" in inspect.getsource(CloudAIBrain)
@@ -976,8 +980,11 @@ assert "not found" in _parsed.lower()
 assert "{" not in _parsed and "status" not in _parsed
 _fmt = format_gemini_http_error(404, _raw_404)
 assert _fmt.startswith("HTTP 404:")
-assert "models/gemini-2.5-flash is not found" in _fmt
+assert "Mô hình Gemini không khả dụng" in _fmt
+assert "gemini-2.5-flash" in _fmt
+assert "models/gemini-2.5-flash is not found" not in _fmt
 assert '"error"' not in _fmt
+assert "{" not in _fmt
 
 adv_dlg.close()
 
@@ -1200,9 +1207,12 @@ assert none_all is None
 assert "Không tìm thấy mô hình Gemini" in CloudAIBrain.last_error
 assert "gemini-2.5-flash" in CloudAIBrain.last_error
 assert "gemini-flash-latest" in CloudAIBrain.last_error
-assert "not found" in CloudAIBrain.last_error.lower()
+assert "gemini-3.1-flash-lite" in CloudAIBrain.last_error
+assert CloudAIBrain.last_error_short.startswith("Cloud Gemini:")
+assert "models/gemini-2" not in CloudAIBrain.last_error_short
 assert '"error"' not in CloudAIBrain.last_error
 assert '"status"' not in CloudAIBrain.last_error
+assert "{" not in CloudAIBrain.last_error
 assert len(_all_urls) >= 2
 
 # Non-404 (401) must not walk the fallback list
@@ -1231,6 +1241,36 @@ combo_items = [_api_dlg.combo_model.itemText(i) for i in range(_api_dlg.combo_mo
 assert "gemini-flash-latest" in combo_items
 assert "gemini-3.1-flash-lite" in combo_items
 _api_dlg.close()
+
+# G. ConfigManager must migrate gemini-2.5-flash and can never re-save it
+from config_manager import ConfigManager as _CfgGemini, canonicalize_gemini_model as _canon_g
+assert _canon_g("gemini-2.5-flash") == "gemini-flash-latest"
+assert _canon_g("models/gemini-2.5-flash") == "gemini-flash-latest"
+assert _canon_g("gemini-2.0-flash") == "gemini-2.0-flash"
+
+fd_g, tmp_g = tempfile.mkstemp(suffix=".json")
+os.close(fd_g)
+with open(tmp_g, "w", encoding="utf-8") as f:
+    _json.dump({"ai_copilot_gemini_model": "gemini-2.5-flash", "ai_copilot_cloud_enabled": True}, f)
+iso_g = _CfgGemini(config_path=tmp_g)
+assert iso_g.get("ai_copilot_gemini_model") == "gemini-flash-latest"
+with open(tmp_g, "r", encoding="utf-8") as f:
+    disk_g = _json.load(f)
+assert disk_g.get("ai_copilot_gemini_model") == "gemini-flash-latest"
+assert disk_g.get("ai_copilot_gemini_model") != "gemini-2.5-flash"
+iso_g.config["ai_copilot_gemini_model"] = "gemini-2.5-flash"
+iso_g.set("last_active_tab", 3)
+with open(tmp_g, "r", encoding="utf-8") as f:
+    disk_g2 = _json.load(f)
+assert disk_g2.get("ai_copilot_gemini_model") == "gemini-flash-latest", "save_config khong duoc ghi lai 2.5-flash"
+iso_g.set("ai_copilot_gemini_model", "gemini-2.5-flash")
+assert iso_g.get("ai_copilot_gemini_model") == "gemini-flash-latest"
+iso_g.set("ai_copilot_gemini_model", "gemini-2.0-flash")
+assert iso_g.get("ai_copilot_gemini_model") == "gemini-2.0-flash"
+try:
+    os.remove(tmp_g)
+except Exception:
+    pass
 
 print(" [PASS] 44. Auto-Pilot apply/undo, Gemini last_error hien thi, secrets khong ghi vao config.json!")
 

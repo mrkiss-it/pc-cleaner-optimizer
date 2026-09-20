@@ -27,20 +27,22 @@ from core.predictive_ai import (
     PredictiveAIEngine, AIHealthReport, AutoPilotState,
     STATUS_CRITICAL_DEPLETION, STATUS_WARNING_DEPLETION
 )
+from config_manager import DEFAULT_GEMINI_MODEL, canonicalize_gemini_model
 
 # Gemini 2.5 Flash returns HTTP 404 for many new AI Studio keys (Sep 2026).
 # Prefer the documented Flash alias, then current stable Flash / Flash-Lite IDs.
-DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
 GEMINI_FALLBACK_MODELS = (
     "gemini-flash-latest",
-    "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-2.0-flash",
 )
 GEMINI_KNOWN_MODELS = (
     "gemini-flash-latest",
+    "gemini-3.1-flash-lite",
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
+    "gemini-2.0-flash",
 )
 _GEMINI_MODEL_RE = re.compile(r"[A-Za-z0-9._-]+")
 _GEMINI_ERROR_MSG_MAX = 240
@@ -537,8 +539,23 @@ def parse_gemini_error_message(body: str) -> str:
 
 
 def format_gemini_http_error(code: int, body: str, reason: str = "") -> str:
-    """Human-readable HTTP error: parsed Google message instead of truncated JSON."""
+    """Human-readable HTTP error: parsed Google message, never truncated raw JSON."""
     detail = parse_gemini_error_message(body) or (reason or "").strip()
+    blob = f"{body or ''} {detail}"
+    is_not_found = int(code) == 404 or "not found" in detail.lower() or "NOT_FOUND" in blob
+    if is_not_found:
+        model_id = ""
+        m = re.search(r"models/([A-Za-z0-9._-]+)", detail) or re.search(
+            r"\b(gemini-[A-Za-z0-9._-]+)\b", detail
+        )
+        if m:
+            model_id = m.group(1)
+        if model_id:
+            return (
+                f"HTTP {code}: Mô hình Gemini không khả dụng cho API key này "
+                f"({model_id})."
+            )
+        return f"HTTP {code}: Mô hình Gemini không tồn tại hoặc không khả dụng cho API key này."
     if detail:
         return f"HTTP {code}: {detail}"
     return f"HTTP {code}"
@@ -548,6 +565,7 @@ class CloudAIBrain:
     """Kết nối mô hình ngôn ngữ lớn trên đám mây (Google Gemini Flash)."""
 
     last_error: str = ""
+    last_error_short: str = ""
     last_working_model: str = ""
 
     @classmethod
@@ -562,9 +580,11 @@ class CloudAIBrain:
         persist_model: Optional[Any] = None,
     ) -> Optional[str]:
         cls.last_error = ""
+        cls.last_error_short = ""
         cls.last_working_model = ""
         if not api_key:
             cls.last_error = "Chưa có Gemini API Key."
+            cls.last_error_short = cls.last_error
             return None
 
         requested = normalize_gemini_model(model)
@@ -621,22 +641,26 @@ class CloudAIBrain:
                         if int(response.status) == 404:
                             continue
                         cls.last_error = last_http_detail
+                        cls.last_error_short = last_http_detail
                         return None
                     resp_data = json.loads(raw)
                     candidates = resp_data.get("candidates", [])
                     if not candidates:
                         prompt_fb = (resp_data.get("promptFeedback") or {}).get("blockReason")
                         cls.last_error = f"Gemini không trả lời ({prompt_fb or 'phản hồi rỗng'})."
+                        cls.last_error_short = cls.last_error
                         return None
                     finish = candidates[0].get("finishReason") or ""
                     parts = candidates[0].get("content", {}).get("parts", [])
                     text = parts[0].get("text", "") if parts else ""
                     if text:
                         cls.last_error = ""
+                        cls.last_error_short = ""
                         cls.last_working_model = candidate
                         cls._persist_working_model(persist_model, requested, candidate)
                         return text
                     cls.last_error = f"Gemini trả về rỗng ({finish or 'no text'})."
+                    cls.last_error_short = cls.last_error
                     return None
             except urllib.error.HTTPError as e:
                 body = ""
@@ -649,28 +673,33 @@ class CloudAIBrain:
                 if int(e.code) == 404:
                     continue
                 cls.last_error = last_http_detail
+                cls.last_error_short = last_http_detail
                 return None
             except urllib.error.URLError as e:
                 cls.last_error = f"Lỗi mạng: {getattr(e, 'reason', e)}"
+                cls.last_error_short = "Lỗi mạng khi gọi Cloud Gemini."
                 logger.debug(f"[CloudAI] Gemini URLError: {e}")
                 return None
             except Exception as e:
                 cls.last_error = f"{type(e).__name__}: {e}"
+                cls.last_error_short = "Cloud Gemini gặp lỗi không xác định."
                 logger.debug(f"[CloudAI] Gemini API error: {e}")
                 return None
 
         models_tried = ", ".join(tried) if tried else requested
-        detail = last_http_detail
+        cls.last_error_short = "Cloud Gemini: không tìm thấy mô hình khả dụng (HTTP 404)"
         cls.last_error = (
             f"Không tìm thấy mô hình Gemini khả dụng cho API key này (đã thử: {models_tried}). "
             "Hãy chọn mô hình khác trong Cấu Hình AI hoặc kiểm tra quyền truy cập tại Google AI Studio."
         )
-        if detail:
-            cls.last_error = f"{cls.last_error} Chi tiết: {detail}"
+        if last_http_detail and "Mô hình Gemini không" in last_http_detail:
+            cls.last_error = f"{cls.last_error} {last_http_detail}"
         return None
 
     @staticmethod
     def _persist_working_model(persist_model: Optional[Any], requested: str, working: str) -> None:
+        working = canonicalize_gemini_model(working)
+        requested = str(requested or "").strip()
         if not persist_model or not working or working == requested:
             return
         try:
@@ -752,9 +781,10 @@ class AICopilotEngine:
                 cm = self.config_manager
 
                 def _persist_working(working: str, _cm=cm) -> None:
+                    fixed = canonicalize_gemini_model(working)
                     current = str(_cm.get("ai_copilot_gemini_model", "")).strip()
-                    if working and working != current:
-                        _cm.set("ai_copilot_gemini_model", working)
+                    if fixed and fixed != current:
+                        _cm.set("ai_copilot_gemini_model", fixed)
 
                 persist_cb = _persist_working
 
@@ -769,6 +799,7 @@ class AICopilotEngine:
             cloud_failed = not bool(cloud_reply)
         elif is_cloud_enabled and not api_key:
             CloudAIBrain.last_error = "Đã bật Cloud Gemini nhưng chưa nhập API Key."
+            CloudAIBrain.last_error_short = CloudAIBrain.last_error
             cloud_failed = True
 
         if cloud_reply:

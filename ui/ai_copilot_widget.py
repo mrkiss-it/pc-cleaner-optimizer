@@ -638,7 +638,10 @@ class AICopilotWidget(QWidget):
         if CloudAIBrain.last_error and hasattr(self, "lbl_busy"):
             # Keep a non-blocking hint if cloud failed but offline replied
             if "Cloud Gemini lỗi" in (self.copilot_engine.chat_history[-1].content if self.copilot_engine.chat_history else ""):
-                self._set_status_text(CloudAIBrain.last_error, is_error=True)
+                hint = CloudAIBrain.last_error_short or CloudAIBrain.last_error
+                self._set_status_text(hint, is_error=True)
+                if CloudAIBrain.last_error:
+                    self.lbl_busy.setToolTip(CloudAIBrain.last_error)
 
     def _refresh_chat_display(self):
         # Xóa các widget cũ trong chat_lay (trừ spacer cuối)
