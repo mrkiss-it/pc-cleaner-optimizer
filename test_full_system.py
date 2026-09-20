@@ -1682,7 +1682,45 @@ assert any(p.get("action_key") == "repair_network_now" for p in miss_health.pres
 
 print(" [PASS] 45. Missing-ping auto-check + safe repair: meter that, throttle/config, Advisor/Copilot, health check!")
 
-print("\n>>> TAT CA 45 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST, AI COPILOT/AUTO-PILOT APPLY, ASYNC GEMINI, SECRET STORAGE & MISSING-PING AUTO-FIX DEU THANH CONG 100%! <<<")
+# ------------------------------------------------------------------
+print("\n=== 46. Wi-Fi drop / reconnect-loop recovery ===")
+from core.wifi_recovery import (
+    WifiRecovery as _WR,
+    parse_link_mbps as _plm,
+    count_wlan_auth_flaps as _cwf,
+    classify_wifi_cause as _cwc,
+)
+from core.system_monitor import format_ping_overlay_text as _fpo
+_WR.reset_state()
+assert _plm("26 Mbps") == 26.0
+assert _cwf("Event ID: 8003\nEvent ID: 11000\nEvent ID: 11001\nEvent ID: 8002") >= 4
+cause_w, lab_w = _cwc({
+    "is_wifi": True, "is_up": True, "state": "connected", "ssid": "NhaMinh",
+    "link_mbps": 26, "status_flaps": 4, "wlan_flaps": 5, "link_loss": False,
+})
+assert cause_w == "reconnect_loop"
+assert _fpo(28, True, "ok", wifi_status="reconnect_loop") == "rớt"
+assert _fpo(40, True, "ok", wifi_status="weak_link") == "yếu"
+assert _WR.should_trigger_wifi_drop_fix(True, True, 1000, 980, 300, 0, first_cooldown_sec=12) is True
+assert _WR.should_trigger_wifi_drop_fix(True, True, 9999, 0, 300, 2) is False
+assert "Disable-NetAdapter" in _WR.skipped_nic_toggle() or "tắt/bật" in _WR.skipped_nic_toggle()
+assert int(_DC.get("auto_network_wifi_fix_first_cooldown_seconds", 99)) <= 15
+assert "Wi-Fi" in win.chk_auto_ping_fix.text() or "wifi" in win.chk_auto_ping_fix.text().lower()
+clock = {"t": 0.0}
+def _sleep(s):
+    clock["t"] += s
+stable = _WR.wait_for_stable_link(
+    get_snapshot=lambda: {"is_up": True},
+    duration_sec=8, interval_sec=2,
+    sleep_fn=_sleep, clock_fn=lambda: clock["t"],
+    probe_fn=lambda: True,
+)
+assert stable["stable"] is True
+assert clock["t"] >= 8
+_WR.reset_state()
+print(" [PASS] 46. Wi-Fi flap detection, DHCP/SSID/power-save path, stability window, overlay rớt/yếu!")
+
+print("\n>>> TAT CA 46 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST, AI COPILOT/AUTO-PILOT APPLY, ASYNC GEMINI, SECRET STORAGE, MISSING-PING AUTO-FIX & WIFI DROP RECOVERY DEU THANH CONG 100%! <<<")
 
 
 

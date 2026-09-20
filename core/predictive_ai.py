@@ -1268,15 +1268,22 @@ class PredictiveAIEngine:
         if ping_measured and ping_ms <= 0:
             issues.append("Không đo được Ping (timeout / mất kết nối)")
             desc = (
-                "Chẩn đoán nguyên nhân (timeout meter, DNS, gateway, TCP) rồi sửa ngay: "
-                "đo lại timeout dài hơn, flush DNS, ARP, đổi DNS tốt nhất nếu vẫn lỗi."
+                "Chẩn đoán nguyên nhân (timeout meter, DNS, gateway, TCP, Wi-Fi flap) rồi sửa ngay: "
+                "flush DNS, DHCP, reconnect SSID, tắt tiết kiệm pin Wi-Fi nếu cần."
             )
             try:
                 from core.network_optimizer import NetworkOptimizer
-                report = getattr(NetworkOptimizer, "last_missing_ping_report", None) or {}
-                if report.get("cause_label"):
+                from core.wifi_recovery import WifiRecovery
+                report = (
+                    getattr(NetworkOptimizer, "last_wifi_drop_report", None)
+                    or getattr(NetworkOptimizer, "last_missing_ping_report", None)
+                    or {}
+                )
+                det = getattr(WifiRecovery, "last_detect", None) or {}
+                label = report.get("cause_label") or det.get("cause_label")
+                if label:
                     desc = (
-                        f"Nguyên nhân: {report.get('cause_label')}. "
+                        f"Nguyên nhân: {label}. "
                         f"Đã sửa: {report.get('applied_summary') or 'chưa có'}. "
                         "Bấm để chạy lại kiểm tra & sửa."
                     )
@@ -1290,7 +1297,26 @@ class PredictiveAIEngine:
                 "points_gain": 4
             })
             potential_gain += 4
-        elif ping_ms > 100:
+        else:
+            try:
+                from core.wifi_recovery import WifiRecovery
+                det = getattr(WifiRecovery, "last_detect", None) or {}
+                if det.get("unstable"):
+                    issues.append(str(det.get("cause_label") or "Wi-Fi rớt / yếu"))
+                    prescription.append({
+                        "title": "Sửa Wi-Fi rớt liên tục",
+                        "desc": (
+                            f"Nguyên nhân: {det.get('cause_label')}. "
+                            "Renew DHCP, reconnect SSID, tắt tiết kiệm pin — không tắt-bật card."
+                        ),
+                        "action_key": "repair_network_now",
+                        "action_label": "🛠️ Sửa Wi-Fi Ngay",
+                        "points_gain": 4
+                    })
+                    potential_gain += 4
+            except Exception:
+                pass
+        if ping_ms > 100:
             issues.append(f"Độ trễ mạng cao ({ping_ms:.0f}ms)")
             prescription.append({
                 "title": "Tối Ưu Hóa Mạng & DNS Siêu Tốc",

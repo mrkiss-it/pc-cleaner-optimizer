@@ -130,6 +130,8 @@ def test_overlay_shows_timeout_not_dash():
     assert format_ping_overlay_text(-1, True, "meter_timeout") == "timeout"
     assert format_ping_overlay_text(-1, True, "unreachable") == "mất"
     assert format_ping_overlay_text(-1, True, "dns_fail") == "DNS"
+    assert format_ping_overlay_text(-1, True, "reconnect_loop") == "rớt"
+    assert format_ping_overlay_text(26, True, "ok", wifi_status="weak_link") == "yếu"
 
 
 def test_diagnosis_labels():
@@ -372,6 +374,8 @@ def test_no_infinite_loop_after_unrecovered():
 def test_advisor_missing_ping_suggestion():
     adv = AIAdvisor()
     adv._cache_ttl = 0.0
+    from core.wifi_recovery import WifiRecovery
+    WifiRecovery.reset_state()
     NetworkOptimizer.last_missing_ping_report = {
         "cause_label": "đồng hồ Ping quá thời gian (probe chậm hoặc bị chặn)",
         "applied_summary": "flush DNS, làm mới ARP/NetBIOS",

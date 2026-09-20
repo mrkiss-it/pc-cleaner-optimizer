@@ -394,34 +394,54 @@ class OfflineExpertBrain:
                 applied_line = ""
                 try:
                     from core.network_optimizer import NetworkOptimizer
-                    report = getattr(NetworkOptimizer, "last_missing_ping_report", None) or {}
-                    if report.get("cause_label"):
-                        cause_line = f"\n> 🔍 **Nguyên nhân:** {report.get('cause_label')}."
+                    from core.wifi_recovery import WifiRecovery
+                    report = (
+                        getattr(NetworkOptimizer, "last_wifi_drop_report", None)
+                        or getattr(NetworkOptimizer, "last_missing_ping_report", None)
+                        or {}
+                    )
+                    det = getattr(WifiRecovery, "last_detect", None) or {}
+                    if report.get("cause_label") or det.get("cause_label"):
+                        cause_line = f"\n> 🔍 **Nguyên nhân:** {report.get('cause_label') or det.get('cause_label')}."
                     if report.get("applied_summary"):
                         applied_line = f"\n> 🛠️ **Đã sửa:** {report.get('applied_summary')}."
                 except Exception:
                     cause_line = ""
                     applied_line = ""
                 reply_lines.append(
-                    "\n> ⚠️ **Ping không có:** Tôi sẽ chẩn đoán rồi sửa ngay "
-                    "(đo lại timeout dài hơn → flush DNS → ARP → đổi DNS nếu vẫn lỗi; "
-                    "không reset Winsock, không restart card)."
+                    "\n> ⚠️ **Ping không có / Wi-Fi có thể rớt:** Tôi sẽ chẩn đoán rồi sửa ngay "
+                    "(flush DNS → DHCP → reconnect SSID → tắt tiết kiệm pin Wi-Fi nếu flap; "
+                    "không reset Winsock, không tắt-bật card)."
                     f"{cause_line}{applied_line}"
                 )
                 reply_lines.append(
                     "\n**Các bước an toàn:**\n"
-                    "1. **Kiểm tra & sửa ngay**: chẩn đoán nguyên nhân + flush DNS / ARP / DNS siêu tốc.\n"
-                    "2. **Đổi DNS Siêu Tốc** nếu Windows hỏi quyền Administrator (UAC)."
+                    "1. **Kiểm tra & sửa ngay**: chẩn đoán nguyên nhân + flush DNS / DHCP / reconnect Wi-Fi.\n"
+                    "2. **Đổi DNS Siêu Tốc** nếu đang dùng AdGuard hoặc Windows hỏi quyền Administrator (UAC)."
                 )
                 actions.append(CopilotAction(key="repair_network_now", label="🛠️ Kiểm Tra & Sửa Mạng", icon="🛠️"))
                 actions.append(CopilotAction(key="switch_dns", label="🌐 Đổi DNS Siêu Tốc", icon="🌐"))
             else:
+                wifi_note = ""
+                try:
+                    from core.wifi_recovery import WifiRecovery
+                    det = getattr(WifiRecovery, "last_detect", None) or {}
+                    if det.get("unstable"):
+                        wifi_note = (
+                            f"\n> ⚠️ **Wi-Fi:** {det.get('cause_label')}. "
+                            "Ping TCP vẫn có thể OK khi WLAN đang flap — nên sửa Wi-Fi (DHCP / reconnect SSID / tắt tiết kiệm pin)."
+                        )
+                except Exception:
+                    wifi_note = ""
                 reply_lines.append(
                     "\n**Giải pháp khắc phục giật lag mạng:**\n"
                     "1. **Xóa DNS Cache (`ipconfig /flushdns`)**: Loại bỏ các bản ghi phân giải tên miền cũ hoặc bị lỗi.\n"
                     "2. **Chuyển sang DNS Siêu Tốc (Cloudflare 1.1.1.1 hoặc Google 8.8.8.8)**: "
                     "Tăng tốc độ tải trang web lên 20 - 40% và giảm hiện tượng nghẽn mạng giờ cao điểm."
+                    f"{wifi_note}"
                 )
+                if wifi_note:
+                    actions.append(CopilotAction(key="repair_network_now", label="🛠️ Sửa Wi-Fi Ngay", icon="🛠️"))
                 actions.append(CopilotAction(key="optimize_network", label="📶 Tối Ưu Mạng Ngay", icon="📶"))
                 actions.append(CopilotAction(key="switch_dns", label="🌐 Đổi DNS Siêu Tốc", icon="🌐"))
             return CopilotResult(reply="\n".join(reply_lines), actions=actions, telemetry_summary=telemetry, source="offline_expert")

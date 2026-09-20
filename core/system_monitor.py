@@ -305,20 +305,32 @@ def format_ping_overlay_text(
     ping_ms: float,
     ping_measured: bool,
     ping_status: str = "",
+    wifi_status: str = "",
 ) -> str:
     """
-    Text trên widget nổi: số ms khi đo được; 'timeout' / 'mất' / 'DNS'
-    khi đã đo nhưng thất bại — không chỉ '--'.
+    Text trên widget nổi: số ms khi đo được; 'timeout' / 'mất' / 'DNS' / 'rớt' / 'yếu'
+    khi đã đo nhưng thất bại hoặc Wi-Fi đang flap — không chỉ '--'.
     """
+    wifi = str(wifi_status or "").lower()
+    if wifi in ("reconnect_loop", "wifi_drop", "link_loss"):
+        return "rớt"
+    if wifi in ("weak_link",):
+        return "yếu"
     try:
         val = float(ping_ms)
     except (TypeError, ValueError):
         val = -1.0
+    if val > 0 and not wifi:
+        return f"{val:.0f} ms"
     if val > 0:
         return f"{val:.0f} ms"
     if not ping_measured:
         return "-- ms"
     status = str(ping_status or "timeout").lower()
+    if status in ("reconnect_loop", "wifi_drop", "link_loss"):
+        return "rớt"
+    if status in ("weak_link",):
+        return "yếu"
     if status in ("timeout", "meter_timeout"):
         return "timeout"
     if status in ("unreachable", "no_connectivity", "tcp_fail", "firewall_or_no_route"):

@@ -389,6 +389,47 @@ class AIAdvisor:
     # --- NETWORK ---
     def _rule_network(self, buf: List[_Snapshot]) -> List[Suggestion]:
         results = []
+        wifi_cause = ""
+        wifi_label = ""
+        wifi_applied = ""
+        try:
+            from core.wifi_recovery import WifiRecovery
+            from core.network_optimizer import NetworkOptimizer
+            det = getattr(WifiRecovery, "last_detect", None) or {}
+            report = (
+                getattr(NetworkOptimizer, "last_wifi_drop_report", None)
+                or getattr(NetworkOptimizer, "last_missing_ping_report", None)
+                or {}
+            )
+            if det.get("unstable"):
+                wifi_cause = str(det.get("cause") or "reconnect_loop")
+                wifi_label = str(det.get("cause_label") or "")
+            elif str(report.get("cause") or "") in ("reconnect_loop", "weak_link", "link_loss"):
+                wifi_cause = str(report.get("cause") or "")
+                wifi_label = str(report.get("cause_label") or "")
+            wifi_applied = str(report.get("applied_summary") or "")
+        except Exception:
+            wifi_cause = ""
+        if wifi_cause:
+            detail_parts = [f"Nguyên nhân: {wifi_label or wifi_cause}."]
+            if wifi_applied:
+                detail_parts.append(f"Đã sửa: {wifi_applied}.")
+            else:
+                detail_parts.append(
+                    "Ứng dụng sẽ flush DNS, renew DHCP, reconnect đúng SSID, "
+                    "tắt tiết kiệm pin Wi-Fi rồi chờ link Up ổn định. Không tắt-bật card."
+                )
+            detail_parts.append("Bấm để chạy kiểm tra & sửa Wi-Fi ngay.")
+            results.append(Suggestion(
+                category=CATEGORY_NETWORK,
+                priority=PRIORITY_WARNING,
+                title="Wi-Fi rớt liên tục / tín hiệu yếu",
+                detail=" ".join(detail_parts),
+                action_key="repair_network_now",
+                action_label="Sửa Wi-Fi Ngay",
+            ))
+            return results
+
         recent = buf[-5:]
         if len(recent) >= 3:
             missing_tail = recent[-3:]
