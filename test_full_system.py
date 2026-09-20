@@ -541,6 +541,9 @@ try:
     assert WinSxSCleaner.CACHE_TTL >= 60.0, (
         "CACHE_TTL phai la phut-scale, khong duoc ~10s theo AI badge timer"
     )
+    s1 = WinSxSCleaner.get_summary()
+    s2 = WinSxSCleaner.get_summary()
+    assert s1 is s2, "get_summary() idle phai cache dict, khong goi lai scan/pnputil moi ~10s"
 finally:
     os.walk = _orig_walk
     WinSxSCleaner.CACHE_TARGETS = _orig_targets
@@ -551,6 +554,60 @@ finally:
 print(
     f" [PASS] 33b. WinSxS throttle: cache TTL={WinSxSCleaner.CACHE_TTL:.0f}s, "
     "idle scan DEBUG-only, force_refresh van quet moi."
+)
+
+# 33c. Verify the idle spam path: monitor snapshots + 10s badge -> Advisor._rule_winsxs
+# must not re-call get_summary() (feed_snapshot wipes the 8s suggestion cache).
+from core.ai_advisor import AIAdvisor as _AIAdvisorForWinsxs
+_summary_calls = {"n": 0}
+_orig_get_summary = WinSxSCleaner.get_summary
+
+@classmethod
+def _counting_get_summary(cls, force_refresh: bool = False):
+    _summary_calls["n"] += 1
+    return _orig_get_summary.__func__(cls, force_refresh=force_refresh)
+
+WinSxSCleaner.get_summary = _counting_get_summary
+_adv_idle = _AIAdvisorForWinsxs(config_manager=cfg)
+_snap = {
+    "ram": {"percent": 40.0},
+    "cpu": {"percent": 10.0},
+    "disk": {"free_gb": 40.0},
+    "net": {"ping_ms": 20.0},
+}
+try:
+    for _ in range(8):
+        _adv_idle.feed_snapshot(_snap)
+    assert _summary_calls["n"] == 0, (
+        "feed_snapshot (monitor interval) khong duoc goi WinSxSCleaner.get_summary"
+    )
+
+    _adv_idle.get_suggestions()
+    assert _summary_calls["n"] == 1, (
+        f"Lan dau get_suggestions phai probe WinSxS mot lan, got {_summary_calls['n']}"
+    )
+
+    # Simulate idle badge ticks: snapshots keep invalidating the 8s suggestion cache.
+    for _ in range(6):
+        _adv_idle.feed_snapshot(_snap)
+        _adv_idle.invalidate_cache()
+        _adv_idle.get_suggestions()
+    assert _summary_calls["n"] == 1, (
+        "Advisor WinSxS probe TTL phai chan get_summary khi badge/snapshot ~10s"
+    )
+    assert _adv_idle._winsxs_probe_ttl >= 60.0, (
+        "WinSxS probe TTL phai la phut-scale, khong theo timer 10s"
+    )
+
+    _adv_idle._winsxs_probe_ts = 0.0
+    _adv_idle.invalidate_cache()
+    _adv_idle.get_suggestions()
+    assert _summary_calls["n"] == 2, "Het probe TTL van phai cho phep quet lai"
+finally:
+    WinSxSCleaner.get_summary = _orig_get_summary
+print(
+    f" [PASS] 33c. Advisor WinSxS probe: feed_snapshot=0 calls, idle badge throttled, "
+    f"TTL={_adv_idle._winsxs_probe_ttl:.0f}s."
 )
 
 caches = WinSxSCleaner.scan_update_caches()

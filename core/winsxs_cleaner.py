@@ -111,6 +111,8 @@ class WinSxSCleaner:
     _cached_caches: Optional[List[UpdateCacheItem]] = None
     _cached_caches_ts: float = 0.0
     _cached_caches_fingerprint: Optional[Tuple[Tuple[str, float, int], ...]] = None
+    _cached_summary: Optional[Dict[str, Any]] = None
+    _cached_summary_ts: float = 0.0
     # Idle AI badge / Smart Suggestions refresh every ~10s. A full SoftwareDistribution
     # walk must not run on that cadence — cache scans for CACHE_TTL (5 minutes).
     # Manual/on-demand paths pass force_refresh=True (dialog open, Làm mới, after clean).
@@ -118,7 +120,7 @@ class WinSxSCleaner:
 
     @classmethod
     def invalidate_cache(cls) -> None:
-        """Xóa sạch cache quét drivers và update caches để quét mới."""
+        """Xóa sạch cache quét drivers, update caches và get_summary để quét mới."""
         cls._cached_drivers = None
         cls._cached_drivers_ts = 0.0
         cls._cached_in_use = None
@@ -126,6 +128,8 @@ class WinSxSCleaner:
         cls._cached_caches = None
         cls._cached_caches_ts = 0.0
         cls._cached_caches_fingerprint = None
+        cls._cached_summary = None
+        cls._cached_summary_ts = 0.0
 
     # Danh mục các đường dẫn đệm Windows Update & System Logs
     CACHE_TARGETS = [
@@ -650,8 +654,18 @@ class WinSxSCleaner:
         - Tổng dung lượng bộ đệm cập nhật và nhật ký servicing có thể dọn ngay.
         - Số lượng gói driver OEM cũ trùng lặp.
 
-        Dùng cache ``CACHE_TTL`` trừ khi ``force_refresh=True`` (dialog / dọn xong).
+        Cache ``CACHE_TTL`` (5 phút). AIAdvisor._rule_winsxs / badge 10s must
+        hit this cache — do not walk or call pnputil on that cadence.
+        ``force_refresh=True`` for dialog / Làm mới / after clean.
         """
+        now = time.time()
+        if (
+            not force_refresh
+            and cls._cached_summary is not None
+            and (now - cls._cached_summary_ts < cls.CACHE_TTL)
+        ):
+            return cls._cached_summary
+
         caches = cls.scan_update_caches(force_refresh=force_refresh)
         total_cache_mb = sum(c.size_mb for c in caches)
         total_files = sum(c.file_count for c in caches)
@@ -660,7 +674,7 @@ class WinSxSCleaner:
         cleanable_count = sum(1 for d in duplicate_drivers if not d.is_in_use)
         protected_count = sum(1 for d in duplicate_drivers if d.is_in_use)
 
-        return {
+        summary = {
             "total_cache_mb": round(total_cache_mb, 2),
             "total_cache_files": total_files,
             "cache_categories_count": len(caches),
@@ -670,3 +684,6 @@ class WinSxSCleaner:
             "caches": caches,
             "duplicate_drivers": duplicate_drivers,
         }
+        cls._cached_summary = summary
+        cls._cached_summary_ts = now
+        return summary
