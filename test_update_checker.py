@@ -53,11 +53,15 @@ from core.update_checker import (
     check_for_update,
     compare_versions,
     current_app_version,
+    format_update_banner_lines,
+    is_downloadable_asset,
     is_newer,
     parse_release_payload,
     parse_version,
     pick_download_asset,
+    pick_download_asset_info,
     snippet_release_notes,
+    strip_markdown_inline,
 )
 
 PASSES = 0
@@ -81,6 +85,8 @@ def sample_release(**overrides):
             {
                 "name": "PCAutoCleaner_Setup.exe",
                 "browser_download_url": "https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/download/v3.8.0/PCAutoCleaner_Setup.exe",
+                "size": 456789,
+                "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             }
         ],
     }
@@ -121,7 +127,19 @@ print(" [PASS] compare_versions / is_newer: pad, semver-ish, pre-release")
 snip = snippet_release_notes("## Hello\n\nWorld " + ("x" * 400), limit=40)
 check("Hello" in snip and snip.endswith("…"), "snippet trims markdown heading + ellipsis")
 check(snippet_release_notes("") == "Xem ghi chú phát hành trên GitHub.", "empty notes fallback")
+md_snip = snippet_release_notes("Bấm **Cập nhật** để thử. Setup: PCAutoCleaner_Setup.exe")
+check("Cập nhật" in md_snip and "**" not in md_snip, "snippet strips ** markdown")
+check(strip_markdown_inline("nút **Cập nhật**") == "nút Cập nhật", "strip bold")
 print(" [PASS] snippet_release_notes")
+
+# --- banner copy: short, no notes dump ---
+title, sub = format_update_banner_lines("v3.8.1", "3.8.0")
+check(title == "Có bản mới v3.8.1 — đang dùng v3.8.0", "banner title format")
+check(sub == "Bấm Cập nhật để tải và cài.", "banner subtitle")
+check("**" not in title and "**" not in sub, "no markdown asterisks")
+check("Setup" not in title and "portable" not in title.lower(), "no asset filenames in banner")
+check("Bản thử" not in title, "does not paste release body")
+print(" [PASS] format_update_banner_lines")
 
 # --- pick_download_asset ---
 setup_url, setup_name = pick_download_asset(
@@ -157,13 +175,67 @@ un_url, un_name = pick_download_asset(
     html_url="https://github.com/x/y/releases/tag/v1",
 )
 check(un_name == "app.zip", "skip uninstall.exe")
+
+# size + digest + downloadable vs GitHub HTML / API URL
+meta = pick_download_asset_info(
+    [
+        {
+            "name": "notes.txt",
+            "browser_download_url": "https://ex/notes.txt",
+            "size": 10,
+        },
+        {
+            "name": "PCAutoCleaner_Setup.exe",
+            "browser_download_url": "https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/download/v1/PCAutoCleaner_Setup.exe",
+            "size": 98765,
+            "digest": "sha256:" + ("ab" * 32),
+        },
+    ],
+    html_url="https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/tag/v1",
+)
+check(meta.name == "PCAutoCleaner_Setup.exe", "info prefers Setup.exe")
+check(meta.size == 98765, "github asset size")
+check(meta.digest.startswith("sha256:"), "github digest")
+check(is_downloadable_asset(meta.name, meta.url) is True, "setup is downloadable")
+
+api_only = pick_download_asset_info(
+    [
+        {
+            "name": "PCAutoCleaner_Setup.exe",
+            "url": "https://api.github.com/repos/mrkiss-it/pc-cleaner-optimizer/releases/assets/1",
+            "size": 9,
+        }
+    ],
+    html_url="https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/tag/v1",
+)
+check(api_only.name == "", "skip API asset url without browser_download_url")
+check(
+    is_downloadable_asset(
+        "PCAutoCleaner_Setup.exe",
+        "https://api.github.com/repos/mrkiss-it/pc-cleaner-optimizer/releases/assets/1",
+    )
+    is False,
+    "API url not downloadable without token",
+)
+check(
+    is_downloadable_asset(
+        "PCAutoCleaner_Setup.exe",
+        "https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/tag/v9",
+    )
+    is False,
+    "release HTML page is not a file",
+)
+check(is_downloadable_asset("", page_url) is False, "empty asset name")
 print(" [PASS] pick_download_asset: Setup.exe, zip, empty, skip uninstall")
+print(" [PASS] pick_download_asset_info size/digest + is_downloadable_asset")
 
 # --- parse_release_payload ---
 info = parse_release_payload(sample_release(), "3.7.0")
 check(info is not None, "payload parsed")
 check(info.tag == "v3.8.0", "tag")
 check(info.asset_name == "PCAutoCleaner_Setup.exe", "asset")
+check(info.asset_size == 456789, "asset size from payload")
+check(info.asset_digest.startswith("sha256:"), "asset digest from payload")
 check("Kiểm tra cập nhật" in info.notes_snippet or "GitHub" in info.notes_snippet, "notes")
 check(parse_release_payload({"draft": True, "tag_name": "v9"}, "3.7.0") is None, "skip draft")
 check(parse_release_payload({"tag_name": ""}, "3.7.0") is None, "skip empty tag")

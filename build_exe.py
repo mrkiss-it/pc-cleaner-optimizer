@@ -66,6 +66,7 @@ def build():
         "--hidden-import=core.predictive_ai",
         "--hidden-import=core.ai_copilot",
         "--hidden-import=core.update_checker",
+        "--hidden-import=core.update_installer",
         "--hidden-import=app_meta",
         "--hidden-import=ui.hardware_dialog",
         "--hidden-import=ui.ai_advisor_dialog",

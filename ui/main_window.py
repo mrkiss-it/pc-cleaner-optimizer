@@ -39,6 +39,15 @@ from core.update_checker import (
     cache_from_config,
     check_for_update,
     current_app_version,
+    format_update_banner_lines,
+    is_downloadable_asset,
+)
+from core.update_installer import (
+    DownloadResult,
+    download_release_asset,
+    format_bytes,
+    launch_downloaded_update,
+    resolve_download_path,
 )
 
 
@@ -142,6 +151,54 @@ class UpdateCheckWorker(QThread):
             )
 
 
+class UpdateDownloadWorker(QThread):
+    """Tải asset GitHub Release ngoài UI thread. Không mạng thật khi truyền urlopen giả."""
+    progress = pyqtSignal(int, int)  # bytes_done, bytes_total
+    finished = pyqtSignal(object)
+
+    def __init__(
+        self,
+        url: str,
+        dest_path: str,
+        expected_size: int = 0,
+        expected_digest: str = "",
+        parent=None,
+        urlopen=None,
+    ):
+        super().__init__(parent)
+        self._url = url
+        self._dest_path = dest_path
+        self._expected_size = int(expected_size or 0)
+        self._expected_digest = expected_digest or ""
+        self._urlopen = urlopen
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            result = download_release_asset(
+                url=self._url,
+                dest_path=self._dest_path,
+                expected_size=self._expected_size,
+                expected_digest=self._expected_digest,
+                progress_cb=lambda done, total: self.progress.emit(int(done), int(total)),
+                cancel_check=lambda: self._cancel,
+                urlopen=self._urlopen,
+            )
+            self.finished.emit(result)
+        except Exception:
+            self.finished.emit(
+                DownloadResult(
+                    ok=False,
+                    error="error",
+                    message="Không tải được bản cập nhật. Thử lại sau.",
+                    path=self._dest_path,
+                )
+            )
+
+
 class MainWindow(QMainWindow):
     floating_widget_toggled = pyqtSignal(bool)
     floating_widget_opacity_changed = pyqtSignal(int)
@@ -158,10 +215,12 @@ class MainWindow(QMainWindow):
         self.first_minimize_notified = False
         self.system_tweaker = SystemTweaker()
         self._update_worker = None
+        self._update_download_worker = None
         self._pending_update = None
         self._update_toast_tag = ""
         self._update_check_interactive = False
         self._update_periodic_timer = None
+        self._force_quit_for_update = False
 
         # AI Advisor – khởi tạo rule engine
         self._ai_advisor = AIAdvisor(
@@ -344,13 +403,29 @@ class MainWindow(QMainWindow):
                 border-radius: 10px;
             }
         """)
-        row = QHBoxLayout(banner)
-        row.setContentsMargins(14, 10, 14, 10)
+        wrap = QVBoxLayout(banner)
+        wrap.setContentsMargins(14, 10, 14, 10)
+        wrap.setSpacing(8)
+
+        row = QHBoxLayout()
         row.setSpacing(12)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        text_col.setContentsMargins(0, 0, 0, 0)
 
         self.lbl_update_banner = QLabel("Có bản mới trên GitHub.")
         self.lbl_update_banner.setWordWrap(True)
-        self.lbl_update_banner.setStyleSheet("color: #e0f2fe; font-size: 12px;")
+        self.lbl_update_banner.setTextFormat(Qt.PlainText)
+        self.lbl_update_banner.setStyleSheet("color: #e0f2fe; font-size: 13px; font-weight: 700;")
+
+        self.lbl_update_banner_sub = QLabel("Bấm Cập nhật để tải và cài.")
+        self.lbl_update_banner_sub.setWordWrap(True)
+        self.lbl_update_banner_sub.setTextFormat(Qt.PlainText)
+        self.lbl_update_banner_sub.setStyleSheet("color: #bae6fd; font-size: 11px;")
+
+        text_col.addWidget(self.lbl_update_banner)
+        text_col.addWidget(self.lbl_update_banner_sub)
 
         self.btn_update_banner = QPushButton("Cập nhật")
         self.btn_update_banner.setCursor(Qt.PointingHandCursor)
@@ -366,9 +441,34 @@ class MainWindow(QMainWindow):
         btn_dismiss.setStyleSheet("padding: 8px 14px; font-size: 12px;")
         btn_dismiss.clicked.connect(self._dismiss_update_banner)
 
-        row.addWidget(self.lbl_update_banner, stretch=1)
+        row.addLayout(text_col, stretch=1)
         row.addWidget(self.btn_update_banner)
         row.addWidget(btn_dismiss)
+
+        self.progress_update_banner = QProgressBar()
+        self.progress_update_banner.setVisible(False)
+        self.progress_update_banner.setRange(0, 100)
+        self.progress_update_banner.setValue(0)
+        self.progress_update_banner.setTextVisible(True)
+        self.progress_update_banner.setFixedHeight(16)
+        self.progress_update_banner.setFormat("%p%")
+        self.progress_update_banner.setStyleSheet("""
+            QProgressBar {
+                background-color: #082f49;
+                border: 1px solid #0369a1;
+                border-radius: 6px;
+                color: #e0f2fe;
+                font-size: 10px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0284c7, stop:1 #34d399);
+                border-radius: 5px;
+            }
+        """)
+
+        wrap.addLayout(row)
+        wrap.addWidget(self.progress_update_banner)
         self.update_banner = banner
         return banner
 
@@ -920,8 +1020,9 @@ class MainWindow(QMainWindow):
 
         lbl_upd_desc = QLabel(
             "Ứng dụng hỏi GitHub Releases của mrkiss-it/pc-cleaner-optimizer (có thể đổi owner/repo trong config). "
-            "Nếu có bản mới, hiện nút Cập nhật để bạn tự tải PCAutoCleaner_Setup.exe hoặc mở trang Releases. "
-            "Không ghi đè file đang chạy."
+            "Nếu có bản mới, bấm Cập nhật để tải PCAutoCleaner_Setup.exe và mở bộ cài. "
+            "Ứng dụng sẽ đóng trước khi ghi đè file đang chạy. "
+            "Nếu Release chưa có file cài, sẽ mở trang GitHub."
         )
         lbl_upd_desc.setWordWrap(True)
         lbl_upd_desc.setStyleSheet("color: #64748b; font-size: 11px;")
@@ -946,12 +1047,21 @@ class MainWindow(QMainWindow):
         self.lbl_update_status.setWordWrap(True)
         self.lbl_update_status.setStyleSheet("color: #64748b; font-size: 11px;")
 
+        self.progress_update_settings = QProgressBar()
+        self.progress_update_settings.setVisible(False)
+        self.progress_update_settings.setRange(0, 100)
+        self.progress_update_settings.setValue(0)
+        self.progress_update_settings.setTextVisible(True)
+        self.progress_update_settings.setFixedHeight(16)
+        self.progress_update_settings.setFormat("%p%")
+
         layout_upd.addWidget(lbl_upd_title)
         layout_upd.addWidget(self.lbl_app_version_settings)
         layout_upd.addWidget(self.chk_check_updates)
         layout_upd.addWidget(lbl_upd_desc)
         layout_upd.addLayout(row_upd_btns)
         layout_upd.addWidget(self.lbl_update_status)
+        layout_upd.addWidget(self.progress_update_settings)
         layout.addWidget(card_update)
 
         # Card: Bản quyền & Điều khoản sử dụng
@@ -3272,13 +3382,14 @@ class MainWindow(QMainWindow):
 
         if available:
             self._pending_update = latest
-            snippet = latest.notes_snippet or "Xem ghi chú phát hành trên GitHub."
-            banner_text = (
-                f"⬆ Có bản mới <b>{latest.tag}</b> (đang dùng v{result.current_version}). "
-                f"{snippet}"
-            )
+            title, subtitle = format_update_banner_lines(latest.tag, result.current_version)
             if hasattr(self, "lbl_update_banner"):
-                self.lbl_update_banner.setText(banner_text)
+                self.lbl_update_banner.setTextFormat(Qt.PlainText)
+                self.lbl_update_banner.setText(title)
+            if hasattr(self, "lbl_update_banner_sub"):
+                self.lbl_update_banner_sub.setTextFormat(Qt.PlainText)
+                self.lbl_update_banner_sub.setText(subtitle)
+                self.lbl_update_banner_sub.setVisible(True)
             if hasattr(self, "update_banner"):
                 self.update_banner.setVisible(show_banner)
             if hasattr(self, "btn_update_now"):
@@ -3298,7 +3409,7 @@ class MainWindow(QMainWindow):
                 try:
                     self.tray_manager.notify(
                         "Có bản cập nhật mới",
-                        f"{latest.tag}: {snippet}",
+                        f"{title} {subtitle}",
                         level="info",
                         icon="🔄",
                         action_text="Cập nhật",
@@ -3333,38 +3444,298 @@ class MainWindow(QMainWindow):
             self.lbl_update_status.setStyleSheet("color: #94a3b8; font-size: 11px;")
 
     def open_available_update(self):
-        """Mở URL tải / trang Releases. Không tự ghi đè exe đang chạy."""
+        """Tải asset đã phát hiện rồi mở bộ cài. Không có file → mở trang Releases."""
+        if self._update_download_worker is not None and self._update_download_worker.isRunning():
+            return
         info = self._pending_update
         if info is None:
             if getattr(self, "_update_check_interactive", False) is False:
                 self.check_for_updates(force=True, interactive=True)
             return
         url = (info.download_url or info.html_url or "").strip()
-        if not url:
+        if is_downloadable_asset(info.asset_name, url):
+            self._start_update_download(info)
+            return
+        self._open_release_in_browser(
+            info,
+            message=(
+                f"Bản {info.tag} chưa có file cài (PCAutoCleaner_Setup.exe) trên GitHub Releases. "
+                "Đã mở trang phát hành để bạn tải thủ công khi asset được đăng."
+            ),
+        )
+
+    def _notify_update(self, title, message, level="info", icon="🔄", duration_ms=6000):
+        try:
+            if self.tray_manager:
+                self.tray_manager.notify(
+                    title, message, level=level, icon=icon, duration_ms=duration_ms
+                )
+                return
+            from ui.toast_notification import ToastManager
+            ToastManager.show_toast(
+                title=title,
+                message=message,
+                level=level,
+                icon=icon,
+                duration_ms=duration_ms,
+            )
+        except Exception:
+            pass
+
+    def _open_release_in_browser(self, info, message: str = "", notify: bool = True):
+        url = ""
+        if info is not None:
+            url = (getattr(info, "html_url", "") or getattr(info, "download_url", "") or "").strip()
+        if url:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        body = message or "Đã mở trang GitHub Releases."
+        if notify:
+            self._notify_update("Cập nhật phần mềm", body, level="warning", icon="🌐")
+        if hasattr(self, "lbl_update_status"):
+            self.lbl_update_status.setText(f"● {body}")
+            self.lbl_update_status.setStyleSheet("color: #fbbf24; font-size: 11px;")
+        if hasattr(self, "lbl_status"):
+            tag = getattr(info, "tag", "") if info is not None else ""
+            self.lbl_status.setText(f"🔄 Đã mở trang Releases {tag}".strip())
+
+    def _set_update_download_busy(self, busy: bool):
+        label = "Đang tải…" if busy else "Cập nhật"
+        for attr in ("btn_update_now", "btn_update_banner"):
+            btn = getattr(self, attr, None)
+            if btn is None:
+                continue
+            try:
+                btn.setEnabled(not busy)
+                btn.setText(label)
+            except Exception:
+                pass
+        for attr in ("progress_update_banner", "progress_update_settings"):
+            bar = getattr(self, attr, None)
+            if bar is None:
+                continue
+            try:
+                bar.setVisible(bool(busy))
+                if busy:
+                    bar.setValue(0)
+            except Exception:
+                pass
+        if busy and hasattr(self, "update_banner"):
+            try:
+                self.update_banner.setVisible(True)
+            except Exception:
+                pass
+
+    def _start_update_download(self, info, urlopen=None):
+        url = (info.download_url or "").strip()
+        if not is_downloadable_asset(info.asset_name, url):
+            self._open_release_in_browser(
+                info,
+                message=(
+                    f"Bản {info.tag} chưa có file cài trên GitHub Releases. "
+                    "Đã mở trang phát hành."
+                ),
+            )
             return
         try:
-            webbrowser.open(url)
-        except Exception:
-            pass
-        has_file = bool(info.asset_name)
-        if has_file:
-            body = (
-                f"Đã mở liên kết tải <b>{info.asset_name}</b> (bản {info.tag}).\n\n"
-                "Sau khi tải xong, chạy bộ cài rồi khởi động lại PC Auto Cleaner.\n"
-                "Ứng dụng hiện tại sẽ không tự ghi đè file đang chạy."
+            dest = resolve_download_path(info.asset_name, info.tag)
+        except OSError:
+            self._notify_update(
+                "Không tải được bản cập nhật",
+                "Không đủ dung lượng đĩa để lưu bản cập nhật.",
+                level="danger",
+                icon="💾",
             )
-        else:
-            body = (
-                f"Đã mở trang GitHub Releases (bản {info.tag}). "
-                "Chưa có file cài (PCAutoCleaner_Setup.exe) trên Release này — "
-                "hãy tải khi asset được đăng, rồi khởi động lại ứng dụng."
-            )
-        try:
-            QMessageBox.information(self, "Cập nhật phần mềm", body)
-        except Exception:
-            pass
+            return
+
+        size = int(getattr(info, "asset_size", 0) or 0)
+        digest = str(getattr(info, "asset_digest", "") or "")
+        name = info.asset_name
+        self._set_update_download_busy(True)
+        if hasattr(self, "lbl_update_status"):
+            hint = f" ({format_bytes(size)})" if size else ""
+            self.lbl_update_status.setText(f"● Đang tải {name}{hint}…")
+            self.lbl_update_status.setStyleSheet("color: #38bdf8; font-size: 11px;")
         if hasattr(self, "lbl_status"):
-            self.lbl_status.setText(f"🔄 Đã mở liên kết cập nhật {info.tag}")
+            self.lbl_status.setText(f"⬇ Đang tải {name}…")
+        self._notify_update(
+            "Đang tải bản cập nhật",
+            f"Đang tải {name} (bản {info.tag}).",
+            level="info",
+            icon="⬇",
+            duration_ms=4000,
+        )
+
+        worker = UpdateDownloadWorker(
+            url=url,
+            dest_path=dest,
+            expected_size=size,
+            expected_digest=digest,
+            parent=self,
+            urlopen=urlopen,
+        )
+        self._update_download_worker = worker
+        worker.progress.connect(self._on_update_download_progress)
+        worker.finished.connect(self._on_update_download_finished)
+        worker.start()
+
+    def _on_update_download_progress(self, done: int, total: int):
+        pct = 0
+        if total and total > 0:
+            pct = max(0, min(100, int(done * 100 / total)))
+        elif done > 0:
+            pct = min(99, 5)
+        for attr in ("progress_update_banner", "progress_update_settings"):
+            bar = getattr(self, attr, None)
+            if bar is None:
+                continue
+            try:
+                bar.setVisible(True)
+                bar.setValue(pct)
+            except Exception:
+                pass
+        if hasattr(self, "lbl_update_status"):
+            if total and total > 0:
+                text = f"● Đang tải {format_bytes(done)} / {format_bytes(total)} ({pct}%)"
+            else:
+                text = f"● Đang tải {format_bytes(done)}…"
+            try:
+                self.lbl_update_status.setText(text)
+                self.lbl_update_status.setStyleSheet("color: #38bdf8; font-size: 11px;")
+            except Exception:
+                pass
+
+    def _on_update_download_finished(self, result):
+        for attr in ("progress_update_banner", "progress_update_settings"):
+            bar = getattr(self, attr, None)
+            if bar is None:
+                continue
+            try:
+                bar.setVisible(False)
+            except Exception:
+                pass
+        info = self._pending_update
+        if result is None or not getattr(result, "ok", False):
+            self._set_update_download_busy(False)
+            code = getattr(result, "error", "") if result is not None else "error"
+            message = (
+                getattr(result, "message", "")
+                if result is not None
+                else "Không tải được bản cập nhật. Thử lại sau."
+            ) or "Không tải được bản cập nhật. Thử lại sau."
+            self._notify_update("Không tải được bản cập nhật", message, level="danger", icon="⚠")
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(f"● {message}")
+                self.lbl_update_status.setStyleSheet("color: #f87171; font-size: 11px;")
+            if hasattr(self, "btn_update_now"):
+                self.btn_update_now.setEnabled(info is not None)
+            if code in ("http_404", "http_403", "invalid") and info is not None:
+                self._open_release_in_browser(
+                    info,
+                    message=message + " Đã mở trang GitHub Releases.",
+                    notify=False,
+                )
+            return
+
+        for attr in ("btn_update_now", "btn_update_banner"):
+            btn = getattr(self, attr, None)
+            if btn is None:
+                continue
+            try:
+                btn.setEnabled(False)
+                btn.setText("Cập nhật")
+            except Exception:
+                pass
+        path = getattr(result, "path", "") or ""
+        name = os.path.basename(path) if path else (getattr(info, "asset_name", "") if info else "")
+        size_txt = format_bytes(int(getattr(result, "bytes_written", 0) or 0))
+        if hasattr(self, "lbl_update_status"):
+            self.lbl_update_status.setText(f"● Đã tải xong {name} ({size_txt}). Đang mở trình cài đặt…")
+            self.lbl_update_status.setStyleSheet("color: #34d399; font-size: 11px;")
+        self._launch_downloaded_installer(path, info)
+
+    def _launch_downloaded_installer(self, path: str, info=None):
+        try:
+            launch = launch_downloaded_update(path)
+        except Exception:
+            launch = None
+        if launch is None or not launch.ok:
+            msg = getattr(launch, "message", None) or "Không mở được trình cài đặt. Hãy chạy file đã tải thủ công."
+            self._notify_update("Không mở được trình cài đặt", msg, level="danger", icon="⚠")
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(f"● {msg}")
+                self.lbl_update_status.setStyleSheet("color: #f87171; font-size: 11px;")
+            if hasattr(self, "btn_update_now"):
+                self.btn_update_now.setEnabled(True)
+            return
+
+        self._notify_update(
+            "Đã mở trình cài đặt",
+            launch.message,
+            level="success",
+            icon="📦",
+            duration_ms=7000,
+        )
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText(f"🔄 {launch.message}")
+
+        if not launch.should_close:
+            if hasattr(self, "btn_update_now"):
+                self.btn_update_now.setEnabled(True)
+            return
+
+        tag = getattr(info, "tag", "") if info else ""
+        try:
+            reply = QMessageBox.question(
+                self,
+                "Cài đặt bản cập nhật",
+                (
+                    f"Đã mở trình cài đặt (bản {tag or 'mới'}).\n\n"
+                    "PC Auto Cleaner cần đóng để Windows có thể ghi đè file đang chạy.\n\n"
+                    "Đóng ứng dụng ngay bây giờ?"
+                ),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+        except Exception:
+            reply = QMessageBox.Yes
+
+        if reply == QMessageBox.Yes:
+            QTimer.singleShot(350, self._quit_for_installer)
+        else:
+            self._notify_update(
+                "Nhớ đóng ứng dụng",
+                "Hãy đóng PC Auto Cleaner trước khi hoàn tất cài đặt, nếu không file có thể bị khóa.",
+                level="warning",
+                icon="⚠",
+            )
+            if hasattr(self, "btn_update_now"):
+                self.btn_update_now.setEnabled(True)
+
+    def _quit_for_installer(self):
+        """Thoát hẳn (không thu nhỏ khay) để bộ cài ghi đè file."""
+        self._force_quit_for_update = True
+        tray = self.tray_manager
+        if tray is not None:
+            try:
+                tray.hide()
+            except Exception:
+                pass
+            if hasattr(tray, "exit_requested"):
+                try:
+                    tray.exit_requested.emit()
+                    return
+                except Exception:
+                    pass
+        try:
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        except Exception:
+            pass
 
     def _dismiss_update_banner(self):
         if hasattr(self, "update_banner"):
@@ -3401,6 +3772,10 @@ class MainWindow(QMainWindow):
                 )
         except Exception:
             pass
+
+        if self._force_quit_for_update:
+            event.accept()
+            return
 
         if self.config_manager.get("minimize_to_tray_on_close", True):
             event.ignore()
