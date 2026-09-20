@@ -201,15 +201,55 @@ def snippet_release_notes(body: str, limit: int = 220) -> str:
         if cleaned.startswith("```"):
             continue
         if cleaned:
-            pieces.append(cleaned)
+            pieces.append(strip_markdown_inline(cleaned))
         if len(" ".join(pieces)) >= limit:
             break
-    joined = " ".join(pieces).strip()
+    joined = " ".join(p for p in pieces if p).strip()
     if not joined:
         return "Xem ghi chú phát hành trên GitHub."
     if len(joined) > limit:
         return joined[: max(0, limit - 1)].rstrip() + "…"
     return joined
+
+
+def strip_markdown_inline(text: str) -> str:
+    """Bỏ markdown inline (**bold**, *em*, `code`, [links]) — QLabel plain text không render GitHub MD."""
+    s = str(text or "")
+    if not s:
+        return ""
+    s = re.sub(r"```.*?```", " ", s, flags=re.DOTALL)
+    s = re.sub(r"`([^`]+)`", r"\1", s)
+    s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
+    s = re.sub(r"\*\*([^*]+)\*\*", r"\1", s)
+    s = re.sub(r"__([^_]+)__", r"\1", s)
+    s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", s)
+    s = s.replace("**", "").replace("__", "")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def display_version(raw: str) -> str:
+    """Chuẩn hóa '3.8.0' / 'v3.8.0' thành 'v3.8.0' cho UI."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if text[0] in "vV":
+        rest = text[1:].lstrip()
+        return f"v{rest}" if rest else "v"
+    return f"v{text}"
+
+
+def format_update_banner_lines(tag: str, current_version: str) -> Tuple[str, str]:
+    """
+    Hai dòng banner ngắn, không dán GitHub release body / markdown / tên file Setup.
+    """
+    latest = display_version(tag) or (tag or "").strip() or "mới"
+    current = display_version(current_version) or (current_version or "").strip()
+    if current:
+        title = f"Có bản mới {latest} — đang dùng {current}"
+    else:
+        title = f"Có bản mới {latest}"
+    subtitle = "Bấm Cập nhật để tải và cài."
+    return title, subtitle
 
 
 _DOWNLOADABLE_EXTS = (".exe", ".msi", ".zip")

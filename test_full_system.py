@@ -1785,7 +1785,15 @@ win.apply_update_check_result(_UCR(
 ), interactive=True)
 assert win.update_banner.isHidden() is False, "Banner phai hien khi co ban moi"
 assert win.btn_update_now.isEnabled() is True
-assert "v9.9.9" in win.lbl_update_banner.text()
+_banner = win.lbl_update_banner.text()
+assert "v9.9.9" in _banner
+assert "đang dùng" in _banner
+assert "**" not in _banner
+assert "PCAutoCleaner_Setup.exe" not in _banner
+assert "portable" not in _banner.lower()
+assert "Ghi chu gia lap" not in _banner, "Khong dan toan bo release notes vao banner"
+assert hasattr(win, "lbl_update_banner_sub")
+assert "tải và cài" in win.lbl_update_banner_sub.text()
 assert "Cập nhật" in win.btn_update_now.text() or "Cập nhật" in win.btn_update_banner.text()
 win._dismiss_update_banner()
 assert win.update_banner.isHidden() is True

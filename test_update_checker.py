@@ -53,6 +53,7 @@ from core.update_checker import (
     check_for_update,
     compare_versions,
     current_app_version,
+    format_update_banner_lines,
     is_downloadable_asset,
     is_newer,
     parse_release_payload,
@@ -60,6 +61,7 @@ from core.update_checker import (
     pick_download_asset,
     pick_download_asset_info,
     snippet_release_notes,
+    strip_markdown_inline,
 )
 
 PASSES = 0
@@ -125,7 +127,19 @@ print(" [PASS] compare_versions / is_newer: pad, semver-ish, pre-release")
 snip = snippet_release_notes("## Hello\n\nWorld " + ("x" * 400), limit=40)
 check("Hello" in snip and snip.endswith("…"), "snippet trims markdown heading + ellipsis")
 check(snippet_release_notes("") == "Xem ghi chú phát hành trên GitHub.", "empty notes fallback")
+md_snip = snippet_release_notes("Bấm **Cập nhật** để thử. Setup: PCAutoCleaner_Setup.exe")
+check("Cập nhật" in md_snip and "**" not in md_snip, "snippet strips ** markdown")
+check(strip_markdown_inline("nút **Cập nhật**") == "nút Cập nhật", "strip bold")
 print(" [PASS] snippet_release_notes")
+
+# --- banner copy: short, no notes dump ---
+title, sub = format_update_banner_lines("v3.8.1", "3.8.0")
+check(title == "Có bản mới v3.8.1 — đang dùng v3.8.0", "banner title format")
+check(sub == "Bấm Cập nhật để tải và cài.", "banner subtitle")
+check("**" not in title and "**" not in sub, "no markdown asterisks")
+check("Setup" not in title and "portable" not in title.lower(), "no asset filenames in banner")
+check("Bản thử" not in title, "does not paste release body")
+print(" [PASS] format_update_banner_lines")
 
 # --- pick_download_asset ---
 setup_url, setup_name = pick_download_asset(

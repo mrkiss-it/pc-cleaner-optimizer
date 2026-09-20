@@ -39,6 +39,7 @@ from core.update_checker import (
     cache_from_config,
     check_for_update,
     current_app_version,
+    format_update_banner_lines,
     is_downloadable_asset,
 )
 from core.update_installer import (
@@ -409,9 +410,22 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.setSpacing(12)
 
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        text_col.setContentsMargins(0, 0, 0, 0)
+
         self.lbl_update_banner = QLabel("Có bản mới trên GitHub.")
         self.lbl_update_banner.setWordWrap(True)
-        self.lbl_update_banner.setStyleSheet("color: #e0f2fe; font-size: 12px;")
+        self.lbl_update_banner.setTextFormat(Qt.PlainText)
+        self.lbl_update_banner.setStyleSheet("color: #e0f2fe; font-size: 13px; font-weight: 700;")
+
+        self.lbl_update_banner_sub = QLabel("Bấm Cập nhật để tải và cài.")
+        self.lbl_update_banner_sub.setWordWrap(True)
+        self.lbl_update_banner_sub.setTextFormat(Qt.PlainText)
+        self.lbl_update_banner_sub.setStyleSheet("color: #bae6fd; font-size: 11px;")
+
+        text_col.addWidget(self.lbl_update_banner)
+        text_col.addWidget(self.lbl_update_banner_sub)
 
         self.btn_update_banner = QPushButton("Cập nhật")
         self.btn_update_banner.setCursor(Qt.PointingHandCursor)
@@ -427,7 +441,7 @@ class MainWindow(QMainWindow):
         btn_dismiss.setStyleSheet("padding: 8px 14px; font-size: 12px;")
         btn_dismiss.clicked.connect(self._dismiss_update_banner)
 
-        row.addWidget(self.lbl_update_banner, stretch=1)
+        row.addLayout(text_col, stretch=1)
         row.addWidget(self.btn_update_banner)
         row.addWidget(btn_dismiss)
 
@@ -3368,13 +3382,14 @@ class MainWindow(QMainWindow):
 
         if available:
             self._pending_update = latest
-            snippet = latest.notes_snippet or "Xem ghi chú phát hành trên GitHub."
-            banner_text = (
-                f"⬆ Có bản mới <b>{latest.tag}</b> (đang dùng v{result.current_version}). "
-                f"{snippet}"
-            )
+            title, subtitle = format_update_banner_lines(latest.tag, result.current_version)
             if hasattr(self, "lbl_update_banner"):
-                self.lbl_update_banner.setText(banner_text)
+                self.lbl_update_banner.setTextFormat(Qt.PlainText)
+                self.lbl_update_banner.setText(title)
+            if hasattr(self, "lbl_update_banner_sub"):
+                self.lbl_update_banner_sub.setTextFormat(Qt.PlainText)
+                self.lbl_update_banner_sub.setText(subtitle)
+                self.lbl_update_banner_sub.setVisible(True)
             if hasattr(self, "update_banner"):
                 self.update_banner.setVisible(show_banner)
             if hasattr(self, "btn_update_now"):
@@ -3394,7 +3409,7 @@ class MainWindow(QMainWindow):
                 try:
                     self.tray_manager.notify(
                         "Có bản cập nhật mới",
-                        f"{latest.tag}: {snippet}",
+                        f"{title} {subtitle}",
                         level="info",
                         icon="🔄",
                         action_text="Cập nhật",
