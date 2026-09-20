@@ -51,11 +51,18 @@ def _ensure_app_meta_import_path():
 
 
 _ensure_app_meta_import_path()
-from app_meta import APP_NAME, APP_VERSION, APP_PUBLISHER
+import app_meta
+# Use app_meta.APP_* everywhere. Do NOT bind local APP_NAME / APP_VERSION /
+# APP_PUBLISHER in this file — that previously hid the real app_meta version.
 
 
 def qt_literal_ampersand(text: str) -> str:
-    """Escape '&' so QCheckBox/QPushButton show a literal ampersand, not a mnemonic underline."""
+    """Escape '&' so QCheckBox/QPushButton/QLabel accelerators show a literal ampersand.
+
+    Qt treats '&X' as a mnemonic (underline X). Product name '… & Optimizer'
+    therefore renders as if the space+O were an accelerator. Same idea as Inno
+    {#StringChange(MyAppName, '&', '&&')}.
+    """
     return (text or "").replace("&", "&&")
 
 
@@ -255,13 +262,13 @@ class InstallWorker(QThread):
             if self.create_desktop:
                 desk_dir = os.path.join(os.path.expanduser("~"), "Desktop")
                 lnk = os.path.join(desk_dir, "PC Auto Cleaner.lnk")
-                create_windows_shortcut(exe_path, lnk, self.target_dir, ico_path, APP_NAME)
+                create_windows_shortcut(exe_path, lnk, self.target_dir, ico_path, app_meta.APP_NAME)
 
             # Start Menu Shortcut
             if self.create_start_menu:
                 sm_dir = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs")
                 lnk = os.path.join(sm_dir, "PC Auto Cleaner.lnk")
-                create_windows_shortcut(exe_path, lnk, self.target_dir, ico_path, APP_NAME)
+                create_windows_shortcut(exe_path, lnk, self.target_dir, ico_path, app_meta.APP_NAME)
 
             # Autostart
             if self.autostart:
@@ -276,9 +283,9 @@ class InstallWorker(QThread):
 
             register_windows_uninstaller(
                 install_dir=self.target_dir,
-                version=APP_VERSION,
-                publisher=APP_PUBLISHER,
-                display_name=APP_NAME,
+                version=app_meta.APP_VERSION,
+                publisher=app_meta.APP_PUBLISHER,
+                display_name=app_meta.APP_NAME,
                 uninstaller_path=uninstaller_path,
                 icon_path=ico_path,
             )
@@ -300,7 +307,7 @@ class SetupWizard(QDialog):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"Cài Đặt – {APP_NAME} v{APP_VERSION}")
+        self.setWindowTitle(f"Cài Đặt – {app_meta.APP_NAME} v{app_meta.APP_VERSION}")
         self.resize(680, 480)
         self.setFixedSize(680, 480)
         self.setStyleSheet(f"""
@@ -339,11 +346,11 @@ class SetupWizard(QDialog):
 
         h_vbox = QVBoxLayout()
         h_vbox.setSpacing(2)
-        self.lbl_header_title = QLabel(f"Cài Đặt {APP_NAME}")
+        self.lbl_header_title = QLabel(f"Cài Đặt {app_meta.APP_NAME}")
         self.lbl_header_title.setFont(QFont("Segoe UI", 13, QFont.Bold))
         self.lbl_header_title.setStyleSheet(f"color: {_TEXT_WHITE};")
 
-        self.lbl_header_sub = QLabel(f"Phiên bản v{APP_VERSION} – Giải pháp tối ưu máy tính toàn diện")
+        self.lbl_header_sub = QLabel(f"Phiên bản v{app_meta.APP_VERSION} – Giải pháp tối ưu máy tính toàn diện")
         self.lbl_header_sub.setFont(QFont("Segoe UI", 9))
         self.lbl_header_sub.setStyleSheet(f"color: {_TEXT_MUTED};")
         h_vbox.addWidget(self.lbl_header_title)
@@ -447,7 +454,7 @@ class SetupWizard(QDialog):
         layout.setContentsMargins(32, 24, 32, 20)
         layout.setSpacing(14)
 
-        lbl_greet = QLabel(f"Chào mừng bạn đến với trình cài đặt {APP_NAME}!")
+        lbl_greet = QLabel(f"Chào mừng bạn đến với trình cài đặt {app_meta.APP_NAME}!")
         lbl_greet.setFont(QFont("Segoe UI", 12, QFont.Bold))
         lbl_greet.setStyleSheet(f"color: {_TEXT_WHITE};")
         layout.addWidget(lbl_greet)
@@ -639,7 +646,7 @@ class SetupWizard(QDialog):
         layout.setContentsMargins(32, 30, 32, 20)
         layout.setSpacing(16)
 
-        self.lbl_installing_title = QLabel(f"Đang tiến hành cài đặt {APP_NAME}...")
+        self.lbl_installing_title = QLabel(f"Đang tiến hành cài đặt {app_meta.APP_NAME}...")
         self.lbl_installing_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
         self.lbl_installing_title.setStyleSheet(f"color: {_TEXT_WHITE};")
         layout.addWidget(self.lbl_installing_title)
@@ -689,7 +696,9 @@ class SetupWizard(QDialog):
         t.setFont(QFont("Segoe UI", 14, QFont.Bold))
         t.setStyleSheet(f"color: {_SUCCESS};")
 
-        self.lbl_finish_sub = QLabel(f"{APP_NAME} v{APP_VERSION} đã sẵn sàng phục vụ bạn.")
+        self.lbl_finish_sub = QLabel(
+            f"{app_meta.APP_NAME} v{app_meta.APP_VERSION} đã sẵn sàng phục vụ bạn."
+        )
         self.lbl_finish_sub.setFont(QFont("Segoe UI", 10))
         self.lbl_finish_sub.setStyleSheet(f"color: {_TEXT_WHITE};")
         tv.addWidget(t)
@@ -722,7 +731,7 @@ class SetupWizard(QDialog):
         layout.addWidget(card)
 
         self.chk_launch_now = QCheckBox(
-            f"🚀 Khởi chạy {qt_literal_ampersand(APP_NAME)} ngay bây giờ"
+            f"🚀 Khởi chạy {qt_literal_ampersand(app_meta.APP_NAME)} ngay bây giờ"
         )
         self.chk_launch_now.setChecked(True)
         self.chk_launch_now.setFont(QFont("Segoe UI", 10, QFont.Bold))
@@ -781,8 +790,10 @@ class SetupWizard(QDialog):
             self.pages.setCurrentIndex(0)
             self.btn_back.setVisible(False)
             self.btn_next.setText("Tiếp Tục →")
-            self.lbl_header_title.setText(f"Cài Đặt {APP_NAME}")
-            self.lbl_header_sub.setText(f"Phiên bản v{APP_VERSION} – Giải pháp tối ưu máy tính toàn diện")
+            self.lbl_header_title.setText(f"Cài Đặt {app_meta.APP_NAME}")
+            self.lbl_header_sub.setText(
+                f"Phiên bản v{app_meta.APP_VERSION} – Giải pháp tối ưu máy tính toàn diện"
+            )
 
     def _on_install_progress(self, percent: int, text: str):
         self.progress_bar.setValue(percent)
@@ -797,7 +808,7 @@ class SetupWizard(QDialog):
             self.btn_next.setEnabled(True)
             self.btn_next.setText("Hoàn Tất")
             self.lbl_header_title.setText("Cài Đặt Thành Công!")
-            self.lbl_header_sub.setText(f"Cảm ơn bạn đã lựa chọn {APP_NAME}")
+            self.lbl_header_sub.setText(f"Cảm ơn bạn đã lựa chọn {app_meta.APP_NAME}")
         else:
             QMessageBox.critical(self, "Lỗi Cài Đặt", message)
             self.reject()

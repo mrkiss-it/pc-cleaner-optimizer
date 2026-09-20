@@ -44,6 +44,7 @@ from PyQt5.QtWidgets import QApplication
 
 from app_meta import APP_NAME, APP_VERSION, APP_PUBLISHER
 from installer.setup_wizard import qt_literal_ampersand, SetupWizard
+import installer.setup_wizard as setup_wizard_mod
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 _failed = 0
@@ -73,12 +74,14 @@ check(f"v{APP_VERSION}" in wizard.windowTitle(), "window title uses APP_VERSION"
 check("3.7.0" not in wizard.windowTitle(), "window title is not stale 3.7.0")
 check(f"v{APP_VERSION}" in wizard.lbl_header_sub.text(), "header subtitle uses APP_VERSION")
 check("3.7.0" not in wizard.lbl_header_sub.text(), "header subtitle is not stale 3.7.0")
+check(" Pro" not in wizard.lbl_header_sub.text(), "header subtitle has no Pro edition")
 
 finish = wizard.lbl_finish_sub.text()
 check(APP_NAME in finish, "finish line uses APP_NAME")
 check(f"v{APP_VERSION}" in finish, "finish line uses APP_VERSION")
 check("3.7.0" not in finish, "finish line is not stale 3.7.0")
 check(not re.search(r"\bv\d+\.\d+(\.\d+)?\s+Pro\b", finish), "finish line has no fake Pro edition")
+check(" Pro" not in finish, "finish line has no Pro suffix")
 
 launch = wizard.chk_launch_now.text()
 check(" _Optimizer" not in launch, "checkbox text has no _Optimizer")
@@ -87,6 +90,18 @@ check("&&" in launch, "checkbox stores && so UI shows & Optimizer")
 check(APP_NAME in launch.replace("&&", "&"), "displayed checkbox uses the product name")
 
 wizard.close()
+
+# Simulate the Windows-tree bug: local APP_VERSION = "3.7.0" after import must not win.
+setup_wizard_mod.APP_NAME = "PC Auto Cleaner & Optimizer"
+setup_wizard_mod.APP_VERSION = "3.7.0"
+setup_wizard_mod.APP_PUBLISHER = "ignored"
+shadowed = SetupWizard()
+check(f"v{APP_VERSION}" in shadowed.lbl_finish_sub.text(), "shadowed APP_VERSION still reads app_meta")
+check("3.7.0" not in shadowed.lbl_finish_sub.text(), "local APP_VERSION=3.7.0 override is ignored")
+check("3.7.0" not in shadowed.lbl_header_sub.text(), "header ignores local 3.7.0 override")
+check(qt_literal_ampersand(APP_NAME) in shadowed.chk_launch_now.text(), "shadowed checkbox still escapes &")
+shadowed.close()
+del setup_wizard_mod.APP_NAME, setup_wizard_mod.APP_VERSION, setup_wizard_mod.APP_PUBLISHER
 
 iss_path = os.path.join(ROOT, "installer", "inno_setup.iss")
 iss_text = open(iss_path, encoding="utf-8").read()
@@ -99,8 +114,21 @@ check(iss_pub is not None and iss_pub.group(1) == APP_PUBLISHER, "inno MyAppPubl
 check("3.7.0" not in iss_text, "inno script has no hardcoded 3.7.0")
 
 wizard_src = open(os.path.join(ROOT, "installer", "setup_wizard.py"), encoding="utf-8").read()
-check('APP_VERSION = "3.7.0"' not in wizard_src, "wizard has no ImportError fallback to 3.7.0")
-check("_Optimizer" not in wizard_src, "wizard source has no _Optimizer typo")
+code_only = "\n".join(
+    ln for ln in wizard_src.splitlines()
+    if not ln.lstrip().startswith("#") and not ln.lstrip().startswith('"""')
+)
+check(not re.search(r'APP_VERSION\s*=\s*"3\.7\.0"', code_only),
+      "wizard has no hard-coded APP_VERSION = 3.7.0")
+check(not re.search(r"^(APP_NAME|APP_VERSION|APP_PUBLISHER)\s*=", wizard_src, re.M),
+      "wizard does not reassign APP_* after import")
+check("v{APP_VERSION} Pro" not in wizard_src and "APP_VERSION} Pro" not in wizard_src,
+      "wizard UI strings do not append Pro")
+check("app_meta.APP_VERSION" in wizard_src, "wizard reads version via app_meta.APP_VERSION")
+check("_Optimizer" not in code_only.replace("qt_literal_ampersand", ""),
+      "wizard executable code has no _Optimizer typo")
+check("qt_literal_ampersand(app_meta.APP_NAME)" in wizard_src,
+      "launch checkbox escapes APP_NAME with &&")
 
 build_src = open(os.path.join(ROOT, "installer", "build_installer.py"), encoding="utf-8").read()
 check("--hidden-import=app_meta" in build_src, "Setup PyInstaller bundles app_meta")

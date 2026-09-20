@@ -716,6 +716,7 @@ assert wizard.pages.count() == 4, "SetupWizard phai co 4 trang (Welcome, Options
 assert wizard.current_step == 0, "Trang bat dau phai la 0 (Welcome)"
 assert f"v{_WIZ_VER}" in wizard.lbl_finish_sub.text(), "Trang thanh cong phai hien APP_VERSION"
 assert "3.7.0" not in wizard.lbl_finish_sub.text(), "Khong hard-code 3.7.0 tren trang thanh cong"
+assert " Pro" not in wizard.lbl_finish_sub.text(), "Khong gan nham nhan Pro sau version"
 assert _qt_amp(_WIZ_NAME) in wizard.chk_launch_now.text(), "Checkbox khoi chay phai escape & (tranh _Optimizer)"
 assert " _Optimizer" not in wizard.chk_launch_now.text()
 wizard._go_next()
