@@ -143,6 +143,10 @@ DEFAULT_CONFIG = {
     "ai_copilot_ollama_model": DEFAULT_OLLAMA_MODEL,
     "ai_autopilot_enabled": True,
     "ai_autopilot_mode": "auto",
+    "companion_enabled": True,
+    "companion_reflection_enabled": True,
+    "companion_may_propose_actions": True,
+    "companion_reflection_hour": 20,
     "check_for_updates_enabled": True,
     "github_owner": "mrkiss-it",
     "github_repo": "pc-cleaner-optimizer",
@@ -171,6 +175,19 @@ def _user_data_dir() -> str:
         return os.path.join(appdata, "PCAutoCleaner")
     xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     return os.path.join(xdg, "PCAutoCleaner")
+
+
+def user_data_dir() -> str:
+    """Public alias for the per-user AppData / XDG config directory."""
+    return _user_data_dir()
+
+
+def companion_dir() -> str:
+    """Local companion memory (diary, skills, sổ tay) under AppData, overridable for tests."""
+    override = os.environ.get("PCAUTOCLEANER_COMPANION_DIR", "").strip()
+    if override:
+        return override
+    return os.path.join(_user_data_dir(), "companion")
 
 
 def secrets_file_path() -> str:

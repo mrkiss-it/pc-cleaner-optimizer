@@ -33,6 +33,7 @@ from config_manager import (
 )
 from app_meta import APP_NAME
 from core.predictive_ai import PredictiveAIEngine, AIHealthReport, AutoPilotState
+from ui.companion_card import CompanionDialog
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +61,7 @@ class APIConfigDialog(QDialog):
         super().__init__(parent)
         self.config_manager = config_manager
         self.setWindowTitle(f"⚙️ Cấu Hình AI Copilot — {APP_NAME}")
-        self.resize(540, 580)
+        self.resize(540, 620)
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: {_SURFACE};
@@ -114,6 +115,19 @@ class APIConfigDialog(QDialog):
         title = QLabel("🤖 Tùy Chọn Bộ Não AI Copilot (Hybrid)")
         title.setFont(QFont("Segoe UI Semibold", 13, QFont.Bold))
         layout.addWidget(title)
+
+        self.lbl_companion_stage = QLabel("🌱 AI đồng hành: Giai đoạn 0 · Mới gặp")
+        self.lbl_companion_stage.setWordWrap(True)
+        self.lbl_companion_stage.setStyleSheet(f"color: {_ACCENT_PURPLE}; font-size: 12px;")
+        try:
+            from core.companion import current_stage
+            st = current_stage(config_manager=self.config_manager)
+            self.lbl_companion_stage.setText(
+                f"🌱 AI đồng hành: {st.badge_vi()} — {st.blurb_vi}"
+            )
+        except Exception:
+            pass
+        layout.addWidget(self.lbl_companion_stage)
 
         desc = QLabel(
             f"{APP_NAME} ưu tiên Google Gemini khi có mạng và API key; "
@@ -508,6 +522,12 @@ class AICopilotWidget(QWidget):
         self.lbl_autopilot_badge.setStyleSheet("color: #58a6ff; border: none; background: transparent;")
         hdr_lay.addWidget(self.lbl_autopilot_badge)
 
+        self.lbl_companion_badge = QLabel("🌱 Giai đoạn 0 · Mới gặp")
+        self.lbl_companion_badge.setFont(QFont("Segoe UI Semibold", 9))
+        self.lbl_companion_badge.setStyleSheet("color: #c4b5fd; border: none; background: transparent;")
+        self.lbl_companion_badge.setToolTip("AI đồng hành học từ ngày dùng máy này — không phải AGI.")
+        hdr_lay.addWidget(self.lbl_companion_badge)
+
         self.lbl_busy = QLabel("")
         self.lbl_busy.setFont(QFont("Segoe UI", 8))
         self.lbl_busy.setStyleSheet("color: #e3b341; border: none; background: transparent;")
@@ -533,6 +553,25 @@ class AICopilotWidget(QWidget):
         """)
         btn_cfg.clicked.connect(self._open_config_dialog)
         hdr_lay.addWidget(btn_cfg)
+
+        btn_companion = QPushButton("🌱 Nhật ký")
+        btn_companion.setFont(QFont("Segoe UI", 8))
+        btn_companion.setCursor(QCursor(Qt.PointingHandCursor))
+        btn_companion.setToolTip("Giai đoạn, nhật ký máy, kỹ năng và sổ tay local")
+        btn_companion.setStyleSheet(f"""
+            QPushButton {{
+                background: #21262d;
+                border: 1px solid {_CARD_BORDER};
+                border-radius: 4px;
+                padding: 4px 10px;
+                color: {_TEXT_PRIMARY};
+            }}
+            QPushButton:hover {{
+                background: #30363d;
+            }}
+        """)
+        btn_companion.clicked.connect(self._open_companion_dialog)
+        hdr_lay.addWidget(btn_companion)
 
         main_lay.addWidget(header_frame)
 
@@ -677,22 +716,38 @@ class AICopilotWidget(QWidget):
         self.update_telemetry_bar()
 
     def update_telemetry_bar(self):
-        """Cập nhật thanh tiêu đề sức khỏe và Auto-Pilot."""
-        if not self.predictive_engine:
+        """Cập nhật thanh tiêu đề sức khỏe, Auto-Pilot và giai đoạn đồng hành."""
+        if self.predictive_engine:
+            try:
+                report = self.predictive_engine.calculate_health_score()
+                self.lbl_health_badge.setText(f"🩺 Sức Khỏe AI: {report.score}/100 ({report.grade})")
+                self.lbl_health_badge.setStyleSheet(f"color: {report.grade_color}; font-weight: bold; border: none; background: transparent;")
+
+                autopilot = self.predictive_engine.get_autopilot_state()
+                self.lbl_autopilot_badge.setText(autopilot.badge_text)
+                if not autopilot.is_auto_applied:
+                    self.lbl_autopilot_badge.setToolTip("Chỉ đề xuất — Auto-Pilot đang tắt hoặc chưa tự áp dụng.")
+                else:
+                    self.lbl_autopilot_badge.setToolTip(autopilot.description)
+            except Exception:
+                pass
+        self._refresh_companion_badge()
+
+    def _refresh_companion_badge(self):
+        if not hasattr(self, "lbl_companion_badge"):
             return
         try:
-            report = self.predictive_engine.calculate_health_score()
-            self.lbl_health_badge.setText(f"🩺 Sức Khỏe AI: {report.score}/100 ({report.grade})")
-            self.lbl_health_badge.setStyleSheet(f"color: {report.grade_color}; font-weight: bold; border: none; background: transparent;")
-
-            autopilot = self.predictive_engine.get_autopilot_state()
-            self.lbl_autopilot_badge.setText(autopilot.badge_text)
-            if not autopilot.is_auto_applied:
-                self.lbl_autopilot_badge.setToolTip("Chỉ đề xuất — Auto-Pilot đang tắt hoặc chưa tự áp dụng.")
-            else:
-                self.lbl_autopilot_badge.setToolTip(autopilot.description)
+            from core.companion import current_stage
+            stage = current_stage(config_manager=self.config_manager)
+            self.lbl_companion_badge.setText(f"🌱 {stage.badge_vi()}")
+            self.lbl_companion_badge.setToolTip(stage.blurb_vi)
         except Exception:
-            pass
+            self.lbl_companion_badge.setText("🌱 Giai đoạn 0 · Mới gặp")
+
+    def _open_companion_dialog(self):
+        dlg = CompanionDialog(config_manager=self.config_manager, parent=self)
+        dlg.exec_()
+        self._refresh_companion_badge()
 
     def _open_config_dialog(self):
         dlg = APIConfigDialog(config_manager=self.config_manager, parent=self)
