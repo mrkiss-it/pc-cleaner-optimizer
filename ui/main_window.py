@@ -475,7 +475,18 @@ class MainWindow(QMainWindow):
         return banner
 
     def init_tab_dashboard(self):
-        layout = QVBoxLayout(self.tab_dashboard)
+        outer = QVBoxLayout(self.tab_dashboard)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
 
@@ -507,29 +518,16 @@ class MainWindow(QMainWindow):
                 border-radius: 12px;
             }
         """)
-        layout_exam = QHBoxLayout(card_exam)
+        layout_exam = QVBoxLayout(card_exam)
         layout_exam.setContentsMargins(18, 14, 18, 14)
-        layout_exam.setSpacing(16)
+        layout_exam.setSpacing(8)
 
-        info_exam = QVBoxLayout()
-        info_exam.setSpacing(4)
+        header_exam = QHBoxLayout()
+        header_exam.setSpacing(10)
         self.lbl_exam_focus_title = QLabel("📝 Trước thi / họp")
         self.lbl_exam_focus_title.setStyleSheet(
             "color: #f8fafc; font-size: 15px; font-weight: bold; background: transparent; border: none;"
         )
-        self.lbl_exam_focus_sub = QLabel(
-            f"{APP_NAME} dọn rác nhẹ (temp), giảm thông báo của app, thu hồi RAM "
-            "và hạ tác vụ nền — tắt là khôi phục. Không đổi DNS hay Wi-Fi."
-        )
-        self.lbl_exam_focus_sub.setStyleSheet(
-            "color: #99f6e4; font-size: 11px; background: transparent; border: none;"
-        )
-        self.lbl_exam_focus_sub.setWordWrap(True)
-        info_exam.addWidget(self.lbl_exam_focus_title)
-        info_exam.addWidget(self.lbl_exam_focus_sub)
-
-        right_exam = QVBoxLayout()
-        right_exam.setAlignment(Qt.AlignCenter)
         self.badge_exam_focus = QLabel("● Đang Tắt")
         self.badge_exam_focus.setStyleSheet("""
             background-color: #134e4a;
@@ -541,6 +539,19 @@ class MainWindow(QMainWindow):
             border: 1px solid #0f766e;
         """)
         self.badge_exam_focus.setAlignment(Qt.AlignCenter)
+        header_exam.addWidget(self.lbl_exam_focus_title)
+        header_exam.addStretch()
+        header_exam.addWidget(self.badge_exam_focus)
+
+        self.lbl_exam_focus_sub = QLabel(
+            f"{APP_NAME} dọn rác nhẹ (temp), giảm thông báo của app, thu hồi RAM "
+            "và hạ tác vụ nền — tắt là khôi phục. Không đổi DNS hay Wi-Fi."
+        )
+        self.lbl_exam_focus_sub.setTextFormat(Qt.PlainText)
+        self.lbl_exam_focus_sub.setStyleSheet(
+            "color: #99f6e4; font-size: 11px; background: transparent; border: none;"
+        )
+        self.lbl_exam_focus_sub.setWordWrap(True)
 
         self.btn_exam_focus = QPushButton("📝 Bật Trước thi / họp")
         self.btn_exam_focus.setProperty("class", "btn-teal")
@@ -551,11 +562,9 @@ class MainWindow(QMainWindow):
         )
         self.btn_exam_focus.clicked.connect(self.toggle_exam_focus)
 
-        right_exam.addWidget(self.badge_exam_focus)
-        right_exam.addWidget(self.btn_exam_focus)
-
-        layout_exam.addLayout(info_exam, stretch=3)
-        layout_exam.addLayout(right_exam, stretch=1)
+        layout_exam.addLayout(header_exam)
+        layout_exam.addWidget(self.lbl_exam_focus_sub)
+        layout_exam.addWidget(self.btn_exam_focus)
         layout.addWidget(card_exam)
 
         # Row 2: Primary Quick Action Buttons
@@ -674,6 +683,9 @@ class MainWindow(QMainWindow):
         stats_layout.addWidget(self.card_count)
         stats_layout.addWidget(self.card_net)
         layout.addLayout(stats_layout)
+        layout.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
 
         self.thermal_card = ThermalCard(
             self.tab_dashboard,
@@ -2086,7 +2098,7 @@ class MainWindow(QMainWindow):
         active = ExamMeetingFocus.is_active()
         if hasattr(self, "btn_exam_focus"):
             self.btn_exam_focus.setText(
-                "🛑 Tắt & khôi phục" if active else "📝 Bật Trước thi / họp"
+                "🛑 Tắt && khôi phục" if active else "📝 Bật Trước thi / họp"
             )
         if hasattr(self, "badge_exam_focus"):
             if active:

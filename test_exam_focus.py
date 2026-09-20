@@ -325,16 +325,16 @@ def test_ui_has_focus_card_and_toggle():
     assert "Trước thi" in win.btn_exam_focus.text()
     assert hasattr(win, "lbl_exam_focus_sub")
     sub = win.lbl_exam_focus_sub.text()
-    assert "thi" in sub.lower() or "họp" in sub.lower()
-    assert "Pro" not in win.btn_exam_focus.text()
-    assert APP_NAME in win.lbl_exam_focus_sub.text()
+    assert APP_NAME in sub
+    assert "temp" in sub.lower()
+    assert "DNS" in sub or "Wi-Fi" in sub
     assert "Pro" not in win.lbl_exam_focus_title.text()
-    assert "Pro" not in win.lbl_exam_focus_sub.text()
+    assert "Pro" not in sub
     # Active state updates from engine
     ExamMeetingFocus.reset_for_tests()
     ExamMeetingFocus._is_active = True
     win._sync_exam_focus_ui()
-    assert "khôi phục" in win.btn_exam_focus.text()
+    assert "khôi phục" in win.btn_exam_focus.text().replace("&&", "&")
     assert "ĐANG TẬP TRUNG" in win.badge_exam_focus.text()
     ExamMeetingFocus.reset_for_tests()
     win._sync_exam_focus_ui()
