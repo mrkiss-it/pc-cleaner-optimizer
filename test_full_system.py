@@ -1863,6 +1863,68 @@ finally:
     _wb.open = _orig_wb_open
     win._start_update_download = _orig_start_dl
 
+# Cài luôn: mở Setup xong tự thoát, không hỏi Yes/No
+from core.update_installer import DOWNLOAD_TIMEOUT_SEC as _DL_TO, LaunchResult as _LR
+assert _DL_TO >= 15 * 60, "Timeout tai Setup.exe phai >= 15 phut (file ~116MB, Wi-Fi cham)"
+import ui.main_window as _mwmod
+_qmb_hits = []
+_quit_hits = []
+_shot_hits = []
+_toasts = []
+_orig_qmb = _mwmod.QMessageBox.question
+_orig_shot = _mwmod.QTimer.singleShot
+_orig_ldu = _mwmod.launch_downloaded_update
+_orig_quit = win._quit_for_installer
+_orig_notify = win._notify_update
+try:
+    _mwmod.QMessageBox.question = lambda *a, **k: _qmb_hits.append(True) or _mwmod.QMessageBox.No
+
+    def _fake_shot(ms, cb):
+        _shot_hits.append(ms)
+        cb()
+
+    _mwmod.QTimer.singleShot = _fake_shot
+    _mwmod.launch_downloaded_update = lambda path, **_k: _LR(
+        ok=True,
+        message="Đang mở trình cài đặt PCAutoCleaner_Setup.exe. Ứng dụng sẽ thoát để bộ cài ghi đè file.",
+        action="installer",
+        should_close=True,
+        path=path,
+    )
+    win._quit_for_installer = lambda: _quit_hits.append(True)
+    win._notify_update = lambda *a, **k: _toasts.append((a, k))
+    win._launch_downloaded_installer("/tmp/PCAutoCleaner_Setup.exe", fake_info)
+    assert _qmb_hits == [], "Khong hoi Yes/No khi mo Setup — cài luôn"
+    assert _quit_hits == [True], "Tu thoat sau khi mo installer"
+    assert _shot_hits, "Hen gio thoat sau toast ngan"
+    assert any("Đang mở trình cài đặt" in str(a) for a, _k in _toasts), "Toast dang mo trinh cai dat"
+
+    _quit_hits.clear()
+    _qmb_hits.clear()
+    _shot_hits.clear()
+    _toasts.clear()
+    _mwmod.launch_downloaded_update = lambda path, **_k: _LR(
+        ok=True,
+        message=(
+            "Đã mở bản portable. Không thể ghi đè file đang chạy — "
+            "hãy đóng ứng dụng rồi chạy bản mới từ thư mục vừa mở."
+        ),
+        action="folder",
+        should_close=False,
+        path=path,
+    )
+    win._launch_downloaded_installer("/tmp/portable_extracted", fake_info)
+    assert _qmb_hits == [], "Portable khong hoi Yes/No"
+    assert _quit_hits == [], "Portable khong tu thoat (khong ghi de file dang chay)"
+    assert _shot_hits == [], "Portable khong hen gio thoat"
+    assert any("portable" in str(t).lower() for t in _toasts), "Toast portable, khong hoi thoat"
+finally:
+    _mwmod.QMessageBox.question = _orig_qmb
+    _mwmod.QTimer.singleShot = _orig_shot
+    _mwmod.launch_downloaded_update = _orig_ldu
+    win._quit_for_installer = _orig_quit
+    win._notify_update = _orig_notify
+
 try:
     win.config_manager.set("dismissed_update_tag", "")
     win._pending_update = None

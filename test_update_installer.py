@@ -48,6 +48,8 @@ if sys.platform != "win32":
 
 from core.update_checker import is_downloadable_asset, pick_download_asset_info
 from core.update_installer import (
+    DOWNLOAD_CONNECT_TIMEOUT_SEC,
+    DOWNLOAD_TIMEOUT_SEC,
     download_release_asset,
     extract_zip_safely,
     find_setup_in_dir,
@@ -87,7 +89,7 @@ class FakeHttpResp:
 
 
 def mock_urlopen(data, status=200, headers=None):
-    def _open(req, timeout=60.0):
+    def _open(req, timeout=None):
         ua = ""
         if hasattr(req, "headers"):
             ua = req.headers.get("User-agent") or req.headers.get("User-Agent") or ""
@@ -148,6 +150,9 @@ check(result.ok is True, "download ok")
 check(os.path.isfile(dest) and open(dest, "rb").read() == payload, "file contents")
 check(result.bytes_written == len(payload), "bytes_written")
 check(len(ok_open.calls) == 1, "one urlopen")
+check(DOWNLOAD_TIMEOUT_SEC >= 15 * 60, "default timeout >= 15 minutes for ~116MB Setup")
+check(10 <= DOWNLOAD_CONNECT_TIMEOUT_SEC <= 60, "connect timeout stays reasonable")
+check(ok_open.calls[0]["timeout"] == DOWNLOAD_TIMEOUT_SEC, "urlopen uses long default timeout")
 check("PCAutoCleaner" in (ok_open.calls[0]["ua"] or ""), "User-Agent sent")
 check(progress and progress[-1][0] == len(payload), "progress reached total")
 v_ok, v_err = verify_downloaded_file(dest, len(payload), digest)
@@ -194,7 +199,7 @@ check("SHA" in bad_sha.message, "sha VN")
 print(" [PASS] sha mismatch discarded")
 
 # --- HTTP 404 ---
-def raise_404(req, timeout=60.0):
+def raise_404(req, timeout=None):
     raise urllib.error.HTTPError(
         "https://github.com/x/y/releases/download/v1/PCAutoCleaner_Setup.exe",
         404, "Not Found", hdrs=None, fp=io.BytesIO(b"missing"),
@@ -211,7 +216,7 @@ check("404" in r404.message, "404 message")
 print(" [PASS] HTTP 404 Vietnamese, no crash")
 
 # --- offline ---
-def raise_off(req, timeout=60.0):
+def raise_off(req, timeout=None):
     raise urllib.error.URLError("network down")
 
 roff = download_release_asset(
@@ -285,7 +290,9 @@ check(launch.ok is True and launch.should_close is True, "launch installer shoul
 check(launch.action == "installer", "installer action")
 check(launched and launched[0][0] == dest, "popen got setup path")
 check(all("/SILENT" not in str(p).upper() for p in launched[0]), "launched without silent")
-print(" [PASS] launch Setup.exe via mocked popen, prompt-to-close")
+check("Đang mở trình cài đặt" in launch.message, "auto-close message")
+check("thoát" in launch.message.lower() or "ghi đè" in launch.message, "will quit so installer can overwrite")
+print(" [PASS] launch Setup.exe via mocked popen, auto-close (no prompt)")
 
 # --- zip portable: extract + find Setup.exe ---
 zip_path = os.path.join(tmpdir, "PCAutoCleaner_portable.zip")
@@ -309,6 +316,22 @@ zip_launch = launch_downloaded_update(zip_path, popen=fake_popen, open_folder=la
 check(zip_launch.ok is True and zip_launch.action == "installer", "zip with setup launches installer")
 check(launched and launched[0][0].endswith("PCAutoCleaner_Setup.exe"), "zip inner setup")
 print(" [PASS] portable zip extract + Setup.exe + zip-slip blocked")
+
+# --- zip portable folder only (no Setup) — open folder, do not quit ---
+portable_only = os.path.join(tmpdir, "PCAutoCleaner_3.8.1_portable.zip")
+with zipfile.ZipFile(portable_only, "w") as zf:
+    zf.writestr("PCAutoCleaner/PCAutoCleaner.exe", b"portable-app")
+opened_folders = []
+launched.clear()
+folder_launch = launch_downloaded_update(
+    portable_only, popen=fake_popen, open_folder=lambda p: opened_folders.append(p) or True
+)
+check(folder_launch.ok is True and folder_launch.action == "folder", "portable folder action")
+check(folder_launch.should_close is False, "portable cannot overwrite running files")
+check(not launched, "no installer popen for portable-only zip")
+check(opened_folders, "opened extracted folder")
+check("ghi đè" in folder_launch.message, "VN cannot overwrite running files")
+print(" [PASS] portable zip without Setup opens folder, no auto-quit")
 
 # --- cache path uses LOCALAPPDATA ---
 os.environ["LOCALAPPDATA"] = tmpdir

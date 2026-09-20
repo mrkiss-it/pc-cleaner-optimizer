@@ -287,7 +287,7 @@ def pick_download_asset_info(
     releases_page: str = "",
 ) -> AssetPick:
     """
-    Chọn file tải: ưu tiên PCAutoCleaner_Setup.exe, rồi .exe/.msi/.zip.
+    Chọn file tải: ưu tiên PCAutoCleaner_Setup.exe, rồi setup .exe, .exe khác, .msi, cuối cùng .zip.
     Chỉ lấy browser_download_url (release công khai, không cần token).
     Không có asset → trang Releases; name rỗng.
     """
@@ -339,7 +339,11 @@ def pick_download_asset_info(
 
     for name, url, size, digest in named:
         lower = name.lower()
-        if lower.endswith(".msi") or lower.endswith(".zip"):
+        if lower.endswith(".msi"):
+            return _pick(name, url, size, digest)
+
+    for name, url, size, digest in named:
+        if name.lower().endswith(".zip"):
             return _pick(name, url, size, digest)
 
     return empty
@@ -351,7 +355,7 @@ def pick_download_asset(
     releases_page: str = "",
 ) -> Tuple[str, str]:
     """
-    Chọn URL tải: ưu tiên PCAutoCleaner_Setup.exe, rồi .exe/.msi/.zip.
+    Chọn URL tải: ưu tiên PCAutoCleaner_Setup.exe, rồi setup .exe, .exe khác, .msi, cuối cùng .zip.
     Không có asset → trang Releases (html_url hoặc trang danh sách).
     Trả về (url, asset_name). asset_name rỗng nghĩa là mở trang web, không phải file.
     """
