@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QApplication
 )
 
+from app_meta import APP_NAME
 from core.service_optimizer import (
     ServiceOptimizer, WindowsService,
     RECOMMENDATION_SAFE_DISABLE, RECOMMENDATION_MANUAL, RECOMMENDATION_KEEP,
@@ -135,7 +136,7 @@ class ServiceContextDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("⚙️ Windows Services & Context Menu Manager – PC Optimizer Pro")
+        self.setWindowTitle(f"⚙️ Windows Services & Context Menu Manager – {APP_NAME}")
         self.setMinimumSize(920, 640)
         self.resize(1000, 700)
         self.setStyleSheet(DIALOG_STYLE)

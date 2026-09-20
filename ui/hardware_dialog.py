@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QGridLayout, QScrollArea
 )
 
+from app_meta import APP_NAME
 from core.hardware_monitor import HardwareMonitor
 from core.logger import logger
 
@@ -27,7 +28,7 @@ class HardwareMonitorDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🔋 Quản Lý Sức Khỏe Pin & Giám Sát Phần Cứng - PC Optimizer Pro")
+        self.setWindowTitle(f"🔋 Quản Lý Sức Khỏe Pin & Giám Sát Phần Cứng - {APP_NAME}")
         self.resize(920, 640)
         self.setMinimumSize(820, 560)
         self.setStyleSheet("""

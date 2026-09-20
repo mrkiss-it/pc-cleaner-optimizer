@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QApplication, QSplitter
 )
 
+from app_meta import APP_NAME
 from core.uninstaller_manager import UninstallerManager, InstalledApp, KNOWN_BLOATWARE
 from core.network_optimizer import NetworkOptimizer
 from core.service_optimizer import ServiceOptimizer
@@ -132,7 +133,7 @@ class UninstallerDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("📦 Software Uninstaller & Residual Junk Hunter – PC Optimizer Pro")
+        self.setWindowTitle(f"📦 Software Uninstaller & Residual Junk Hunter – {APP_NAME}")
         self.setMinimumSize(1000, 700)
         self.resize(1050, 720)
         self.setStyleSheet(DIALOG_STYLE)

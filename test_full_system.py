@@ -62,6 +62,7 @@ from core.health_monitor import HealthMonitor
 from core.system_monitor import SystemMonitorHub
 from startup_manager import StartupManager
 from config_manager import ConfigManager
+from app_meta import APP_NAME
 print(" [PASS] 1. Tat ca cac module loi (core) da import thanh cong!")
 
 # 2. Test Process Manager
@@ -252,6 +253,8 @@ if sys.platform == "win32":
 
 hw_dlg = HardwareMonitorDialog()
 assert hw_dlg.tabs.count() == 2, "HardwareMonitorDialog phai co 2 tabs"
+assert APP_NAME in hw_dlg.windowTitle(), "Hardware dialog title uses APP_NAME"
+assert "Optimizer Pro" not in hw_dlg.windowTitle()
 assert hasattr(win, "btn_hardware"), "MainWindow phai co nut btn_hardware"
 hw_dlg.close()
 
@@ -393,6 +396,8 @@ print(" [PASS] 27. Context Menu Toggle: Logic Block / Unblock qua HKCU Shell Ext
 from ui.service_context_dialog import ServiceContextDialog
 svc_dlg = ServiceContextDialog(parent=win)
 assert svc_dlg.tabs.count() == 2, "ServiceContextDialog phai co 2 tabs"
+assert APP_NAME in svc_dlg.windowTitle(), "Service dialog title uses APP_NAME"
+assert "Optimizer Pro" not in svc_dlg.windowTitle()
 assert hasattr(win, "btn_services"), "MainWindow phai co nut btn_services"
 assert hasattr(win, "open_services_context_dialog"), "MainWindow phai co ham open_services_context_dialog"
 svc_dlg.close()
@@ -453,6 +458,8 @@ print(f" [PASS] 31. Residual Junk Hunter: Clean residuals hoat dong an toan 100%
 from ui.uninstaller_dialog import UninstallerDialog
 uninst_dlg = UninstallerDialog(parent=win)
 assert uninst_dlg.tabs.count() == 3, "UninstallerDialog phai co 3 tabs (Desktop, Bloatware, Residuals)"
+assert APP_NAME in uninst_dlg.windowTitle(), "Uninstaller dialog title uses APP_NAME"
+assert "Optimizer Pro" not in uninst_dlg.windowTitle()
 assert hasattr(win, "btn_uninstaller"), "MainWindow phai co nut btn_uninstaller"
 assert hasattr(win, "open_uninstaller_dialog"), "MainWindow phai co ham open_uninstaller_dialog"
 uninst_dlg.close()
@@ -2131,6 +2138,11 @@ assert COMMERCIAL_PERMISSION_URL.startswith(f"mailto:{COMMERCIAL_PERMISSION_EMAI
 assert "subject=Xin%20phep%20thuong%20mai%20PCAutoCleaner" in COMMERCIAL_PERMISSION_URL
 assert "https://github.com/mrkiss-it" not in COMMERCIAL_PERMISSION_URL
 assert LICENSE_GITHUB_URL.endswith("/pc-cleaner-optimizer/blob/main/LICENSE")
+from html import escape as _html_escape
+assert _html_escape(APP_NAME, quote=True) in EULA_HTML, "EULA body must use APP_NAME"
+assert APP_NAME in EULA_HTML.replace("&amp;", "&"), "EULA displays APP_NAME"
+assert "System Optimizer Pro" not in EULA_HTML
+assert "Optimizer Pro" not in EULA_HTML
 
 _local_license = resolve_license_path()
 assert _local_license and os.path.isfile(_local_license), "Dev/source tree phai tim duoc LICENSE"
@@ -2170,6 +2182,9 @@ assert "không được phép" in _lic.lower() or "KHÔNG được phép" in _li
 assert "thương mại" in _lic.lower() or "commercially" in _lic.lower()
 assert "mrkiss.it@gmail.com" in _lic
 assert "Xin phep thuong mai PCAutoCleaner" in _lic
+assert APP_NAME in _lic, "LICENSE product name must match APP_NAME"
+assert "System Optimizer Pro" not in _lic
+assert "Optimizer Pro" not in _lic
 
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "README.md"), "r", encoding="utf-8") as _rf:
     _readme = _rf.read()
@@ -2237,6 +2252,8 @@ try:
         _json.dump({}, f)
     eula_ui_cfg = _CMEula(config_path=tmp_eula_cfg2)
     dlg_first = EulaDialog(eula_ui_cfg, require_accept=True)
+    assert APP_NAME in dlg_first.windowTitle(), "EULA window title uses APP_NAME"
+    assert "Optimizer Pro" not in dlg_first.windowTitle()
     assert dlg_first.chk_agree.isHidden() is False
     assert dlg_first.btn_accept is not None and dlg_first.btn_accept.isEnabled() is False
     assert "Từ chối" in dlg_first.btn_decline.text()
