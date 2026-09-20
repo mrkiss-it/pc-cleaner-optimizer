@@ -170,8 +170,9 @@ def build_wifi_stability_guidance(
         )
     else:
         driver_text = (
-            "Cập nhật hoặc Rollback driver card Wi-Fi trong Device Manager → "
-            "Network adapters → Properties → Driver."
+            "Cập nhật hoặc Rollback driver Wi-Fi (MediaTek MT7921 hoặc card khác) "
+            "trong Device Manager → Network adapters → Properties → Driver. "
+            "Driver mới đôi khi làm rớt; Rollback nếu vừa cập nhật."
         )
     tips.append({
         "id": "mt7921_driver",
