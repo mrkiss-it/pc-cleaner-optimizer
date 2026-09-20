@@ -6,6 +6,7 @@ from core.service_optimizer import ServiceOptimizer
 from core.context_menu_manager import ContextMenuManager
 from core.uninstaller_manager import UninstallerManager, InstalledApp
 from core.winsxs_cleaner import WinSxSCleaner, UpdateCacheItem, OemDriverItem
+from core.predictive_ai import PredictiveAIEngine, DiskForecast, UsageHabit, ProcessAnomaly
 
 __all__ = [
     "SystemTweaker",
@@ -18,5 +19,9 @@ __all__ = [
     "WinSxSCleaner",
     "UpdateCacheItem",
     "OemDriverItem",
+    "PredictiveAIEngine",
+    "DiskForecast",
+    "UsageHabit",
+    "ProcessAnomaly",
 ]
 

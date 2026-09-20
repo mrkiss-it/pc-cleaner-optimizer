@@ -509,6 +509,88 @@ assert standalone_uninst is not None, "Standalone UninstallerDialog phai khoi ta
 standalone_uninst.close()
 print(" [PASS] 38. Setup Wizard UI: SetupWizard (4-step Fluent Dark) & Standalone Uninstaller khoi tao hoan hao!")
 
-print("\n>>> TAT CA 38 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS & SETUP WIZARD DEU THANH CONG 100%! <<<")
+# 39. Test Predictive AI Engine: Disk Forecaster, Diurnal Habit Learner, Z-Score Anomaly Detector (v3.8 Pro)
+from datetime import datetime
+from core.predictive_ai import (
+    PredictiveAIEngine, DiskForecaster, HabitLearner, ProcessAnomalyDetector,
+    DiskForecast, UsageHabit, ProcessAnomaly,
+    STATUS_CRITICAL_DEPLETION, STATUS_WARNING_DEPLETION, STATUS_STABLE,
+    SLOT_MORNING, SLOT_AFTERNOON, SLOT_EVENING, SLOT_NIGHT
+)
+
+# A. Test Disk Forecaster Regression
+mock_forecaster = DiskForecaster()
+mock_forecaster._history = [
+    {"ts": 100000.0, "free_gb": 50.0, "total_gb": 256.0},
+    {"ts": 100000.0 + 86400 * 2, "free_gb": 46.0, "total_gb": 256.0},
+    {"ts": 100000.0 + 86400 * 4, "free_gb": 42.0, "total_gb": 256.0},
+]
+mock_forecaster.record_sample(free_gb=40.0, total_gb=256.0, ts=100000.0 + 86400 * 5)
+fc = mock_forecaster.calculate_forecast("C:", auto_record=False)
+assert fc is not None, "DiskForecast phai tra ve ket qua"
+assert fc.daily_burn_rate_gb > 1.0, f"Toc do tieu hao phai > 1.0 GB/ngay, hien tai: {fc.daily_burn_rate_gb}"
+assert fc.days_until_exhaustion is not None and fc.days_until_exhaustion > 0, "So ngay can kiet phai > 0"
+
+# B. Test Habit Learner Diurnal Slots
+assert HabitLearner.get_current_slot(datetime(2026, 9, 20, 8, 30)) == SLOT_MORNING
+assert HabitLearner.get_current_slot(datetime(2026, 9, 20, 14, 0)) == SLOT_AFTERNOON
+assert HabitLearner.get_current_slot(datetime(2026, 9, 20, 20, 0)) == SLOT_EVENING
+assert HabitLearner.get_current_slot(datetime(2026, 9, 20, 2, 0)) == SLOT_NIGHT
+
+habit_learner = HabitLearner()
+habit_learner._profiles[SLOT_EVENING] = {"cpu_sum": 350.0, "ram_sum": 380.0, "samples": 5, "gaming_hits": 3}
+habit_gaming = habit_learner.analyze_current_habit(current_cpu=70.0, current_ram=80.0)
+assert habit_gaming.recommended_mode in ("game_boost", "balanced"), "De xuat phai la game_boost hoac balanced"
+
+# C. Test Process Anomaly Detector Z-Score
+detector = ProcessAnomalyDetector()
+anomalies = detector.detect_anomalies(limit=5)
+assert isinstance(anomalies, list), "detect_anomalies phai tra ve list"
+for anom in anomalies:
+    assert 0 <= anom.anomaly_score <= 100, "Score phai trong 0..100"
+    assert anom.name not in ("system", "csrss.exe"), "Khong duoc bao dong tien trinh he thong"
+
+# D. Test Master Orchestrator
+pred_engine = PredictiveAIEngine()
+summary = pred_engine.get_summary()
+assert "forecast" in summary and "habit" in summary, "Summary phai chua forecast va habit"
+print(" [PASS] 39. Predictive AI: Disk Forecaster (Hoi quy chuoi thoi gian), Diurnal Habit Learner & Z-Score Anomaly Detector hoat dong hoan hao!")
+
+# 40. Test AI Advisor Predictive Rules & AIAdvisorDialog UI Dashboard Integration (v3.8 Pro)
+from core.ai_advisor import CATEGORY_PREDICTIVE, CATEGORY_ANOMALY, CATEGORY_ICONS
+assert CATEGORY_PREDICTIVE in CATEGORY_ICONS and CATEGORY_ICONS[CATEGORY_PREDICTIVE] == "🔮"
+assert CATEGORY_ANOMALY in CATEGORY_ICONS and CATEGORY_ICONS[CATEGORY_ANOMALY] == "🚨"
+
+# Test AI Advisor Rule Output
+sugs = advisor.get_suggestions()
+assert len(sugs) > 0, "AI Advisor phai sinh ra suggestions"
+
+# Test UI Dialog Dashboard & Filter Tabs
+from ui.ai_advisor_dialog import AIAdvisorDialog, PredictiveDashboard
+pred_dlg = AIAdvisorDialog(advisor=advisor, parent=win)
+assert hasattr(pred_dlg, "_dashboard"), "Dialog phai co PredictiveDashboard"
+assert isinstance(pred_dlg._dashboard, PredictiveDashboard), "Dashboard phai la instance cua PredictiveDashboard"
+assert CATEGORY_PREDICTIVE in pred_dlg._tab_btns, "Dialog phai co tab loc CATEGORY_PREDICTIVE"
+assert CATEGORY_ANOMALY in pred_dlg._tab_btns, "Dialog phai co tab loc CATEGORY_ANOMALY"
+
+# Test filter tab switching
+pred_dlg._set_filter(CATEGORY_PREDICTIVE, pred_dlg._tab_btns[CATEGORY_PREDICTIVE])
+assert pred_dlg._active_filter == CATEGORY_PREDICTIVE, "Filter phai la CATEGORY_PREDICTIVE"
+
+# Test Action Dispatcher for enable_game_boost
+dispatched_actions = []
+def mock_pred_dispatcher(key):
+    dispatched_actions.append(key)
+
+dlg_dispatch = AIAdvisorDialog(advisor=advisor, action_dispatcher=mock_pred_dispatcher)
+dlg_dispatch._dispatch_action("enable_game_boost")
+assert "enable_game_boost" in dispatched_actions, "Action dispatcher phai nhan duoc enable_game_boost"
+
+pred_dlg.close()
+dlg_dispatch.close()
+print(" [PASS] 40. AI Advisor Predictive Integration: Dashboard 3 the truc quan (Disk, Habit, Anomaly), Tab loc rieng biet & Action Dispatcher hoat dong xuat sac 100%!")
+
+print("\n>>> TAT CA 40 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD & PREDICTIVE AI DEU THANH CONG 100%! <<<")
+
 
 

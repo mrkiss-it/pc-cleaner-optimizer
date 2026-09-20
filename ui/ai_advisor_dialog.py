@@ -19,6 +19,7 @@ from core.ai_advisor import (
     AIAdvisor, Suggestion,
     PRIORITY_CRITICAL, PRIORITY_WARNING, PRIORITY_TIP,
     CATEGORY_ICONS,
+    CATEGORY_PREDICTIVE, CATEGORY_ANOMALY,
 )
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,189 @@ class SuggestionCard(QFrame):
 
 
 # ---------------------------------------------------------------------------
+# Predictive AI Insights Dashboard (v3.8 Pro)
+# ---------------------------------------------------------------------------
+
+class PredictiveDashboard(QFrame):
+    """Bảng điều khiển 3 thẻ thông minh: Dự Báo Ổ C, Thói Quen Sử Dụng, Nhận Diện Bất Thường."""
+    action_triggered = pyqtSignal(str)
+
+    def __init__(self, advisor: AIAdvisor, parent=None):
+        super().__init__(parent)
+        self._advisor = advisor
+        self._build_ui()
+
+    def _build_ui(self):
+        self.setObjectName("PredictiveDashboard")
+        self.setStyleSheet(f"""
+            QFrame#PredictiveDashboard {{
+                background: {_SURFACE};
+                border-bottom: 1px solid {_CARD_BORDER};
+            }}
+        """)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(20, 10, 20, 12)
+        layout.setSpacing(12)
+
+        # ── Card 1: 🔮 Dự Báo Ổ C ──
+        self.card_disk = QFrame()
+        self.card_disk.setStyleSheet(f"""
+            QFrame {{
+                background: {_CARD_BG};
+                border: 1px solid {_CARD_BORDER};
+                border-left: 3px solid #a371f7;
+                border-radius: 10px;
+                padding: 6px 10px;
+            }}
+        """)
+        c1_lay = QVBoxLayout(self.card_disk)
+        c1_lay.setContentsMargins(4, 4, 4, 4)
+        c1_lay.setSpacing(2)
+
+        c1_header = QHBoxLayout()
+        lbl1_icon = QLabel("🔮")
+        lbl1_icon.setFont(QFont("Segoe UI Emoji", 11))
+        lbl1_title = QLabel("Dự Báo Cạn Kiệt Ổ C")
+        lbl1_title.setFont(QFont("Segoe UI Semibold", 8, QFont.Bold))
+        lbl1_title.setStyleSheet("color: #a371f7; border: none; background: transparent;")
+        c1_header.addWidget(lbl1_icon)
+        c1_header.addWidget(lbl1_title, stretch=1)
+        c1_lay.addLayout(c1_header)
+
+        self.lbl_disk_free = QLabel("Đang tính toán...")
+        self.lbl_disk_free.setFont(QFont("Segoe UI Semibold", 10, QFont.Bold))
+        self.lbl_disk_free.setStyleSheet(f"color: {_TEXT_PRIMARY}; border: none; background: transparent;")
+        c1_lay.addWidget(self.lbl_disk_free)
+
+        self.lbl_disk_trend = QLabel("Tốc độ tiêu hao: Đang theo dõi")
+        self.lbl_disk_trend.setFont(QFont("Segoe UI", 8))
+        self.lbl_disk_trend.setStyleSheet(f"color: {_TEXT_MUTED}; border: none; background: transparent;")
+        c1_lay.addWidget(self.lbl_disk_trend)
+
+        layout.addWidget(self.card_disk)
+
+        # ── Card 2: 🎯 Thói Quen Học Máy ──
+        self.card_habit = QFrame()
+        self.card_habit.setStyleSheet(f"""
+            QFrame {{
+                background: {_CARD_BG};
+                border: 1px solid {_CARD_BORDER};
+                border-left: 3px solid #58a6ff;
+                border-radius: 10px;
+                padding: 6px 10px;
+            }}
+        """)
+        c2_lay = QVBoxLayout(self.card_habit)
+        c2_lay.setContentsMargins(4, 4, 4, 4)
+        c2_lay.setSpacing(2)
+
+        c2_header = QHBoxLayout()
+        lbl2_icon = QLabel("🎯")
+        lbl2_icon.setFont(QFont("Segoe UI Emoji", 11))
+        lbl2_title = QLabel("Học Máy Thói Quen")
+        lbl2_title.setFont(QFont("Segoe UI Semibold", 8, QFont.Bold))
+        lbl2_title.setStyleSheet("color: #58a6ff; border: none; background: transparent;")
+        c2_header.addWidget(lbl2_icon)
+        c2_header.addWidget(lbl2_title, stretch=1)
+        c2_lay.addLayout(c2_header)
+
+        self.lbl_habit_mode = QLabel("Cân Bằng / Làm Việc")
+        self.lbl_habit_mode.setFont(QFont("Segoe UI Semibold", 10, QFont.Bold))
+        self.lbl_habit_mode.setStyleSheet(f"color: {_TEXT_PRIMARY}; border: none; background: transparent;")
+        c2_lay.addWidget(self.lbl_habit_mode)
+
+        self.lbl_habit_desc = QLabel("Khung giờ: Đang phân tích")
+        self.lbl_habit_desc.setFont(QFont("Segoe UI", 8))
+        self.lbl_habit_desc.setStyleSheet(f"color: {_TEXT_MUTED}; border: none; background: transparent;")
+        c2_lay.addWidget(self.lbl_habit_desc)
+
+        layout.addWidget(self.card_habit)
+
+        # ── Card 3: 🚨 Radar Dị Biệt Tiến Trình ──
+        self.card_anom = QFrame()
+        self.card_anom.setStyleSheet(f"""
+            QFrame {{
+                background: {_CARD_BG};
+                border: 1px solid {_CARD_BORDER};
+                border-left: 3px solid #f0883e;
+                border-radius: 10px;
+                padding: 6px 10px;
+            }}
+        """)
+        c3_lay = QVBoxLayout(self.card_anom)
+        c3_lay.setContentsMargins(4, 4, 4, 4)
+        c3_lay.setSpacing(2)
+
+        c3_header = QHBoxLayout()
+        lbl3_icon = QLabel("🚨")
+        lbl3_icon.setFont(QFont("Segoe UI Emoji", 11))
+        lbl3_title = QLabel("Nhận Diện Dị Biệt (Z-Score)")
+        lbl3_title.setFont(QFont("Segoe UI Semibold", 8, QFont.Bold))
+        lbl3_title.setStyleSheet("color: #f0883e; border: none; background: transparent;")
+        c3_header.addWidget(lbl3_icon)
+        c3_header.addWidget(lbl3_title, stretch=1)
+        c3_lay.addLayout(c3_header)
+
+        self.lbl_anom_status = QLabel("0 Tiến Trình Lạ")
+        self.lbl_anom_status.setFont(QFont("Segoe UI Semibold", 10, QFont.Bold))
+        self.lbl_anom_status.setStyleSheet("color: #3fb950; border: none; background: transparent;")
+        c3_lay.addWidget(self.lbl_anom_status)
+
+        self.lbl_anom_desc = QLabel("Tất cả tiến trình an toàn")
+        self.lbl_anom_desc.setFont(QFont("Segoe UI", 8))
+        self.lbl_anom_desc.setStyleSheet(f"color: {_TEXT_MUTED}; border: none; background: transparent;")
+        c3_lay.addWidget(self.lbl_anom_desc)
+
+        layout.addWidget(self.card_anom)
+
+    def update_data(self):
+        if not hasattr(self._advisor, "predictive_engine"):
+            return
+        engine = self._advisor.predictive_engine
+        try:
+            # 1. Disk Forecast
+            fc = engine.get_disk_forecast()
+            self.lbl_disk_free.setText(f"{fc.current_free_gb:.1f} GB trống ({fc.free_percent:.1f}%)")
+            if fc.days_until_exhaustion is not None and fc.days_until_exhaustion <= 7:
+                self.lbl_disk_trend.setText(f"⚠️ Đầy sau ~{fc.days_until_exhaustion:.0f} ngày ({fc.daily_burn_rate_gb:.1f} GB/ngày)")
+                self.lbl_disk_trend.setStyleSheet("color: #f85149; font-weight: bold; border: none; background: transparent;")
+            elif fc.days_until_exhaustion is not None and fc.days_until_exhaustion <= 14:
+                self.lbl_disk_trend.setText(f"⚡ Đầy sau ~{fc.days_until_exhaustion:.0f} ngày ({fc.daily_burn_rate_gb:.1f} GB/ngày)")
+                self.lbl_disk_trend.setStyleSheet("color: #e3b341; font-weight: bold; border: none; background: transparent;")
+            elif fc.days_until_exhaustion is not None:
+                self.lbl_disk_trend.setText(f"Dự kiến đầy sau: ~{fc.days_until_exhaustion:.0f} ngày")
+                self.lbl_disk_trend.setStyleSheet(f"color: {_TEXT_MUTED}; border: none; background: transparent;")
+            else:
+                self.lbl_disk_trend.setText("🟢 Tốc độ tiêu thụ ổn định")
+                self.lbl_disk_trend.setStyleSheet("color: #3fb950; border: none; background: transparent;")
+
+            # 2. Habit Profile
+            hb = engine.get_habit_profile()
+            self.lbl_habit_mode.setText(hb.predicted_workload)
+            slot_name = hb.time_slot_label.split('(')[0].strip()
+            self.lbl_habit_desc.setText(f"{slot_name} | {hb.recommended_mode_label}")
+
+            # 3. Anomaly Detection
+            anoms = engine.detect_anomalies(limit=3)
+            if anoms:
+                high_count = sum(1 for a in anoms if a.risk_level == "HIGH")
+                if high_count > 0:
+                    self.lbl_anom_status.setText(f"⚠️ {len(anoms)} Tiến Trình Bất Thường")
+                    self.lbl_anom_status.setStyleSheet("color: #f85149; font-weight: bold; border: none; background: transparent;")
+                else:
+                    self.lbl_anom_status.setText(f"⚡ {len(anoms)} Tiến Trình Lưu Ý")
+                    self.lbl_anom_status.setStyleSheet("color: #e3b341; font-weight: bold; border: none; background: transparent;")
+                top_z = max(anoms[0].ram_z_score, anoms[0].cpu_z_score)
+                self.lbl_anom_desc.setText(f"{anoms[0].name} (Z={top_z:.1f})")
+            else:
+                self.lbl_anom_status.setText("✅ 0 Tiến Trình Lạ")
+                self.lbl_anom_status.setStyleSheet("color: #3fb950; border: none; background: transparent;")
+                self.lbl_anom_desc.setText("Tất cả tiến trình trong độ lệch chuẩn an toàn")
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Filter Tab Button
 # ---------------------------------------------------------------------------
 
@@ -254,8 +438,8 @@ class AIAdvisorDialog(QDialog):
         self._cards_container: Optional[QWidget] = None
 
         self.setWindowTitle("🤖 AI Smart Suggestions – PC Optimizer")
-        self.setMinimumSize(720, 560)
-        self.resize(800, 620)
+        self.setMinimumSize(780, 580)
+        self.resize(860, 660)
         self.setModal(True)
         self.setStyleSheet(_DIALOG_STYLE)
 
@@ -292,7 +476,7 @@ class AIAdvisorDialog(QDialog):
         t1 = QLabel("AI Smart Suggestions")
         t1.setFont(QFont("Segoe UI Semibold", 13, QFont.Bold))
         t1.setStyleSheet(f"color: {_TEXT_PRIMARY}; border: none; background: transparent;")
-        t2 = QLabel("Phân tích hành vi hệ thống và gợi ý tối ưu thông minh – hoàn toàn offline")
+        t2 = QLabel("Phân tích hành vi & gợi ý tối ưu thông minh – 100% offline")
         t2.setFont(QFont("Segoe UI", 9))
         t2.setStyleSheet(f"color: {_TEXT_MUTED}; border: none; background: transparent;")
         title_col.addWidget(t1)
@@ -330,6 +514,10 @@ class AIAdvisorDialog(QDialog):
         h_layout.addWidget(refresh_btn)
         root.addWidget(header)
 
+        # ── Predictive AI Dashboard (v3.8 Pro) ──
+        self._dashboard = PredictiveDashboard(self._advisor, self)
+        root.addWidget(self._dashboard)
+
         # ── Filter Tabs ──
         tabs_frame = QFrame()
         tabs_frame.setStyleSheet(f"background: {_SURFACE}; border-bottom: 1px solid {_CARD_BORDER};")
@@ -348,6 +536,17 @@ class AIAdvisorDialog(QDialog):
             btn.clicked.connect(lambda checked=False, p=prio, b=btn: self._set_filter(p, b))
             self._tab_btns[prio] = btn
             tabs_layout.addWidget(btn)
+
+        # Tab lọc chuyên biệt: Dự Báo AI (🔮) & Bất Thường (🚨)
+        pred_btn = _TabBtn("🔮 Dự Báo AI", "#a371f7")
+        pred_btn.clicked.connect(lambda checked=False, b=pred_btn: self._set_filter(CATEGORY_PREDICTIVE, b))
+        self._tab_btns[CATEGORY_PREDICTIVE] = pred_btn
+        tabs_layout.addWidget(pred_btn)
+
+        anom_btn = _TabBtn("🚨 Bất Thường", "#f0883e")
+        anom_btn.clicked.connect(lambda checked=False, b=anom_btn: self._set_filter(CATEGORY_ANOMALY, b))
+        self._tab_btns[CATEGORY_ANOMALY] = anom_btn
+        tabs_layout.addWidget(anom_btn)
 
         tabs_layout.addStretch()
         root.addWidget(tabs_frame)
@@ -400,6 +599,7 @@ class AIAdvisorDialog(QDialog):
 
     def _refresh(self):
         self._advisor.invalidate_cache()
+        self._dashboard.update_data()
         suggestions = self._advisor.get_suggestions()
         self._update_badge(suggestions)
         self._render_cards(suggestions)
@@ -420,9 +620,12 @@ class AIAdvisorDialog(QDialog):
             self._badge_lbl.hide()
 
     def _render_cards(self, suggestions: List[Suggestion]):
-        # Filter
+        # Filter: theo priority hoặc theo category (CATEGORY_PREDICTIVE / CATEGORY_ANOMALY)
         if self._active_filter is not None:
-            filtered = [s for s in suggestions if s.priority == self._active_filter]
+            if self._active_filter in (CATEGORY_PREDICTIVE, CATEGORY_ANOMALY):
+                filtered = [s for s in suggestions if s.category == self._active_filter]
+            else:
+                filtered = [s for s in suggestions if s.priority == self._active_filter]
         else:
             filtered = suggestions
 

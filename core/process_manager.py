@@ -8,7 +8,8 @@ from core.logger import logger
 PROTECTED_PROCESSES = {
     "system", "system idle process", "registry", "smss.exe", "csrss.exe", 
     "wininit.exe", "services.exe", "lsass.exe", "svchost.exe", "fontdrvhost.exe",
-    "winlogon.exe", "dwm.exe", "sihost.exe", "taskhostw.exe", "explorer.exe"
+    "winlogon.exe", "dwm.exe", "sihost.exe", "taskhostw.exe", "explorer.exe",
+    "memcompression", "memory compression"
 }
 
 # Win32 Process Rights

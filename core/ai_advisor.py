@@ -37,6 +37,8 @@ CATEGORY_PROCESS  = "PROCESS"
 CATEGORY_SERVICES   = "SERVICES"
 CATEGORY_UNINSTALLER = "UNINSTALLER"
 CATEGORY_WINSXS     = "WINSXS"
+CATEGORY_PREDICTIVE = "PREDICTIVE"
+CATEGORY_ANOMALY    = "ANOMALY"
 
 CATEGORY_ICONS = {
     CATEGORY_RAM:         "⚡",
@@ -50,6 +52,8 @@ CATEGORY_ICONS = {
     CATEGORY_SERVICES:    "⚙️",
     CATEGORY_UNINSTALLER: "📦",
     CATEGORY_WINSXS:      "🗄️",
+    CATEGORY_PREDICTIVE:  "🔮",
+    CATEGORY_ANOMALY:     "🚨",
 }
 
 PRIORITY_ORDER = {PRIORITY_CRITICAL: 0, PRIORITY_WARNING: 1, PRIORITY_TIP: 2}
@@ -119,6 +123,8 @@ class AIAdvisor:
         self._last_leak_info: List[Dict] = []
         self._config_manager = config_manager
         self._config_path = config_path or self._default_config_path()
+        from core.predictive_ai import PredictiveAIEngine, STATUS_CRITICAL_DEPLETION, STATUS_WARNING_DEPLETION, STATUS_STABLE
+        self.predictive_engine = PredictiveAIEngine(config_manager=self._config_manager)
         self._suggestions_cache: List[Suggestion] = []
         self._cache_ts: float = 0.0
         self._cache_ttl: float = 8.0   # giây – refresh suggestions mỗi 8s
@@ -148,6 +154,11 @@ class AIAdvisor:
                 process_count=int(stats.get("process_count", 0)),
             )
             self._buffer.append(snap)
+            # Đồng bộ sang PredictiveAIEngine
+            try:
+                self.predictive_engine.feed_snapshot(stats)
+            except Exception:
+                pass
             # Invalidate cache
             self._cache_ts = 0.0
         except Exception:
@@ -211,6 +222,9 @@ class AIAdvisor:
         results += self._rule_services()
         results += self._rule_uninstaller()
         results += self._rule_winsxs()
+        results += self._rule_predictive_disk()
+        results += self._rule_predictive_habit()
+        results += self._rule_process_anomalies()
 
         return results
 
@@ -671,3 +685,116 @@ class AIAdvisor:
             pass
 
         return results
+
+    # --- PREDICTIVE AI: DISK EXHAUSTION ---
+    def _rule_predictive_disk(self) -> List[Suggestion]:
+        results: List[Suggestion] = []
+        try:
+            from core.predictive_ai import STATUS_CRITICAL_DEPLETION, STATUS_WARNING_DEPLETION
+            forecast = self.predictive_engine.get_disk_forecast()
+            if forecast.trend_status == STATUS_CRITICAL_DEPLETION and forecast.days_until_exhaustion is not None:
+                results.append(Suggestion(
+                    category=CATEGORY_PREDICTIVE,
+                    priority=PRIORITY_CRITICAL,
+                    title=f"Dự Báo: Ổ {forecast.drive_letter} sẽ đầy trong ~{forecast.days_until_exhaustion:.0f} ngày!",
+                    detail=(
+                        f"{forecast.summary_text} Tốc độ tiêu thụ ghi nhận ~{forecast.daily_burn_rate_gb:.2f} GB/ngày. "
+                        "Hệ thống đang tích tụ rác và bộ đệm quá nhanh, cần dọn WinSxS hoặc rác ngay."
+                    ),
+                    action_key="open_winsxs_dialog",
+                    action_label="Dọn Sâu WinSxS",
+                ))
+            elif forecast.trend_status == STATUS_WARNING_DEPLETION and forecast.days_until_exhaustion is not None:
+                results.append(Suggestion(
+                    category=CATEGORY_PREDICTIVE,
+                    priority=PRIORITY_WARNING,
+                    title=f"Dự Báo: Ổ {forecast.drive_letter} có xu hướng đầy sau ~{forecast.days_until_exhaustion:.0f} ngày",
+                    detail=(
+                        f"{forecast.summary_text} Tốc độ tiêu thụ bình quân ~{forecast.daily_burn_rate_gb:.2f} GB/ngày. "
+                        "Khuyến nghị kích hoạt dọn rác định kỳ để duy trì dung lượng trống an toàn."
+                    ),
+                    action_key="clean_junk",
+                    action_label="Dọn Rác Hệ Thống",
+                ))
+        except Exception:
+            pass
+        return results
+
+    # --- PREDICTIVE AI: USAGE HABIT LEARNING ---
+    def _rule_predictive_habit(self) -> List[Suggestion]:
+        results: List[Suggestion] = []
+        try:
+            buf = list(self._buffer)
+            current_cpu = buf[-1].cpu_pct if buf else 0.0
+            current_ram = buf[-1].ram_pct if buf else 0.0
+            bat_info = self._last_battery_info or {}
+            on_battery = not bat_info.get("power_plugged", True)
+            bat_pct = int(bat_info.get("percent", 100))
+
+            habit = self.predictive_engine.get_habit_profile(
+                current_cpu=current_cpu,
+                current_ram=current_ram,
+                on_battery=on_battery,
+                battery_pct=bat_pct
+            )
+
+            if habit.recommended_mode == "game_boost":
+                results.append(Suggestion(
+                    category=CATEGORY_PREDICTIVE,
+                    priority=PRIORITY_WARNING,
+                    title=f"AI Nhận Diện: {habit.predicted_workload} – Đề xuất Game Boost",
+                    detail=(
+                        f"{habit.reason} Kích hoạt Game Boost sẽ tự động tối ưu hóa tài nguyên CPU & RAM cho bạn."
+                    ),
+                    action_key="enable_game_boost",
+                    action_label="Bật Game Boost",
+                ))
+            elif habit.recommended_mode == "battery_saver":
+                results.append(Suggestion(
+                    category=CATEGORY_PREDICTIVE,
+                    priority=PRIORITY_WARNING,
+                    title=f"AI Nhận Diện: {habit.predicted_workload} – Tiết kiệm pin",
+                    detail=(
+                        f"{habit.reason} Tối ưu hóa bộ nhớ và giảm tải nền giúp tiết kiệm 20-30% điện năng."
+                    ),
+                    action_key="optimize_ram",
+                    action_label="Tối Ưu Pin & RAM",
+                ))
+            elif habit.recommended_mode == "eco_clean":
+                results.append(Suggestion(
+                    category=CATEGORY_PREDICTIVE,
+                    priority=PRIORITY_TIP,
+                    title=f"AI Đề Xuất: Thời Điểm Vàng Tối Ưu Nền ({habit.time_slot_label})",
+                    detail=(
+                        f"{habit.reason} Tối ưu RAM ngay bây giờ sẽ giúp giải phóng bộ nhớ đệm mà không hề gián đoạn công việc."
+                    ),
+                    action_key="optimize_ram",
+                    action_label="Tối Ưu Nền Ngay",
+                ))
+        except Exception:
+            pass
+        return results
+
+    # --- PREDICTIVE AI: PROCESS ANOMALIES (Z-SCORE) ---
+    def _rule_process_anomalies(self) -> List[Suggestion]:
+        results: List[Suggestion] = []
+        try:
+            anomalies = self.predictive_engine.detect_anomalies(limit=3)
+            for a in anomalies:
+                if a.risk_level in ("HIGH", "MEDIUM"):
+                    prio = PRIORITY_CRITICAL if a.risk_level == "HIGH" else PRIORITY_WARNING
+                    results.append(Suggestion(
+                        category=CATEGORY_ANOMALY,
+                        priority=prio,
+                        title=f"Cảnh Báo Bất Thường: {a.name} (Z-Score: {max(a.ram_z_score, a.cpu_z_score):.1f})",
+                        detail=(
+                            f"Tiến trình {a.name} (PID: {a.pid}) chiếm {a.ram_mb:.0f} MB RAM và {a.cpu_percent:.1f}% CPU. "
+                            f"Lý do nhận diện: {a.anomaly_reason}. Đây là tiến trình có mức tiêu thụ vượt độ lệch chuẩn thống kê."
+                        ),
+                        action_key="open_process_tab",
+                        action_label="Xem Trong Tiến Trình",
+                    ))
+        except Exception:
+            pass
+        return results
+

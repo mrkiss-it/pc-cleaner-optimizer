@@ -38,6 +38,13 @@
         "critical_count": 0,
         "warning_count": 0,
         "ok_count": 11,
-        "timestamp": "20/09/2026 08:34:16"
-    }
+        "timestamp": "20/09/2026 08:45:36"
+    },
+    "predictive_disk_history": [
+        {
+            "ts": 1789868656.2400045,
+            "free_gb": 52.68,
+            "total_gb": 274.39
+        }
+    ]
 }

@@ -1223,6 +1223,10 @@ class MainWindow(QMainWindow):
             elif action_key == "clean_junk":
                 self.tabs.setCurrentWidget(self.tab_dashboard)
                 self.start_full_clean()
+            elif action_key == "enable_game_boost":
+                from core.game_booster import GameBooster
+                if not GameBooster.is_active():
+                    self.toggle_game_boost()
             elif action_key == "open_network_dialog":
                 self.open_network_dialog()
             elif action_key == "open_hardware_dialog":
