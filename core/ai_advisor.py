@@ -654,14 +654,15 @@ class AIAdvisor:
                     action_label="Dọn Bộ Đệm Cập Nhật",
                 ))
 
-            if dup_drivers >= 3:
+            cleanable_drivers = summary.get("cleanable_drivers_count", 0)
+            if cleanable_drivers >= 3:
                 results.append(Suggestion(
                     category=CATEGORY_WINSXS,
                     priority=PRIORITY_TIP,
-                    title=f"Phát hiện {dup_drivers} phiên bản Driver cũ trùng lặp",
+                    title=f"Phát hiện {cleanable_drivers} phiên bản Driver cũ có thể dọn dẹp",
                     detail=(
-                        f"Kho DriverStore đang lưu {dup_drivers} gói Driver OEM phiên bản cũ đã được thay thế. "
-                        "Dọn dẹp các driver không còn sử dụng giúp giải phóng dung lượng thư mục FileRepository."
+                        f"Kho DriverStore đang lưu {cleanable_drivers} gói Driver OEM phiên bản cũ không còn thiết bị nào sử dụng. "
+                        "Dọn dẹp các driver này giúp giải phóng dung lượng thư mục FileRepository."
                     ),
                     action_key="open_winsxs_dialog",
                     action_label="Dọn DriverStore",

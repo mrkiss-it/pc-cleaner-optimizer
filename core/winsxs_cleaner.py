@@ -550,12 +550,16 @@ class WinSxSCleaner:
         total_files = sum(c.file_count for c in caches)
 
         _, duplicate_drivers = cls.scan_oem_drivers()
+        cleanable_count = sum(1 for d in duplicate_drivers if not d.is_in_use)
+        protected_count = sum(1 for d in duplicate_drivers if d.is_in_use)
 
         return {
             "total_cache_mb": round(total_cache_mb, 2),
             "total_cache_files": total_files,
             "cache_categories_count": len(caches),
             "duplicate_drivers_count": len(duplicate_drivers),
+            "cleanable_drivers_count": cleanable_count,
+            "protected_drivers_count": protected_count,
             "caches": caches,
             "duplicate_drivers": duplicate_drivers,
         }
