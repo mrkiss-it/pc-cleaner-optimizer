@@ -1,13 +1,14 @@
-"""
-Thông tin phiên bản và kho GitHub dùng chung cho ứng dụng, installer và kiểm tra cập nhật.
+﻿"""
+ThÃ´ng tin phiÃªn báº£n vÃ  kho GitHub dÃ¹ng chung cho á»©ng dá»¥ng, installer vÃ  kiá»ƒm tra cáº­p nháº­t.
 """
 
 APP_NAME = "PC Auto Cleaner & Optimizer"
-APP_VERSION = "3.8.0"
+APP_VERSION = "3.8.1"
 APP_PUBLISHER = "PC Cleaner Team"
 
 GITHUB_OWNER = "mrkiss-it"
 GITHUB_REPO = "pc-cleaner-optimizer"
 
-# Tên asset ưu tiên trên GitHub Releases (đúng với installer/build_installer.py).
+# TÃªn asset Æ°u tiÃªn trÃªn GitHub Releases (Ä‘Ãºng vá»›i installer/build_installer.py).
 PREFERRED_SETUP_ASSET = "PCAutoCleaner_Setup.exe"
+

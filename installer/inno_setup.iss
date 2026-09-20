@@ -1,9 +1,9 @@
-; Inno Setup Script for PC Auto Cleaner & Optimizer
+﻿; Inno Setup Script for PC Auto Cleaner & Optimizer
 ; Compile with Inno Setup Compiler (ISCC.exe)
 ; MyAppName / MyAppVersion / MyAppPublisher MUST match app_meta.py (enforced by tests).
 
 #define MyAppName "PC Auto Cleaner & Optimizer"
-#define MyAppVersion "3.8.0"
+#define MyAppVersion "3.8.1"
 #define MyAppPublisher "PC Cleaner Team"
 #define MyAppURL "https://github.com/mrkiss-it/pc-cleaner-optimizer"
 #define MyAppExeName "PCAutoCleaner.exe"
@@ -32,7 +32,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "startwithwindows"; Description: "Tự động khởi động cùng Windows (Thu nhỏ khay hệ thống)"; GroupDescription: "Tùy chọn nâng cao:"; Flags: unchecked
+Name: "startwithwindows"; Description: "Tá»± Ä‘á»™ng khá»Ÿi Ä‘á»™ng cÃ¹ng Windows (Thu nhá» khay há»‡ thá»‘ng)"; GroupDescription: "TÃ¹y chá»n nÃ¢ng cao:"; Flags: unchecked
 
 [Files]
 Source: "..\dist\PCAutoCleaner\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -46,3 +46,4 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
