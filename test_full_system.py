@@ -1177,18 +1177,26 @@ assert adv_dlg._scroll.isHidden(), "Chuyen sang tab COPILOT thi _scroll phai an"
 
 assert hasattr(copilot_widget, "lbl_companion_badge"), "Copilot phai hien giai doan AI dong hanh"
 assert "Giai đoạn" in copilot_widget.lbl_companion_badge.text() or "Mới gặp" in copilot_widget.lbl_companion_badge.text()
+assert "Đang học" in copilot_widget.lbl_companion_badge.toolTip() or "Mới gặp" in copilot_widget.lbl_companion_badge.toolTip()
 assert hasattr(win, "companion_card"), "Settings phai co the AI dong hanh"
 assert hasattr(win, "run_light_clean"), "Dispatcher clean_light can run_light_clean"
 assert "Pro" not in win.companion_card.lbl_title.text()
-if hasattr(win.companion_card, "chk_reflect"):
-    assert "Ollama" not in win.companion_card.chk_reflect.text()
+assert win.companion_card.btn_reflect.text() == "Phản tỉnh / Viết sổ tay"
+assert hasattr(win.companion_card, "btn_manage")
+assert "Ollama" not in win.companion_card.chk_reflect.text()
 from core.companion import compute_stage as _cs, memory_answer as _mem, empty_states_vi as _empty
+from ui.companion_card import CompanionDialog as _CompanionDialog
 assert _cs(0) == 0 and _cs(1) == 1 and _cs(7) == 2 and _cs(21) == 3
 _empty_copy = _empty()
 assert "Chưa có nhật ký" in _empty_copy["diary"]
+assert "vài ngày" in _empty_copy["diary"]
 _mem_txt = _mem("Nhật ký máy này nhớ gì?")
 assert "Giai đoạn" in _mem_txt
 assert "không phải AGI" in _mem_txt.lower() or "Không phải AGI" in _mem_txt or "không tự huấn luyện" in _mem_txt.lower()
+_comp_dlg = _CompanionDialog(config_manager=win.config_manager, parent=win)
+assert hasattr(_comp_dlg, "list_diary") and hasattr(_comp_dlg, "btn_clear_all")
+assert _comp_dlg.btn_reflect.text() == "Phản tỉnh / Viết sổ tay"
+_comp_dlg.close()
 
 # F. Dashboard Auto-Pilot card must use AutoPilotState.label/description (not missing attrs)
 adv_dlg._set_filter(None, adv_dlg._tab_btns[None])

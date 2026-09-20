@@ -628,6 +628,12 @@ class BackgroundScheduler(QObject):
             record_session_day(now=now, config_manager=self.config_manager)
             if getattr(self, "_companion_reflect_busy", False):
                 return
+            try:
+                from core.companion_maturity import load_state
+                if str(load_state().get("last_reflection_date") or "") == now.strftime("%Y-%m-%d"):
+                    return
+            except Exception:
+                pass
             import threading
             self._companion_reflect_busy = True
             cfg_mgr = self.config_manager

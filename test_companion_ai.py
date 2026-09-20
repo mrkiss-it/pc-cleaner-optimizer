@@ -75,17 +75,32 @@ from core.companion_reflection import (
     template_reflection,
 )
 from core.companion import (
+    REFLECT_BUTTON_VI,
     accept_skill_offer,
     build_prompt_context,
+    clear_diary_memory,
+    clear_local_memory,
+    clear_skills_memory,
+    confirm_clear_prompt,
     current_stage,
+    delete_diary_entry,
+    delete_saved_skill,
     diary_digest,
+    diary_is_empty,
     empty_states_vi,
+    format_diary_browse,
+    format_reflection_feedback,
+    format_skills_browse,
     maybe_run_reflection,
     memory_answer,
     note_user_feedback,
     observe_snapshot,
     record_app_event,
     record_session_day,
+    reset_postscript_gate,
+    should_emit_postscript,
+    stage_caption_vi,
+    stage_legend_vi,
 )
 from config_manager import DEFAULT_CONFIG, companion_dir
 from app_meta import APP_NAME
@@ -333,5 +348,126 @@ check(DEFAULT_CONFIG.get("companion_enabled") is True, "companion on by default 
 check("companion_may_propose_actions" in DEFAULT_CONFIG, "consent setting exists")
 check(companion_dir() == os.environ["PCAUTOCLEANER_COMPANION_DIR"], "env override for tests")
 print(" [PASS] config defaults")
+
+
+# ---------------------------------------------------------------------------
+# Manage / delete / reflection UI helpers (no Qt)
+# ---------------------------------------------------------------------------
+
+check(REFLECT_BUTTON_VI == "Phản tỉnh / Viết sổ tay", "manual reflection button copy")
+legend = stage_legend_vi()
+for label in ("Mới gặp", "Đang học", "Lớn dần", "Đồng hành"):
+    check(label in legend, f"legend has {label}")
+check("ngày dùng" in legend, "legend explains days of use")
+check("Pro" not in legend, "no Pro in stage legend")
+info0 = current_stage(base_dir=_fresh_dir())
+caption = stage_caption_vi(info0)
+check("Giai đoạn 0" in caption and "Mới gặp" in caption, "stage caption has Vietnamese badge")
+check(info0.blurb_vi in caption, "stage caption has short explanation")
+
+empty = empty_states_vi()
+check("vài ngày" in empty["diary"], "empty diary asks user to use the app a few days")
+check(REFLECT_BUTTON_VI in empty["reflection_empty"], "empty reflection mentions the button")
+check("Pro" not in empty["diary"] and "Pro" not in empty["skills"], "no Pro in empty states")
+
+root = _fresh_dir()
+check(diary_is_empty(base_dir=root), "fresh dir is empty diary")
+check("Chưa có nhật ký" in format_diary_browse(base_dir=root), "browse empty diary copy")
+check("Chưa có kỹ năng" in format_skills_browse(base_dir=root), "browse empty skills copy")
+
+ev1 = record_app_event("high_ram", "RAM cao 88%", metrics={"ram_percent": 88}, base_dir=root)
+ev2 = record_app_event("wifi_weak", "Wi-Fi yếu trên máy này", base_dir=root)
+browse = format_diary_browse(base_dir=root)
+check("RAM cao" in browse and "Wi-Fi" in browse, "browse lists recent diary rows")
+check(delete_diary_entry(ev1, base_dir=root) is True, "delete one diary row")
+left = format_diary_browse(base_dir=root)
+check("RAM cao" not in left and "Wi-Fi" in left, "other diary rows kept")
+n_cleared = clear_diary_memory(base_dir=root)
+check(n_cleared == 1, "clear diary removes remaining rows")
+check(diary_is_empty(base_dir=root), "diary empty after clear")
+
+root = _fresh_dir()
+for _ in range(3):
+    record_app_event("high_ram", "RAM cao 90%", metrics={"ram_percent": 90}, base_dir=root)
+skill = accept_skill_offer("high_ram", base_dir=root)
+check(skill is not None, "skill for delete tests")
+check("RAM" in format_skills_browse(base_dir=root), "browse shows saved skill")
+check(delete_saved_skill(skill.id, base_dir=root) is True, "delete one skill")
+check("Chưa có kỹ năng" in format_skills_browse(base_dir=root), "skills empty after delete")
+save_skill("wifi_weak", hit_count=3, base_dir=root)
+check(clear_skills_memory(base_dir=root) == 1, "clear skills count")
+check("Chưa có kỹ năng" in format_skills_browse(base_dir=root), "skills empty after clear")
+
+root = _fresh_dir()
+record_app_event("clean_light", "Dọn nhẹ 10 MB", metrics={"junk_freed_mb": 10}, base_dir=root)
+save_skill("disk_low", hit_count=4, base_dir=root)
+maybe_run_reflection(_Cfg(), force=True, provider=TemplateReflectionProvider(), base_dir=root)
+cleared = clear_local_memory(base_dir=root)
+check(cleared["diary"] >= 1, "clear all removes diary")
+check(cleared["skills"] >= 1, "clear all removes skills")
+check(cleared["reflection"] >= 1, "clear all removes sổ tay")
+check(diary_is_empty(base_dir=root), "privacy clear emptied diary")
+check(current_stage(base_dir=root).active_days >= 1, "clear memory keeps days-of-use stage")
+
+prompt = confirm_clear_prompt("diary")
+check("Xóa nhật ký" in prompt["title"] or "Xóa nhật ký" in prompt["ok"], "confirm diary title")
+check("Không thể hoàn tác" in prompt["body"], "confirm is irreversible")
+check("Pro" not in prompt["body"] and "Pro" not in prompt["title"], "no Pro in confirm")
+all_prompt = confirm_clear_prompt("all")
+check("bộ nhớ" in all_prompt["title"].lower() or "bộ nhớ" in all_prompt["ok"].lower() or "bộ nhớ" in all_prompt["body"], "all-clear mentions memory")
+check("AppData" in all_prompt["body"] or "local" in all_prompt["body"].lower(), "privacy mentions local storage")
+
+fb_empty = format_reflection_feedback({"note": "", "source": "empty"})
+check(fb_empty["status"] == "empty", "empty reflection status")
+check("vài ngày" in fb_empty["body"], "empty reflection tells user to use the app")
+fb_ok = format_reflection_feedback({"note": "Sổ tay test", "source": "template"})
+check(fb_ok["status"] == "success", "template reflection success")
+check("số liệu" in fb_ok["body"], "honest metrics-only success copy")
+fb_g = format_reflection_feedback({"note": "Sổ tay gemini", "source": "gemini"})
+check(fb_g["status"] == "success" and "Gemini" in fb_g["body"], "gemini success copy")
+fb_err = format_reflection_feedback(RuntimeError("disk full"))
+check(fb_err["status"] == "error" and "disk full" in fb_err["body"], "error reflection copy")
+
+empty_root = _fresh_dir()
+empty_result = maybe_run_reflection(_Cfg(), force=True, provider=TemplateReflectionProvider(), base_dir=empty_root)
+check(empty_result and empty_result.get("source") == "empty", "manual reflect on empty diary is empty")
+check(not os.path.exists(os.path.join(empty_root, "so_tay.txt")), "empty reflect does not invent sổ tay")
+
+reset_postscript_gate()
+check(should_emit_postscript("sig-a", now_ts=1000.0, cooldown_sec=60) is True, "first postscript allowed")
+check(should_emit_postscript("sig-a", now_ts=1010.0, cooldown_sec=60) is False, "same postscript cools down")
+check(should_emit_postscript("sig-b", now_ts=1011.0, cooldown_sec=60) is True, "new signature allowed")
+check(should_emit_postscript("sig-b", now_ts=1080.0, cooldown_sec=60) is True, "cooldown elapsed")
+print(" [PASS] manage/delete/reflection UI helpers")
+
+
+# ---------------------------------------------------------------------------
+# Qt smoke: Settings card + memory dialog
+# ---------------------------------------------------------------------------
+
+from PyQt5.QtWidgets import QApplication
+from ui.companion_card import CompanionCard, CompanionDialog
+
+qt_app = QApplication.instance() or QApplication([])
+root = _fresh_dir()
+card = CompanionCard(config_manager=_Cfg(), compact=False)
+check(card.btn_reflect.text() == REFLECT_BUTTON_VI, "card reflect button label")
+check(hasattr(card, "btn_manage") and "bộ nhớ" in card.btn_manage.text(), "card has manage memory button")
+check("&" not in card.btn_manage.text(), "manage button has no Qt mnemonic ampersand")
+check(hasattr(card, "lbl_legend") and "Mới gặp" in card.lbl_legend.text(), "card shows stage legend")
+check("Ollama" not in card.chk_reflect.text(), "companion checkbox does not mention Ollama")
+check("vài ngày" in card.lbl_diary.text(), "card honest empty diary")
+check("Pro" not in card.lbl_title.text(), "no Pro on companion card")
+
+dlg = CompanionDialog(config_manager=_Cfg())
+check(dlg.btn_reflect.text() == REFLECT_BUTTON_VI, "dialog reflect button")
+check(hasattr(dlg, "list_diary") and hasattr(dlg, "list_skills"), "dialog lists diary and skills")
+check(hasattr(dlg, "btn_clear_all") and "bộ nhớ" in dlg.btn_clear_all.text(), "dialog can clear all memory")
+check("vài ngày" in dlg.lbl_diary_empty.text(), "dialog empty diary copy")
+check(dlg.list_diary.count() == 0, "new install diary list empty")
+check(dlg.list_skills.count() == 0, "new install skills list empty")
+dlg.close()
+card.deleteLater()
+print(" [PASS] companion card/dialog Qt smoke")
 
 print(" [PASS] companion AI suite")

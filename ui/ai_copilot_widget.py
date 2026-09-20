@@ -114,10 +114,10 @@ class APIConfigDialog(QDialog):
         self.lbl_companion_stage.setWordWrap(True)
         self.lbl_companion_stage.setStyleSheet(f"color: {_ACCENT_PURPLE}; font-size: 12px;")
         try:
-            from core.companion import current_stage
+            from core.companion import current_stage, stage_caption_vi, stage_legend_vi
             st = current_stage(config_manager=self.config_manager)
             self.lbl_companion_stage.setText(
-                f"🌱 AI đồng hành: {st.badge_vi()} — {st.blurb_vi}"
+                f"🌱 AI đồng hành: {stage_caption_vi(st)}\n{stage_legend_vi()}"
             )
         except Exception:
             pass
@@ -497,7 +497,7 @@ class AICopilotWidget(QWidget):
         btn_companion = QPushButton("🌱 Nhật ký")
         btn_companion.setFont(QFont("Segoe UI", 8))
         btn_companion.setCursor(QCursor(Qt.PointingHandCursor))
-        btn_companion.setToolTip("Giai đoạn, nhật ký máy, kỹ năng và sổ tay local")
+        btn_companion.setToolTip("Xem giai đoạn, nhật ký, kỹ năng — phản tỉnh hoặc xóa bộ nhớ local")
         btn_companion.setStyleSheet(f"""
             QPushButton {{
                 background: #21262d;
@@ -677,10 +677,10 @@ class AICopilotWidget(QWidget):
         if not hasattr(self, "lbl_companion_badge"):
             return
         try:
-            from core.companion import current_stage
+            from core.companion import current_stage, stage_legend_vi
             stage = current_stage(config_manager=self.config_manager)
             self.lbl_companion_badge.setText(f"🌱 {stage.badge_vi()}")
-            self.lbl_companion_badge.setToolTip(stage.blurb_vi)
+            self.lbl_companion_badge.setToolTip(f"{stage.blurb_vi}\n{stage_legend_vi()}")
         except Exception:
             self.lbl_companion_badge.setText("🌱 Giai đoạn 0 · Mới gặp")
 

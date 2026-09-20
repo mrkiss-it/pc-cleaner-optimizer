@@ -1199,9 +1199,14 @@ class AICopilotEngine:
         return assistant_msg
 
     def _attach_companion_postscript(self, reply_text: str, user_text: str) -> str:
-        """Cite machine diary when present; honest empty hint at stage 0."""
+        """Cite machine diary when present; honest empty hint at stage 0 (cooldown)."""
         try:
-            from core.companion import current_stage, diary_digest, match_skills
+            from core.companion import (
+                current_stage,
+                diary_digest,
+                match_skills,
+                should_emit_postscript,
+            )
             stage = current_stage(config_manager=self.config_manager)
             digest = diary_digest(limit=4, days=14)
             skills = match_skills(user_text=user_text, limit=2)
@@ -1221,6 +1226,11 @@ class AICopilotEngine:
         extra = " ".join(bits)
         if extra in (reply_text or ""):
             return reply_text
+        try:
+            if not should_emit_postscript(extra):
+                return reply_text
+        except Exception:
+            pass
         return f"{reply_text}\n\n{extra}"
 
     def _extract_actions_from_text(self, text: str) -> List[CopilotAction]:
