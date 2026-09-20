@@ -27,6 +27,8 @@ MANIFEST
 
 # PyInstaller
 *.manifest
+*.spec
+*.zip
 
 # Unit test / coverage reports
 .pytest_cache/

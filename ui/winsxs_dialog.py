@@ -480,11 +480,11 @@ class WinSxSDialog(QDialog):
         ])
         self.table_drivers.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table_drivers.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table_drivers.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table_drivers.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table_drivers.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table_drivers.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table_drivers.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.table_drivers.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
+        self.table_drivers.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
         self.table_drivers.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_drivers.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_drivers.verticalHeader().setVisible(False)
@@ -518,14 +518,25 @@ class WinSxSDialog(QDialog):
         self._render_caches_table()
 
         # 3. Update Tab 3
+        cleanable_count = sum(1 for d in self._drivers_dup_cache if not d.is_in_use)
+        in_use_count = sum(1 for d in self._drivers_dup_cache if d.is_in_use)
+
         self.card_drv_total.findChild(QLabel, "val").setText(f"{len(self._drivers_all_cache)} gói")
-        self.card_drv_dups.findChild(QLabel, "val").setText(f"{len(self._drivers_dup_cache)} gói")
-        if len(self._drivers_dup_cache) > 0:
+        self.card_drv_dups.findChild(QLabel, "val").setText(f"{cleanable_count} gói")
+        if cleanable_count > 0:
             self.card_drv_dups.findChild(QLabel, "val").setStyleSheet(f"color: {_WARNING}; font-size: 18px; font-weight: bold;")
+        else:
+            self.card_drv_dups.findChild(QLabel, "val").setStyleSheet(f"color: {_SUCCESS}; font-size: 18px; font-weight: bold;")
+
+        self.card_drv_safe.findChild(QLabel, "val").setText(f"{in_use_count} gói")
+        self.card_drv_safe.findChild(QLabel, "sub").setText("Windows tự động bảo vệ an toàn")
 
         self._render_drivers_table()
 
-        self.lbl_status.setText(f"● Đã tải: {len(self._caches_cache)} mục đệm ({total_cache_mb:.1f} MB), {len(self._drivers_dup_cache)} driver cũ trùng lặp.")
+        self.lbl_status.setText(
+            f"● Đã tải: {len(self._caches_cache)} mục đệm ({total_cache_mb:.1f} MB), "
+            f"{cleanable_count} driver cũ có thể dọn, {in_use_count} gói được Windows bảo vệ an toàn."
+        )
 
     def _render_caches_table(self):
         self.table_caches.setRowCount(len(self._caches_cache))
@@ -566,6 +577,7 @@ class WinSxSDialog(QDialog):
     def _render_drivers_table(self):
         # Hiển thị các driver trùng lặp
         self.table_drivers.setRowCount(len(self._drivers_dup_cache))
+        cleanable_count = 0
         for row, drv in enumerate(self._drivers_dup_cache):
             it_oem = QTableWidgetItem(drv.published_name)
             it_oem.setFont(QFont("Segoe UI", 9, QFont.Bold))
@@ -590,11 +602,46 @@ class WinSxSDialog(QDialog):
             it_date.setForeground(QColor(_TEXT_MUTED))
             self.table_drivers.setItem(row, 5, it_date)
 
-            it_st = QTableWidgetItem("⚠️ Phiên bản cũ (Trùng lặp)")
-            it_st.setForeground(QColor(_WARNING))
+            if drv.is_in_use:
+                it_st = QTableWidgetItem("🔒 Đang dùng cho thiết bị (Windows bảo vệ)")
+                it_st.setForeground(QColor("#58a6ff"))
+                it_st.setToolTip("Gói driver này đang được liên kết trực tiếp với thiết bị phần cứng (Bluetooth, Wi-Fi, Máy in...). Windows tự động bảo vệ an toàn 100% để tránh mất kết nối.")
+            else:
+                cleanable_count += 1
+                it_st = QTableWidgetItem("⚠️ Phiên bản cũ (Có thể dọn)")
+                it_st.setForeground(QColor(_WARNING))
+                it_st.setToolTip("Gói driver cũ này không còn thiết bị nào sử dụng, an toàn để dọn dẹp.")
             self.table_drivers.setItem(row, 6, it_st)
 
-        self.btn_clean_duplicate_drivers.setEnabled(len(self._drivers_dup_cache) > 0)
+        if cleanable_count > 0:
+            self.btn_clean_duplicate_drivers.setEnabled(True)
+            self.btn_clean_duplicate_drivers.setText(f"🗑️ Dọn Dẹp {cleanable_count} Gói Driver Cũ")
+            self.btn_clean_duplicate_drivers.setStyleSheet(f"""
+                QPushButton {{
+                    background: {_CARD_BG};
+                    color: {_DANGER};
+                    border: 1px solid {_DANGER};
+                    font-weight: bold;
+                    font-size: 11px;
+                    border-radius: 6px;
+                    padding: 0 16px;
+                }}
+                QPushButton:hover {{ background: {_DANGER}22; }}
+            """)
+        else:
+            self.btn_clean_duplicate_drivers.setEnabled(False)
+            self.btn_clean_duplicate_drivers.setText("🛡️ Tất Cả Driver Đang Được Bảo Vệ An Toàn")
+            self.btn_clean_duplicate_drivers.setToolTip("Tất cả các gói Driver hiện tại đều đang được phần cứng máy tính sử dụng trực tiếp. Windows tự động bảo vệ an toàn 100% để tránh gây lỗi phần cứng.")
+            self.btn_clean_duplicate_drivers.setStyleSheet(f"""
+                QPushButton {{
+                    background: #21262d;
+                    color: {_TEXT_MUTED};
+                    border: 1px solid {_CARD_BORDER};
+                    font-size: 11px;
+                    border-radius: 6px;
+                    padding: 0 16px;
+                }}
+            """)
 
     # ------------------------------------------------------------------
     # Actions: DISM
@@ -699,15 +746,26 @@ class WinSxSDialog(QDialog):
         self._refresh_all_data()
 
     def _on_clean_duplicate_drivers(self):
-        if not self._drivers_dup_cache:
+        cleanable = [d for d in self._drivers_dup_cache if not d.is_in_use]
+        in_use = [d for d in self._drivers_dup_cache if d.is_in_use]
+
+        if not cleanable:
+            QMessageBox.information(
+                self,
+                "Bảo Vệ Phần Cứng An Toàn",
+                f"Tất cả {len(in_use)} gói driver OEM này hiện đang được các thiết bị phần cứng máy tính "
+                "(chip Bluetooth, card Wi-Fi, dịch vụ Máy in...) trực tiếp sử dụng.\n\n"
+                "Windows đã kích hoạt cơ chế bảo vệ phần cứng tự động để đảm bảo kết nối của máy tính luôn ổn định 100%.\n\n"
+                "Bạn không cần thao tác thêm vì hệ thống đã ở trạng thái tối ưu và an toàn nhất!"
+            )
             return
 
         reply = QMessageBox.question(
             self,
             "Xác Nhận Dọn Driver OEM Cũ",
-            f"Phát hiện {len(self._drivers_dup_cache)} gói Driver OEM phiên bản cũ trong DriverStore.\n\n"
-            "Bạn có muốn gỡ bỏ các phiên bản cũ không còn sử dụng này?\n"
-            "(Windows tự động bảo vệ: nếu thiết bị đang dùng driver này, hệ điều hành sẽ từ chối xóa để an toàn 100%).",
+            f"Phát hiện {len(cleanable)} gói Driver OEM phiên bản cũ không còn thiết bị nào sử dụng.\n\n"
+            f"(Ngoài ra có {len(in_use)} gói được Windows bảo vệ an toàn do phần cứng đang nạp).\n\n"
+            "Bạn có muốn gỡ bỏ các phiên bản cũ không còn sử dụng này?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes
         )
@@ -747,6 +805,7 @@ class WinSxSDialog(QDialog):
         lbl_v.setStyleSheet(f"color: {_TEXT_WHITE}; font-size: 18px; font-weight: bold;")
 
         lbl_s = QLabel(sub)
+        lbl_s.setObjectName("sub")
         lbl_s.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 10px;")
 
         c_lay.addWidget(lbl_t)

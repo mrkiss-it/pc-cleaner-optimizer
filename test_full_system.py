@@ -453,6 +453,62 @@ win.open_winsxs_dialog = orig_open
 winsxs_dlg.close()
 print(" [PASS] 36. WinSxS UI: WinSxSDialog (3 tabs) & MainWindow Integration khoi tao thanh cong!")
 
-print("\n>>> TAT CA 36 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER & WINSXS/UPDATE DEU THANH CONG 100%! <<<")
+# 37. Test Setup Wizard Helpers: Shortcuts & Windows Registry Registration (v3.7 Pro)
+from installer.setup_wizard import (
+    get_default_install_dir, create_windows_shortcut,
+    register_windows_uninstaller, set_autostart_registry
+)
+default_dir = get_default_install_dir()
+assert "PCAutoCleaner" in default_dir, "Thu muc cai dat mac dinh phai chua PCAutoCleaner"
+
+# Test tao shortcut gia lap trong TEMP
+mock_temp_dir = tempfile.mkdtemp(prefix="pc_cleaner_mock_installer_")
+mock_exe = os.path.join(mock_temp_dir, "dummy.exe")
+with open(mock_exe, "w") as f:
+    f.write("mock exe")
+mock_lnk = os.path.join(mock_temp_dir, "test_shortcut.lnk")
+ok_sc = create_windows_shortcut(mock_exe, mock_lnk, mock_temp_dir, mock_exe, "Test Description")
+assert ok_sc == True, "Tao shortcut bang WScript.Shell/PowerShell phai thanh cong"
+assert os.path.exists(mock_lnk), "File .lnk phai ton tai tren o dia"
+
+# Test dang ky uninstaller vao Registry
+ok_reg = register_windows_uninstaller(
+    install_dir=mock_temp_dir,
+    version="3.7.0",
+    publisher="PC Cleaner Team",
+    display_name="PC Auto Cleaner (Test Mock)",
+    uninstaller_path=mock_exe,
+    icon_path=mock_exe
+)
+assert ok_reg == True, "Dang ky Uninstaller vao Windows Registry phai thanh cong"
+
+# Don dep Registry test
+reg_test_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\PCAutoCleaner"
+try:
+    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, reg_test_path)
+except Exception:
+    pass
+shutil.rmtree(mock_temp_dir, ignore_errors=True)
+print(" [PASS] 37. Installer Engine: Tao Shortcut Windows (.lnk) & Dang ky Uninstaller Registry hoat dong chuan xac 100%!")
+
+# 38. Test Smart Setup Wizard UI & Standalone Uninstaller Dialog (v3.7 Pro)
+from installer.setup_wizard import SetupWizard
+from installer.uninstall_wizard import UninstallerDialog as StandaloneUninstaller
+
+wizard = SetupWizard()
+assert wizard.pages.count() == 4, "SetupWizard phai co 4 trang (Welcome, Options, Progress, Finish)"
+assert wizard.current_step == 0, "Trang bat dau phai la 0 (Welcome)"
+wizard._go_next()
+assert wizard.current_step == 1, "Next phai chuyen sang trang 1 (Options)"
+wizard._go_back()
+assert wizard.current_step == 0, "Back phai quay lai trang 0"
+wizard.close()
+
+standalone_uninst = StandaloneUninstaller()
+assert standalone_uninst is not None, "Standalone UninstallerDialog phai khoi tao thanh cong"
+standalone_uninst.close()
+print(" [PASS] 38. Setup Wizard UI: SetupWizard (4-step Fluent Dark) & Standalone Uninstaller khoi tao hoan hao!")
+
+print("\n>>> TAT CA 38 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS & SETUP WIZARD DEU THANH CONG 100%! <<<")
 
 

@@ -57,7 +57,8 @@ class OemDriverItem:
     date: str = "Không rõ"           # VD: 01/31/2022
     signer: str = ""
     is_duplicate: bool = False       # Có phiên bản mới hơn của cùng original_name
-    is_active: bool = False          # Đang là phiên bản mới nhất / đang sử dụng
+    is_active: bool = False          # Đang là phiên bản mới nhất / đang nạp chính thức
+    is_in_use: bool = False          # Đang được phần cứng/thiết bị nạp hoặc liên kết (Windows bảo vệ)
 
     @property
     def display_title(self) -> str:
@@ -318,10 +319,13 @@ class WinSxSCleaner:
         if current and "published_name" in current:
             all_drivers.append(cls._parse_oem_driver_dict(current))
 
+        in_use_infs = cls.get_in_use_driver_infs()
+
         # Nhóm theo (original_name, class_name) để phát hiện bản trùng lặp
         from collections import defaultdict
         groups = defaultdict(list)
         for d in all_drivers:
+            d.is_in_use = (d.published_name.lower() in in_use_infs)
             if d.original_name:
                 key = (d.original_name.lower(), d.class_name.lower())
                 groups[key].append(d)
@@ -329,18 +333,60 @@ class WinSxSCleaner:
         duplicates: List[OemDriverItem] = []
         for (orig, cls_name), list_d in groups.items():
             if len(list_d) > 1:
-                # Sắp xếp theo phiên bản/ngày (phiên bản cuối cùng giữ lại, các phiên bản trước đánh dấu duplicate)
-                # Đơn giản: giữ 1 driver (phần tử cuối cùng hoặc theo số hiệu lớn nhất), các driver còn lại đánh dấu duplicate
-                # Để an toàn nhất: đánh dấu các phiên bản ngoại trừ phần tử đầu tiên/mới nhất
-                for idx, drv in enumerate(list_d):
-                    if idx < len(list_d) - 1:
-                        drv.is_duplicate = True
-                        duplicates.append(drv)
-                    else:
-                        drv.is_active = True
+                # Sắp xếp giảm dần theo ngày và số hiệu phiên bản: phần tử đầu tiên là phiên bản mới nhất
+                list_d.sort(
+                    key=lambda x: (cls._parse_date(x.date), cls._parse_version_tuple(x.version)),
+                    reverse=True
+                )
+                list_d[0].is_active = True
+                for drv in list_d[1:]:
+                    drv.is_duplicate = True
+                    duplicates.append(drv)
 
-        logger.info(f"[WinSxSCleaner] Nhận diện {len(all_drivers)} OEM Drivers, trong đó {len(duplicates)} gói phiên bản cũ có thể dọn dẹp.")
+        cleanable_count = sum(1 for d in duplicates if not d.is_in_use)
+        logger.info(
+            f"[WinSxSCleaner] Nhận diện {len(all_drivers)} OEM Drivers, trong đó {len(duplicates)} gói phiên bản cũ "
+            f"({cleanable_count} gói có thể dọn dẹp, {len(duplicates) - cleanable_count} gói được Windows bảo vệ an toàn)."
+        )
         return all_drivers, duplicates
+
+    @staticmethod
+    def _parse_version_tuple(ver_str: str) -> tuple:
+        parts = []
+        for p in ver_str.replace("-", ".").split("."):
+            try:
+                parts.append(int(p))
+            except ValueError:
+                parts.append(0)
+        return tuple(parts)
+
+    @staticmethod
+    def _parse_date(date_str: str) -> str:
+        try:
+            m, d, y = date_str.split("/")
+            return f"{y.zfill(4)}{m.zfill(2)}{d.zfill(2)}"
+        except Exception:
+            return "00000000"
+
+    @classmethod
+    def get_in_use_driver_infs(cls) -> Set[str]:
+        """
+        Lấy danh sách các tệp INF đang được liên kết hoặc sử dụng bởi các thiết bị phần cứng thực tế.
+        Windows PnP sẽ tự động từ chối xóa các gói driver này để bảo vệ an toàn phần cứng.
+        """
+        in_use = set()
+        try:
+            res = subprocess.run(["pnputil", "/enum-devices", "/drivers"], capture_output=True, text=True)
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith("Driver Name:"):
+                        inf = line.split(":", 1)[1].strip().lower()
+                        if inf.endswith(".inf"):
+                            in_use.add(inf)
+        except Exception as e:
+            logger.debug(f"[WinSxSCleaner] Lỗi kiểm tra in-use drivers: {e}")
+        return in_use
 
     @staticmethod
     def _parse_oem_driver_dict(d: Dict[str, str]) -> OemDriverItem:
@@ -361,6 +407,7 @@ class WinSxSCleaner:
             signer=d.get("signer_name", ""),
             is_duplicate=False,
             is_active=False,
+            is_in_use=False,
         )
 
     @classmethod
@@ -368,16 +415,28 @@ class WinSxSCleaner:
         """
         Dọn dẹp các gói Driver OEM cũ thông qua lệnh `pnputil /delete-driver <oemN.inf>`.
         Lưu ý: Nếu một driver đang được sử dụng trực tiếp bởi thiết bị, Windows sẽ tự động
-        từ chối xóa để đảm bảo an toàn tuyệt đối.
-        Trả về: (số driver đã xóa thành công, số driver bị từ chối, thông báo).
+        từ chối xóa để đảm bảo an toàn tuyệt đối cho phần cứng.
+        Trả về: (số driver đã xóa thành công, số driver bị từ chối/bảo vệ, thông báo).
         """
         if dry_run:
             return len(drivers_to_clean), 0, f"[Dry-run] Sẽ yêu cầu xóa {len(drivers_to_clean)} gói driver OEM cũ."
 
-        success_count = 0
-        failed_count = 0
+        in_use_blocked = [d for d in drivers_to_clean if d.is_in_use]
+        eligible_to_clean = [d for d in drivers_to_clean if not d.is_in_use]
 
-        for drv in drivers_to_clean:
+        if not eligible_to_clean:
+            msg = (
+                f"Tất cả {len(in_use_blocked)} gói driver OEM này hiện đang được phần cứng máy tính "
+                "(Bluetooth, Wi-Fi, Máy in...) trực tiếp sử dụng. "
+                "Windows đã tự động kích hoạt cơ chế bảo vệ phần cứng để đảm bảo kết nối hoạt động 100% ổn định."
+            )
+            logger.info(f"[WinSxSCleaner] {msg}")
+            return 0, len(in_use_blocked), msg
+
+        success_count = 0
+        failed_count = len(in_use_blocked)
+
+        for drv in eligible_to_clean:
             if not drv.published_name or not drv.published_name.endswith(".inf"):
                 continue
 
@@ -396,7 +455,7 @@ class WinSxSCleaner:
 
         msg = f"Đã dọn dẹp thành công {success_count} gói driver OEM cũ."
         if failed_count > 0:
-            msg += f" ({failed_count} gói được Windows giữ lại do thiết bị đang hoạt động)."
+            msg += f" ({failed_count} gói được Windows giữ lại an toàn do phần cứng đang sử dụng)."
 
         logger.info(f"[WinSxSCleaner] {msg}")
         return success_count, failed_count, msg
