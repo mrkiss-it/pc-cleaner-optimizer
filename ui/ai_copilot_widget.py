@@ -147,7 +147,8 @@ class APIConfigDialog(QDialog):
             self.combo_model.insertItem(0, cur_model)
             self.combo_model.setCurrentIndex(0)
         self.combo_model.setToolTip(
-            "gemini-flash-latest tự trỏ tới Flash mới nhất. Nếu API trả 404, ứng dụng sẽ thử các mô hình dự phòng."
+            "gemini-flash-latest tự trỏ tới Flash mới nhất. Nếu API trả 404, 429 hoặc 503 (quá tải), "
+            "ứng dụng sẽ thử các mô hình dự phòng."
         )
         model_row.addWidget(lbl_model)
         model_row.addWidget(self.combo_model, stretch=1)

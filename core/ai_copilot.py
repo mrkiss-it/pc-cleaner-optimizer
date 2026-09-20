@@ -31,12 +31,15 @@ from config_manager import DEFAULT_GEMINI_MODEL, canonicalize_gemini_model
 
 # Gemini 2.5 Flash returns HTTP 404 for many new AI Studio keys (Sep 2026).
 # Prefer the documented Flash alias, then current stable Flash / Flash-Lite IDs.
+# 503 (high demand / overloaded) and 429 (rate limit) also walk this list.
 GEMINI_FALLBACK_MODELS = (
     "gemini-flash-latest",
     "gemini-3.1-flash-lite",
     "gemini-3.5-flash",
     "gemini-2.0-flash",
 )
+# 401/403 stop immediately; these codes continue to the next model (no same-model retry).
+GEMINI_FALLBACK_HTTP_CODES = frozenset({404, 429, 503})
 GEMINI_KNOWN_MODELS = (
     "gemini-flash-latest",
     "gemini-3.1-flash-lite",
@@ -538,10 +541,19 @@ def parse_gemini_error_message(body: str) -> str:
     return message
 
 
+def gemini_http_should_fallback(code: int) -> bool:
+    """True when the next model in GEMINI_FALLBACK_MODELS should be tried."""
+    try:
+        return int(code) in GEMINI_FALLBACK_HTTP_CODES
+    except (TypeError, ValueError):
+        return False
+
+
 def format_gemini_http_error(code: int, body: str, reason: str = "") -> str:
     """Human-readable HTTP error: parsed Google message, never truncated raw JSON."""
     detail = parse_gemini_error_message(body) or (reason or "").strip()
     blob = f"{body or ''} {detail}"
+    blob_l = blob.lower()
     is_not_found = int(code) == 404 or "not found" in detail.lower() or "NOT_FOUND" in blob
     if is_not_found:
         model_id = ""
@@ -556,6 +568,27 @@ def format_gemini_http_error(code: int, body: str, reason: str = "") -> str:
                 f"({model_id})."
             )
         return f"HTTP {code}: Mô hình Gemini không tồn tại hoặc không khả dụng cho API key này."
+    is_overload = (
+        int(code) == 503
+        or "high demand" in blob_l
+        or "overloaded" in blob_l
+        or "UNAVAILABLE" in blob
+    )
+    if is_overload:
+        return (
+            f"HTTP {code}: Google Gemini đang quá tải (high demand). "
+            "Thử mô hình khác hoặc thử lại sau."
+        )
+    is_rate_limited = (
+        int(code) == 429
+        or "RESOURCE_EXHAUSTED" in blob
+        or ("rate" in blob_l and "limit" in blob_l)
+    )
+    if is_rate_limited:
+        return (
+            f"HTTP {code}: Google Gemini đang giới hạn tốc độ (rate limit). "
+            "Thử mô hình khác hoặc thử lại sau."
+        )
     if detail:
         return f"HTTP {code}: {detail}"
     return f"HTTP {code}"
@@ -618,6 +651,7 @@ class CloudAIBrain:
 
         tried: List[str] = []
         last_http_detail = ""
+        fallback_codes: List[int] = []
 
         for candidate in chain:
             tried.append(candidate)
@@ -635,10 +669,12 @@ class CloudAIBrain:
                 )
                 with urllib.request.urlopen(req, timeout=timeout) as response:
                     raw = response.read().decode("utf-8")
-                    if getattr(response, "status", 200) != 200:
-                        last_http_detail = format_gemini_http_error(response.status, raw)
-                        logger.debug(f"[CloudAI] Gemini HTTP {response.status} model={candidate}: {last_http_detail}")
-                        if int(response.status) == 404:
+                    status = int(getattr(response, "status", 200) or 200)
+                    if status != 200:
+                        last_http_detail = format_gemini_http_error(status, raw)
+                        logger.debug(f"[CloudAI] Gemini HTTP {status} model={candidate}: {last_http_detail}")
+                        if gemini_http_should_fallback(status):
+                            fallback_codes.append(status)
                             continue
                         cls.last_error = last_http_detail
                         cls.last_error_short = last_http_detail
@@ -670,7 +706,8 @@ class CloudAIBrain:
                     pass
                 last_http_detail = format_gemini_http_error(e.code, body, reason=str(getattr(e, "reason", "") or ""))
                 logger.debug(f"[CloudAI] Gemini HTTPError model={candidate}: {last_http_detail}")
-                if int(e.code) == 404:
+                if gemini_http_should_fallback(e.code):
+                    fallback_codes.append(int(e.code))
                     continue
                 cls.last_error = last_http_detail
                 cls.last_error_short = last_http_detail
@@ -686,15 +723,48 @@ class CloudAIBrain:
                 logger.debug(f"[CloudAI] Gemini API error: {e}")
                 return None
 
-        models_tried = ", ".join(tried) if tried else requested
-        cls.last_error_short = "Cloud Gemini: không tìm thấy mô hình khả dụng (HTTP 404)"
-        cls.last_error = (
-            f"Không tìm thấy mô hình Gemini khả dụng cho API key này (đã thử: {models_tried}). "
-            "Hãy chọn mô hình khác trong Cấu Hình AI hoặc kiểm tra quyền truy cập tại Google AI Studio."
-        )
-        if last_http_detail and "Mô hình Gemini không" in last_http_detail:
-            cls.last_error = f"{cls.last_error} {last_http_detail}"
+        cls._set_exhausted_fallback_error(tried, requested, last_http_detail, fallback_codes)
         return None
+
+    @classmethod
+    def _set_exhausted_fallback_error(
+        cls,
+        tried: List[str],
+        requested: str,
+        last_http_detail: str,
+        fallback_codes: List[int],
+    ) -> None:
+        models_tried = ", ".join(tried) if tried else requested
+        codes = set(int(c) for c in fallback_codes)
+        overload_only = bool(codes) and codes.issubset({429, 503})
+        not_found_only = codes == {404}
+        if overload_only:
+            cls.last_error_short = (
+                "Google Gemini đang quá tải trên mọi model đã thử — thử lại sau."
+            )
+            cls.last_error = (
+                f"Google Gemini đang quá tải trên mọi model đã thử (đã thử: {models_tried}). "
+                "Thử lại sau ít phút."
+            )
+            if last_http_detail and ("quá tải" in last_http_detail or "rate limit" in last_http_detail):
+                cls.last_error = f"{cls.last_error} {last_http_detail}"
+            return
+        if not_found_only:
+            cls.last_error_short = "Cloud Gemini: không tìm thấy mô hình khả dụng (HTTP 404)"
+            cls.last_error = (
+                f"Không tìm thấy mô hình Gemini khả dụng cho API key này (đã thử: {models_tried}). "
+                "Hãy chọn mô hình khác trong Cấu Hình AI hoặc kiểm tra quyền truy cập tại Google AI Studio."
+            )
+            if last_http_detail and "Mô hình Gemini không" in last_http_detail:
+                cls.last_error = f"{cls.last_error} {last_http_detail}"
+            return
+        cls.last_error_short = "Cloud Gemini: không mô hình nào khả dụng (404/quá tải)."
+        cls.last_error = (
+            f"Không mô hình Gemini nào khả dụng (đã thử: {models_tried}). "
+            "Một số mô hình trả 404, một số đang quá tải — thử lại sau hoặc chọn mô hình khác."
+        )
+        if last_http_detail:
+            cls.last_error = f"{cls.last_error} {last_http_detail}"
 
     @staticmethod
     def _persist_working_model(persist_model: Optional[Any], requested: str, working: str) -> None:
