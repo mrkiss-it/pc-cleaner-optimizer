@@ -143,7 +143,7 @@ class CompanionCard(QFrame):
         if not self.compact:
             self.chk_enabled = QCheckBox("Ghi nhật ký máy (local, không gửi đám mây)")
             self.chk_enabled.setStyleSheet("font-weight: bold; font-size: 13px; color: #c4b5fd;")
-            self.chk_reflect = QCheckBox("Phản tỉnh buổi tối / sổ tay (Gemini hoặc Ollama nếu đã bật; không thì chỉ số liệu)")
+            self.chk_reflect = QCheckBox("Phản tỉnh buổi tối / sổ tay (Gemini nếu đã bật; không thì chỉ số liệu)")
             self.chk_reflect.setStyleSheet("font-size: 12px; color: #cbd5e1;")
             self.chk_propose = QCheckBox(
                 "Cho phép đề xuất Dọn nhẹ / Trước thi khi đã lớn dần (không tự chạy, không WinSxS)"

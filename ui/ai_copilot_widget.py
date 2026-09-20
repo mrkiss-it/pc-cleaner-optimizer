@@ -6,7 +6,7 @@ Giao diện trò chuyện tương tác Fluent Dark Acrylic với AI Copilot:
   - Khung bong bóng hội thoại người dùng & trợ lý thông minh.
   - Nút bấm hành động trực tiếp 1-Click Action Buttons.
   - Các gợi ý câu hỏi nhanh (Quick Prompt Chips).
-  - Hybrid: Google Gemini (online) + Ollama localhost (offline) + Offline Expert Brain.
+  - Google Gemini (online) + nhật ký AI đồng hành + Offline Expert Brain khi Gemini không dùng được.
 """
 from __future__ import annotations
 
@@ -22,14 +22,8 @@ from PyQt5.QtWidgets import (
 
 from core.ai_copilot import (
     AICopilotEngine, ChatMessage, CopilotAction, QUICK_PROMPTS, CloudAIBrain,
-    OllamaAIBrain, DEFAULT_GEMINI_MODEL, GEMINI_KNOWN_MODELS, normalize_gemini_model,
+    DEFAULT_GEMINI_MODEL, GEMINI_KNOWN_MODELS, normalize_gemini_model,
     resolve_copilot_provider,
-)
-from config_manager import (
-    DEFAULT_OLLAMA_BASE_URL,
-    DEFAULT_OLLAMA_MODEL,
-    canonicalize_ollama_base_url,
-    canonicalize_ollama_model,
 )
 from app_meta import APP_NAME
 from core.predictive_ai import PredictiveAIEngine, AIHealthReport, AutoPilotState
@@ -55,13 +49,13 @@ _ACCENT_PURPLE = "#a371f7"
 # ---------------------------------------------------------------------------
 
 class APIConfigDialog(QDialog):
-    """Hộp thoại cấu hình Hybrid Copilot: Gemini online + Ollama offline."""
+    """Hộp thoại cấu hình Copilot: Google Gemini (online) + AI đồng hành local."""
 
     def __init__(self, config_manager=None, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
         self.setWindowTitle(f"⚙️ Cấu Hình AI Copilot — {APP_NAME}")
-        self.resize(540, 620)
+        self.resize(540, 560)
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: {_SURFACE};
@@ -112,7 +106,7 @@ class APIConfigDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(14)
 
-        title = QLabel("🤖 Tùy Chọn Bộ Não AI Copilot (Hybrid)")
+        title = QLabel("🤖 Tùy Chọn Bộ Não AI Copilot")
         title.setFont(QFont("Segoe UI Semibold", 13, QFont.Bold))
         layout.addWidget(title)
 
@@ -130,9 +124,10 @@ class APIConfigDialog(QDialog):
         layout.addWidget(self.lbl_companion_stage)
 
         desc = QLabel(
-            f"{APP_NAME} ưu tiên Google Gemini khi có mạng và API key; "
-            "khi offline hoặc Gemini không tới được thì chuyển Ollama trên localhost. "
-            "Nếu Ollama chưa cài hoặc chưa kéo model, ứng dụng nói thật — không bịa câu trả lời."
+            f"{APP_NAME} dùng Google Gemini khi có mạng và API key. "
+            "AI đồng hành (nhật ký / giai đoạn / kỹ năng) luôn chạy local trên máy này. "
+            "Nếu Gemini không dùng được — cần mạng hoặc API key — ứng dụng nói thật, "
+            "không bịa câu trả lời LLM."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 12px;")
@@ -142,19 +137,18 @@ class APIConfigDialog(QDialog):
         lbl_provider = QLabel("Nhà cung cấp:")
         lbl_provider.setStyleSheet(f"color: {_TEXT_MUTED};")
         self.combo_provider = QComboBox()
-        self._provider_values = ["auto", "gemini", "ollama"]
+        self._provider_values = ["auto", "gemini"]
         self.combo_provider.addItems([
-            "Tự động (Gemini online, Ollama offline)",
+            "Tự động (Gemini khi có key)",
             "Google Gemini (trực tuyến)",
-            "Ollama (localhost, không cần mạng)",
         ])
         cur_provider = resolve_copilot_provider(self.config_manager)
         if cur_provider in self._provider_values:
             self.combo_provider.setCurrentIndex(self._provider_values.index(cur_provider))
         self.combo_provider.setToolTip(
-            "Tự động: dùng Gemini khi có key và mạng; nếu Gemini lỗi / không key / mất mạng thì Ollama. "
-            "Gemini: chỉ cloud (vẫn thử model khác khi HTTP 404/429/503). "
-            "Ollama: chỉ localhost, không giả lập nếu daemon chưa chạy."
+            "Tự động: dùng Gemini khi có API key và mạng; nếu Gemini lỗi / không key / mất mạng "
+            "thì nói thật (cần mạng / API key) và dùng Offline Expert Brain. "
+            "Gemini: chỉ cloud (vẫn thử model khác khi HTTP 404/429/503)."
         )
         self.combo_provider.currentIndexChanged.connect(self._sync_provider_fields)
         provider_row.addWidget(lbl_provider)
@@ -165,8 +159,6 @@ class APIConfigDialog(QDialog):
         is_cloud = bool(self.config_manager.get("ai_copilot_cloud_enabled", False)) if self.config_manager else False
         if cur_provider == "gemini":
             is_cloud = True
-        elif cur_provider == "ollama":
-            is_cloud = False
         self.chk_cloud.setChecked(is_cloud)
         self.chk_cloud.setToolTip("Giữ tương thích cấu hình cũ. Tự động vẫn gọi Gemini khi có API key.")
         layout.addWidget(self.chk_cloud)
@@ -204,40 +196,6 @@ class APIConfigDialog(QDialog):
         model_row.addWidget(lbl_model)
         model_row.addWidget(self.combo_model, stretch=1)
         layout.addLayout(model_row)
-
-        ollama_url_row = QHBoxLayout()
-        lbl_ollama_url = QLabel("Ollama URL:")
-        lbl_ollama_url.setStyleSheet(f"color: {_TEXT_MUTED};")
-        self.txt_ollama_url = QLineEdit()
-        self.txt_ollama_url.setPlaceholderText(DEFAULT_OLLAMA_BASE_URL)
-        ollama_url = DEFAULT_OLLAMA_BASE_URL
-        if self.config_manager:
-            ollama_url = canonicalize_ollama_base_url(
-                str(self.config_manager.get("ai_copilot_ollama_base_url", DEFAULT_OLLAMA_BASE_URL) or "")
-            )
-        self.txt_ollama_url.setText(ollama_url)
-        self.txt_ollama_url.setToolTip("HTTP API của Ollama trên máy này. Không đóng gói file LLM trong ứng dụng.")
-        ollama_url_row.addWidget(lbl_ollama_url)
-        ollama_url_row.addWidget(self.txt_ollama_url, stretch=1)
-        layout.addLayout(ollama_url_row)
-
-        ollama_model_row = QHBoxLayout()
-        lbl_ollama_model = QLabel("Mô hình Ollama:")
-        lbl_ollama_model.setStyleSheet(f"color: {_TEXT_MUTED};")
-        self.txt_ollama_model = QLineEdit()
-        self.txt_ollama_model.setPlaceholderText(DEFAULT_OLLAMA_MODEL)
-        ollama_model = DEFAULT_OLLAMA_MODEL
-        if self.config_manager:
-            ollama_model = canonicalize_ollama_model(
-                str(self.config_manager.get("ai_copilot_ollama_model", DEFAULT_OLLAMA_MODEL) or "")
-            )
-        self.txt_ollama_model.setText(ollama_model)
-        self.txt_ollama_model.setToolTip(
-            "Tên model đã kéo bằng ollama pull. Gợi ý nhẹ: qwen2.5:3b hoặc llama3.2:3b."
-        )
-        ollama_model_row.addWidget(lbl_ollama_model)
-        ollama_model_row.addWidget(self.txt_ollama_model, stretch=1)
-        layout.addLayout(ollama_model_row)
 
         self._sync_provider_fields()
 
@@ -290,21 +248,14 @@ class APIConfigDialog(QDialog):
     def _sync_provider_fields(self, *_args):
         provider = self._current_provider()
         gemini_on = provider in ("auto", "gemini")
-        ollama_on = provider in ("auto", "ollama")
         if hasattr(self, "chk_cloud"):
             self.chk_cloud.setEnabled(gemini_on)
             if provider == "gemini":
                 self.chk_cloud.setChecked(True)
-            elif provider == "ollama":
-                self.chk_cloud.setChecked(False)
         if hasattr(self, "txt_api_key"):
             self.txt_api_key.setEnabled(gemini_on)
         if hasattr(self, "combo_model"):
             self.combo_model.setEnabled(gemini_on)
-        if hasattr(self, "txt_ollama_url"):
-            self.txt_ollama_url.setEnabled(ollama_on)
-        if hasattr(self, "txt_ollama_model"):
-            self.txt_ollama_model.setEnabled(ollama_on)
 
     def _save_settings(self):
         if self.config_manager:
@@ -313,20 +264,10 @@ class APIConfigDialog(QDialog):
             cloud_on = bool(self.chk_cloud.isChecked())
             if provider == "gemini":
                 cloud_on = True
-            elif provider == "ollama":
-                cloud_on = False
             self.config_manager.set("ai_copilot_cloud_enabled", cloud_on)
             self.config_manager.set("ai_copilot_gemini_api_key", self.txt_api_key.text().strip())
             chosen_model = normalize_gemini_model(self.combo_model.currentText())
             self.config_manager.set("ai_copilot_gemini_model", chosen_model)
-            self.config_manager.set(
-                "ai_copilot_ollama_base_url",
-                canonicalize_ollama_base_url(self.txt_ollama_url.text()),
-            )
-            self.config_manager.set(
-                "ai_copilot_ollama_model",
-                canonicalize_ollama_model(self.txt_ollama_model.text()),
-            )
             self.config_manager.set("ai_autopilot_enabled", self.chk_autopilot.isChecked())
             idx = self.combo_ap_mode.currentIndex()
             mode = self._ap_mode_values[idx] if 0 <= idx < len(self._ap_mode_values) else "auto"
@@ -400,7 +341,6 @@ class ChatBubbleWidget(QFrame):
         else:
             source_map = {
                 "cloud_gemini": " [Cloud Gemini]",
-                "local_ollama": " [Ollama]",
                 "offline_expert": " [Offline Brain]",
             }
             source_badge = source_map.get(self.message.source, " [Offline Brain]")
@@ -809,25 +749,15 @@ class AICopilotWidget(QWidget):
             )
             self.copilot_engine.chat_history.append(err)
         self._refresh_chat_display()
-        last_content = ""
         last_source = ""
         if self.copilot_engine.chat_history:
-            last = self.copilot_engine.chat_history[-1]
-            last_content = last.content or ""
-            last_source = last.source or ""
-        if last_source == "local_ollama" and hasattr(self, "lbl_busy"):
-            hint = OllamaAIBrain.last_working_model or "Ollama localhost"
-            self._set_status_text(f"Ollama • {hint}", is_error=False)
-        elif CloudAIBrain.last_error and hasattr(self, "lbl_busy"):
-            if "Cloud Gemini lỗi" in last_content:
+            last_source = self.copilot_engine.chat_history[-1].source or ""
+        if CloudAIBrain.last_error and hasattr(self, "lbl_busy"):
+            if last_source != "cloud_gemini":
                 hint = CloudAIBrain.last_error_short or CloudAIBrain.last_error
                 self._set_status_text(hint, is_error=True)
                 if CloudAIBrain.last_error:
                     self.lbl_busy.setToolTip(CloudAIBrain.last_error)
-        elif last_source != "local_ollama" and OllamaAIBrain.last_error and "Ollama" in last_content:
-            hint = OllamaAIBrain.last_error_short or OllamaAIBrain.last_error
-            self._set_status_text(hint, is_error=True)
-            self.lbl_busy.setToolTip(OllamaAIBrain.last_error)
 
     def _refresh_chat_display(self):
         # Xóa các widget cũ trong chat_lay (trừ spacer cuối)

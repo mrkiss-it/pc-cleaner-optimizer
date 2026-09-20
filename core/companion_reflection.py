@@ -1,19 +1,17 @@
 """
 Evening / on-demand reflection → short Vietnamese "sổ tay" note.
 
-Uses a thin LLM provider hook: prefer local Ollama when configured, else the
-existing Gemini path, else an honest metrics-only template (no fake wisdom).
+Uses a thin LLM provider hook: Google Gemini when an API key is configured,
+else an honest metrics-only template (no fake wisdom, no local LLM daemon).
 """
 from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Protocol
 
-from config_manager import DEFAULT_GEMINI_MODEL, companion_dir
+from config_manager import DEFAULT_GEMINI_MODEL, canonicalize_copilot_provider, companion_dir
 
 NOTE_FILENAME = "so_tay.txt"
 META_FILENAME = "so_tay.json"
@@ -21,7 +19,7 @@ MAX_NOTE_LEN = 900
 
 
 class CompanionLLMProvider(Protocol):
-    """Thin hook so Gemini or a future Ollama hybrid can write the sổ tay."""
+    """Thin hook so Gemini can write the sổ tay."""
 
     name: str
 
@@ -67,55 +65,10 @@ class GeminiReflectionProvider:
             return None
 
 
-class OllamaReflectionProvider:
-    """Local HTTP hook (Ollama /api/generate). Parallel hybrid branch can replace this."""
-
-    name = "ollama"
-
-    def __init__(self, host: str = "http://127.0.0.1:11434", model: str = "llama3.2"):
-        self.host = str(host or "http://127.0.0.1:11434").rstrip("/")
-        self.model = str(model or "llama3.2").strip() or "llama3.2"
-
-    def generate(self, prompt: str, timeout: float = 8.0) -> Optional[str]:
-        url = f"{self.host}/api/generate"
-        payload = json.dumps({
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-        }).encode("utf-8")
-        try:
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                raw = response.read().decode("utf-8", errors="replace")
-            data = json.loads(raw)
-            text = ""
-            if isinstance(data, dict):
-                text = str(data.get("response") or data.get("text") or "").strip()
-            return text or None
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
-            return None
-        except Exception:
-            return None
-
-
 def resolve_llm_provider(config_manager: Optional[Any] = None) -> CompanionLLMProvider:
-    """Prefer local Ollama when configured; else Gemini; else template."""
+    """Prefer Gemini when a key is configured; else the metrics template."""
     get = config_manager.get if config_manager is not None and hasattr(config_manager, "get") else lambda k, d=None: d
-    provider = str(get("ai_copilot_provider", "auto") or "auto").strip().lower()
-    ollama_host = str(
-        get("ai_copilot_ollama_base_url", "")
-        or get("ai_copilot_ollama_host", "")
-        or "http://127.0.0.1:11434"
-    ).rstrip("/")
-    ollama_model = str(get("ai_copilot_ollama_model", "") or "qwen2.5:3b")
-    prefer_ollama = provider == "ollama" or bool(get("ai_copilot_ollama_enabled", False))
-    if prefer_ollama:
-        return OllamaReflectionProvider(host=ollama_host or "http://127.0.0.1:11434", model=ollama_model)
+    provider = canonicalize_copilot_provider(get("ai_copilot_provider", "auto"))
     key = str(get("ai_copilot_gemini_api_key", "") or "").strip()
     gemini_wanted = provider == "gemini" or bool(get("ai_copilot_cloud_enabled", False)) or (
         provider == "auto" and bool(key)
