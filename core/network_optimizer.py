@@ -9,6 +9,7 @@ Hỗ trợ:
 """
 
 import os
+import sys
 import time
 import socket
 import psutil
@@ -46,7 +47,8 @@ class NetworkOptimizer:
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=timeout,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             )
             return {
                 "returncode": res.returncode,
@@ -178,7 +180,10 @@ class NetworkOptimizer:
         except Exception:
             pass
         try:
-            r = subprocess.run("net session", shell=True, capture_output=True, timeout=2)
+            r = subprocess.run(
+                "net session", shell=True, capture_output=True, timeout=2,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            )
             return r.returncode == 0
         except Exception:
             return False
@@ -195,7 +200,8 @@ class NetworkOptimizer:
             cmd = "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false } | Select-Object -ExpandProperty Name"
             res = subprocess.run(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
-                capture_output=True, text=True, timeout=5
+                capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             )
             if res.returncode == 0 and res.stdout.strip():
                 for line in res.stdout.splitlines():
@@ -248,7 +254,8 @@ class NetworkOptimizer:
             ps_cmd = f"Set-DnsClientServerAddress -InterfaceAlias '{adapter_name}' -ServerAddresses @('{primary_dns}','{secondary_dns}')"
             r_ps = subprocess.run(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                capture_output=True, text=True, timeout=8
+                capture_output=True, text=True, timeout=8,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             )
             if r_ps.returncode == 0:
                 logger.info(f"[NetworkOptimizer] Đã áp dụng DNS trực tiếp (Admin Mode) cho adapter '{adapter_name}' qua PowerShell.")

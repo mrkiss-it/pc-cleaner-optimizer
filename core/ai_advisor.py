@@ -789,10 +789,10 @@ class AIAdvisor:
                         title=f"Cảnh Báo Bất Thường: {a.name} (Z-Score: {max(a.ram_z_score, a.cpu_z_score):.1f})",
                         detail=(
                             f"Tiến trình {a.name} (PID: {a.pid}) chiếm {a.ram_mb:.0f} MB RAM và {a.cpu_percent:.1f}% CPU. "
-                            f"Lý do nhận diện: {a.anomaly_reason}. Đây là tiến trình có mức tiêu thụ vượt độ lệch chuẩn thống kê."
+                            f"Lý do: {a.anomaly_reason}. Nếu đây là ứng dụng quen thuộc bạn đang chạy, hãy nhấn 'Tin Cậy' để đưa vào Whitelist."
                         ),
-                        action_key="open_process_tab",
-                        action_label="Xem Trong Tiến Trình",
+                        action_key=f"whitelist_proc:{a.name}",
+                        action_label=f"🛡️ Tin Cậy {a.name}",
                     ))
         except Exception:
             pass

@@ -10,6 +10,7 @@ Cung cấp giải pháp tối ưu hóa chuyên sâu các tệp tin hệ thống 
 import os
 import re
 import sys
+import time
 import shutil
 import ctypes
 import tempfile
@@ -19,6 +20,21 @@ from typing import List, Dict, Any, Optional, Tuple, Set
 
 from core.logger import logger
 from core.service_optimizer import ServiceOptimizer
+
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+
+
+def _get_silent_kwargs() -> Dict[str, Any]:
+    """Trả về các tham số ngăn hoàn toàn việc bật/nháy cửa sổ console (conhost/cmd/pnputil)."""
+    kwargs: Dict[str, Any] = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = _NO_WINDOW
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        kwargs["startupinfo"] = si
+    return kwargs
+
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +103,20 @@ class WinSxSCleaner:
     Trình quản lý dọn dẹp kho thành phần WinSxS, bộ đệm cập nhật Windows
     và kho lưu trữ DriverStore OEM Driver.
     """
+
+    _cached_drivers: Optional[Tuple[List[OemDriverItem], List[OemDriverItem]]] = None
+    _cached_drivers_ts: float = 0.0
+    _cached_in_use: Optional[Set[str]] = None
+    _cached_in_use_ts: float = 0.0
+    CACHE_TTL: float = 300.0  # 5 phút bộ đệm cho quét driver để tránh gọi pnputil liên tục
+
+    @classmethod
+    def invalidate_cache(cls) -> None:
+        """Xóa sạch cache quét drivers để quét mới."""
+        cls._cached_drivers = None
+        cls._cached_drivers_ts = 0.0
+        cls._cached_in_use = None
+        cls._cached_in_use_ts = 0.0
 
     # Danh mục các đường dẫn đệm Windows Update & System Logs
     CACHE_TARGETS = [
@@ -273,15 +303,24 @@ class WinSxSCleaner:
     # ------------------------------------------------------------------
 
     @classmethod
-    def scan_oem_drivers(cls) -> Tuple[List[OemDriverItem], List[OemDriverItem]]:
+    def scan_oem_drivers(cls, force_refresh: bool = False) -> Tuple[List[OemDriverItem], List[OemDriverItem]]:
         """
         Rà soát toàn bộ các gói Driver OEM của bên thứ 3 trong kho DriverStore qua `pnputil /enum-drivers`.
         Tự động nhóm theo tên gốc (original_name) để phát hiện các phiên bản driver cũ bị bỏ lại.
         Trả về: (tất cả_driver_oem, driver_trùng_lặp_khuyên_dọn).
         """
+        now = time.time()
+        if not force_refresh and cls._cached_drivers is not None and (now - cls._cached_drivers_ts < cls.CACHE_TTL):
+            return cls._cached_drivers
+
         all_drivers: List[OemDriverItem] = []
         try:
-            res = subprocess.run("pnputil /enum-drivers", capture_output=True, text=True, shell=True)
+            res = subprocess.run(
+                ["pnputil", "/enum-drivers"],
+                capture_output=True,
+                text=True,
+                **_get_silent_kwargs()
+            )
             output = res.stdout or ""
         except Exception as e:
             logger.error(f"[WinSxSCleaner] Lỗi khi thực thi pnputil: {e}")
@@ -319,7 +358,7 @@ class WinSxSCleaner:
         if current and "published_name" in current:
             all_drivers.append(cls._parse_oem_driver_dict(current))
 
-        in_use_infs = cls.get_in_use_driver_infs()
+        in_use_infs = cls.get_in_use_driver_infs(force_refresh=force_refresh)
 
         # Nhóm theo (original_name, class_name) để phát hiện bản trùng lặp
         from collections import defaultdict
@@ -348,6 +387,8 @@ class WinSxSCleaner:
             f"[WinSxSCleaner] Nhận diện {len(all_drivers)} OEM Drivers, trong đó {len(duplicates)} gói phiên bản cũ "
             f"({cleanable_count} gói có thể dọn dẹp, {len(duplicates) - cleanable_count} gói được Windows bảo vệ an toàn)."
         )
+        cls._cached_drivers = (all_drivers, duplicates)
+        cls._cached_drivers_ts = now
         return all_drivers, duplicates
 
     @staticmethod
@@ -369,14 +410,23 @@ class WinSxSCleaner:
             return "00000000"
 
     @classmethod
-    def get_in_use_driver_infs(cls) -> Set[str]:
+    def get_in_use_driver_infs(cls, force_refresh: bool = False) -> Set[str]:
         """
         Lấy danh sách các tệp INF đang được liên kết hoặc sử dụng bởi các thiết bị phần cứng thực tế.
         Windows PnP sẽ tự động từ chối xóa các gói driver này để bảo vệ an toàn phần cứng.
         """
+        now = time.time()
+        if not force_refresh and cls._cached_in_use is not None and (now - cls._cached_in_use_ts < cls.CACHE_TTL):
+            return cls._cached_in_use
+
         in_use = set()
         try:
-            res = subprocess.run(["pnputil", "/enum-devices", "/drivers"], capture_output=True, text=True)
+            res = subprocess.run(
+                ["pnputil", "/enum-devices", "/drivers"],
+                capture_output=True,
+                text=True,
+                **_get_silent_kwargs()
+            )
             if res.returncode == 0:
                 for line in res.stdout.splitlines():
                     line = line.strip()
@@ -386,6 +436,9 @@ class WinSxSCleaner:
                             in_use.add(inf)
         except Exception as e:
             logger.debug(f"[WinSxSCleaner] Lỗi kiểm tra in-use drivers: {e}")
+
+        cls._cached_in_use = in_use
+        cls._cached_in_use_ts = now
         return in_use
 
     @staticmethod
@@ -440,18 +493,25 @@ class WinSxSCleaner:
             if not drv.published_name or not drv.published_name.endswith(".inf"):
                 continue
 
-            cmd = f"pnputil /delete-driver {drv.published_name}"
-            res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            res = subprocess.run(
+                ["pnputil", "/delete-driver", drv.published_name],
+                capture_output=True,
+                text=True,
+                **_get_silent_kwargs()
+            )
 
             if res.returncode == 0:
                 success_count += 1
             else:
                 # Nếu thiếu quyền Administrator, thử chạy qua elevated
+                cmd = f"pnputil /delete-driver {drv.published_name}"
                 ok, _ = ServiceOptimizer._run_elevated_cmd(f"/c {cmd}")
                 if ok:
                     success_count += 1
                 else:
                     failed_count += 1
+
+        cls.invalidate_cache()
 
         msg = f"Đã dọn dẹp thành công {success_count} gói driver OEM cũ."
         if failed_count > 0:
@@ -490,7 +550,7 @@ class WinSxSCleaner:
 
         # Thử chạy trực tiếp nếu process đã có quyền Admin
         if ctypes.windll.shell32.IsUserAnAdmin() != 0:
-            res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True, **_get_silent_kwargs())
             if res.returncode == 0:
                 return True, "Dọn dẹp kho thành phần WinSxS hoàn tất thành công!"
             return False, f"Lỗi DISM (Mã: {res.returncode}): {res.stderr or res.stdout}"
@@ -524,7 +584,7 @@ class WinSxSCleaner:
         logger.info("[WinSxSCleaner] Bắt đầu kiểm tra và sửa lỗi hệ thống (RestoreHealth + SFC)...")
 
         if ctypes.windll.shell32.IsUserAnAdmin() != 0:
-            res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True, **_get_silent_kwargs())
             if res.returncode == 0:
                 return True, "Kiểm tra và phục hồi tính toàn vẹn hệ thống thành công!"
             return False, f"Lỗi RestoreHealth: {res.stderr or res.stdout}"
@@ -549,7 +609,7 @@ class WinSxSCleaner:
         total_cache_mb = sum(c.size_mb for c in caches)
         total_files = sum(c.file_count for c in caches)
 
-        _, duplicate_drivers = cls.scan_oem_drivers()
+        _, duplicate_drivers = cls.scan_oem_drivers(force_refresh=False)
         cleanable_count = sum(1 for d in duplicate_drivers if not d.is_in_use)
         protected_count = sum(1 for d in duplicate_drivers if d.is_in_use)
 

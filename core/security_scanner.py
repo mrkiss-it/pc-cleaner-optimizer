@@ -16,6 +16,7 @@ Kiểm tra tự động 10+ hạng mục bảo mật phổ biến trên Windows:
 """
 
 import os
+import sys
 import re
 import time
 import winreg
@@ -74,7 +75,8 @@ class SecurityScanner:
             res = subprocess.run(
                 cmd, shell=True, capture_output=True,
                 text=True, timeout=timeout,
-                encoding="utf-8", errors="ignore"
+                encoding="utf-8", errors="ignore",
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             )
             return {
                 "returncode": res.returncode,

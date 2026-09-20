@@ -206,7 +206,7 @@ from core.ai_advisor import (
     PRIORITY_CRITICAL, PRIORITY_WARNING, PRIORITY_TIP,
     CATEGORY_RAM, CATEGORY_CPU, CATEGORY_DISK, CATEGORY_NETWORK,
 )
-advisor = AIAdvisor()
+advisor = AIAdvisor(config_manager=cfg)
 assert advisor.get_suggestions() is not None, "get_suggestions() phai tra ve list"
 counts = advisor.get_suggestions_count_by_priority()
 assert isinstance(counts, dict) and PRIORITY_CRITICAL in counts, "Phai tra ve count dict"
@@ -585,6 +585,12 @@ def mock_pred_dispatcher(key):
 dlg_dispatch = AIAdvisorDialog(advisor=advisor, action_dispatcher=mock_pred_dispatcher)
 dlg_dispatch._dispatch_action("enable_game_boost")
 assert "enable_game_boost" in dispatched_actions, "Action dispatcher phai nhan duoc enable_game_boost"
+
+dlg_dispatch._dispatch_action("whitelist_proc:test_mock_app.exe")
+assert "whitelist_proc:test_mock_app.exe" in dispatched_actions, "Action dispatcher phai nhan duoc whitelist_proc"
+cfg_wl = cfg.get_whitelist_set()
+assert "test_mock_app.exe" in cfg_wl, "Tien trinh phai duoc them vao config whitelist"
+cfg.remove_from_whitelist("test_mock_app.exe")
 
 pred_dlg.close()
 dlg_dispatch.close()

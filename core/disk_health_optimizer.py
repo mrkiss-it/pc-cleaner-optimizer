@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import ctypes
 import logging
@@ -25,7 +26,8 @@ class DiskHealthOptimizer:
             pass
         try:
             import subprocess
-            r = subprocess.run("net session", shell=True, capture_output=True, timeout=2)
+            _no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+            r = subprocess.run("net session", shell=True, capture_output=True, timeout=2, creationflags=_no_win)
             return r.returncode == 0
         except Exception:
             return False
@@ -42,9 +44,11 @@ class DiskHealthOptimizer:
         )
 
         try:
+            _no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
             res = subprocess.run(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True, timeout=10,
+                creationflags=_no_win
             )
             if res.returncode == 0 and res.stdout.strip():
                 data = json.loads(res.stdout)
@@ -92,9 +96,11 @@ class DiskHealthOptimizer:
     def _fallback_wmic_disks(cls) -> List[Dict[str, Any]]:
         disks = []
         try:
+            _no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
             res = subprocess.run(
                 ["wmic", "diskdrive", "get", "DeviceID,Model,Size,Status,InterfaceType", "/format:list"],
-                capture_output=True, text=True, timeout=8
+                capture_output=True, text=True, timeout=8,
+                creationflags=_no_win
             )
             if res.returncode == 0:
                 current: Dict[str, str] = {}
@@ -134,9 +140,11 @@ class DiskHealthOptimizer:
         )
 
         try:
+            _no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
             res = subprocess.run(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                capture_output=True, text=True, timeout=8
+                capture_output=True, text=True, timeout=8,
+                creationflags=_no_win
             )
             if res.returncode == 0 and res.stdout.strip():
                 data = json.loads(res.stdout)
@@ -191,9 +199,11 @@ class DiskHealthOptimizer:
 
         if is_elevated:
             try:
+                _no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
                 res = subprocess.run(
                     ["defrag", drive_path, "/L"],
-                    capture_output=True, text=True, timeout=45
+                    capture_output=True, text=True, timeout=45,
+                    creationflags=_no_win
                 )
                 if res.returncode == 0 and "insufficient privileges" not in res.stdout.lower():
                     logger.info(f"Tối ưu TRIM {drive_path} thành công:\n{res.stdout.strip()}")

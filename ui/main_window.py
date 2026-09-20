@@ -1243,6 +1243,12 @@ class MainWindow(QMainWindow):
             elif action_key == "open_process_tab":
                 if hasattr(self, "tab_performance"):
                     self.tabs.setCurrentWidget(self.tab_performance)
+            elif action_key.startswith("whitelist_proc:"):
+                proc_name = action_key.split(":", 1)[1]
+                self.config_manager.add_to_whitelist(proc_name)
+                self._ai_advisor.invalidate_cache()
+                if hasattr(self, "_populate_whitelist"):
+                    self._populate_whitelist()
         except Exception as e:
             import logging
             logging.error(f"[AI Advisor] Action dispatch error: {e}")

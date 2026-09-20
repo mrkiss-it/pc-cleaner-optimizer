@@ -156,6 +156,29 @@ class SuggestionCard(QFrame):
         if self._sug.action_key:
             row3 = QHBoxLayout()
             row3.addStretch()
+
+            # Nếu là thẻ bất thường có action whitelist: hiển thị kèm nút phụ "Xem Trong Tiến Trình"
+            if self._sug.action_key.startswith("whitelist_proc:"):
+                btn_proc = QPushButton("Xem Trong Tiến Trình")
+                btn_proc.setFont(QFont("Segoe UI", 9))
+                btn_proc.setFixedHeight(32)
+                btn_proc.setStyleSheet(f"""
+                    QPushButton {{
+                        background: transparent;
+                        color: {_TEXT_MUTED};
+                        border: 1px solid {_CARD_BORDER};
+                        border-radius: 8px;
+                        padding: 0 14px;
+                    }}
+                    QPushButton:hover {{
+                        background: #21262d;
+                        color: {_TEXT_PRIMARY};
+                    }}
+                """)
+                btn_proc.setCursor(Qt.PointingHandCursor)
+                btn_proc.clicked.connect(lambda: self.action_triggered.emit("open_process_tab"))
+                row3.addWidget(btn_proc)
+
             btn = QPushButton(self._sug.action_label)
             btn.setFont(QFont("Segoe UI Semibold", 9, QFont.Bold))
             btn.setFixedHeight(32)
@@ -684,7 +707,26 @@ class AIAdvisorDialog(QDialog):
         layout.addWidget(msg2)
 
     def _dispatch_action(self, action_key: str):
-        """Gửi action_key tới MainWindow dispatcher và đóng dialog để thực thi."""
+        """Gửi action_key tới MainWindow dispatcher và thực thi."""
+        if action_key.startswith("whitelist_proc:"):
+            proc_name = action_key.split(":", 1)[1]
+            if hasattr(self._advisor, "_config_manager") and self._advisor._config_manager:
+                self._advisor._config_manager.add_to_whitelist(proc_name)
+            else:
+                try:
+                    from config_manager import ConfigManager
+                    ConfigManager().add_to_whitelist(proc_name)
+                except Exception:
+                    pass
+            self._advisor.invalidate_cache()
+            self._refresh()
+            if self._dispatcher:
+                try:
+                    self._dispatcher(action_key)
+                except Exception:
+                    pass
+            return
+
         self.accept()
         if self._dispatcher:
             try:

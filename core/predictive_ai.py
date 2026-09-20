@@ -49,10 +49,19 @@ SLOT_LABELS = {
 }
 
 KNOWN_SAFE_PROCESSES = {
-    "chrome.exe", "firefox.exe", "msedge.exe", "brave.exe", "opera.exe",
-    "code.exe", "pycharm64.exe", "idea64.exe", "devenv.exe",
-    "discord.exe", "telegram.exe", "zalo.exe", "slack.exe",
-    "steam.exe", "epicgameslauncher.exe", "spotify.exe"
+    # IDEs, Trình soạn thảo mã nguồn & Công cụ lập trình
+    "antigravity ide.exe", "antigravity.exe", "cursor.exe", "windsurf.exe",
+    "code.exe", "pycharm64.exe", "idea64.exe", "devenv.exe", "studio64.exe",
+    "eclipse.exe", "sublime_text.exe", "notepad++.exe", "rider64.exe",
+    "webstorm64.exe", "clion64.exe", "rustrover64.exe", "goland64.exe", "datagrip64.exe",
+    # Trình duyệt web
+    "chrome.exe", "firefox.exe", "msedge.exe", "brave.exe", "opera.exe", "vivaldi.exe", "tor.exe",
+    # Ứng dụng liên lạc, văn phòng & đa phương tiện
+    "discord.exe", "telegram.exe", "zalo.exe", "slack.exe", "teams.exe", "spotify.exe",
+    # Nền tảng game & launcher
+    "steam.exe", "epicgameslauncher.exe", "riotclientservices.exe",
+    # Môi trường phát triển & runtimes
+    "python.exe", "pythonw.exe", "node.exe", "git.exe", "docker desktop.exe"
 }
 
 
@@ -539,28 +548,40 @@ class ProcessAnomalyDetector:
             z_ram = (p["ram_mb"] - mean_ram) / stdev_ram
             z_cpu = (p["cpu_pct"] - mean_cpu) / stdev_cpu
 
-            # Bỏ qua các ứng dụng hệ điều hành được bảo vệ
+            # Bỏ qua các ứng dụng hệ điều hành được bảo vệ hoặc trong whitelist
             if is_protected or is_whitelisted:
                 continue
 
-            # Điều kiện nhận diện bất thường:
-            # - Z-RAM >= 2.5 và RAM >= 350 MB (sử dụng RAM vượt trội so với trung bình hệ thống)
-            # - Z-CPU >= 2.5 và CPU >= 20% (ngốn CPU đột biến bất thường)
-            # - Hoặc tiến trình lạ ngốn CPU/RAM cùng lúc
+            # Nhận diện nếu là phần mềm quen thuộc (IDE, Trình duyệt, Trình soạn thảo)
+            is_known_safe = (name in KNOWN_SAFE_PROCESSES) or any(
+                k in name for k in ("ide", "studio", "code", "browser", "python")
+            )
+
             is_anomaly = False
             reasons = []
 
-            if z_cpu >= 2.5 and p["cpu_pct"] >= 20.0:
-                is_anomaly = True
-                reasons.append(f"CPU tăng đột biến ({p['cpu_pct']:.1f}%, Z={z_cpu:.1f})")
+            if is_known_safe:
+                # Ứng dụng an toàn đã biết: Mức RAM 300MB - 1.5GB là hoàn toàn bình thường khi làm việc.
+                # Chỉ cảnh báo nếu CPU bị nghẽn (runaway/treo máy >= 45%) hoặc RAM phình to bất thường (>3GB)
+                if p["cpu_pct"] >= 45.0 and z_cpu >= 2.5:
+                    is_anomaly = True
+                    reasons.append(f"CPU bị nghẽn tải nặng ({p['cpu_pct']:.1f}%, Z={z_cpu:.1f})")
+                elif p["ram_mb"] >= 3000.0 and z_ram >= 3.5:
+                    is_anomaly = True
+                    reasons.append(f"RAM phình to bất thường ({p['ram_mb']:.0f} MB, Z={z_ram:.1f})")
+            else:
+                # Tiến trình chạy ngầm lạ:
+                if z_cpu >= 2.5 and p["cpu_pct"] >= 20.0:
+                    is_anomaly = True
+                    reasons.append(f"CPU tăng đột biến ({p['cpu_pct']:.1f}%, Z={z_cpu:.1f})")
 
-            if z_ram >= 2.5 and p["ram_mb"] >= 350.0:
-                is_anomaly = True
-                reasons.append(f"RAM tiêu thụ bất thường ({p['ram_mb']:.0f} MB, Z={z_ram:.1f})")
+                if z_ram >= 2.5 and p["ram_mb"] >= 500.0:
+                    is_anomaly = True
+                    reasons.append(f"RAM tiêu thụ bất thường ({p['ram_mb']:.0f} MB, Z={z_ram:.1f})")
 
-            if z_cpu >= 1.8 and z_ram >= 1.8 and name not in KNOWN_SAFE_PROCESSES:
-                is_anomaly = True
-                reasons.append(f"Tiến trình lạ tiêu hao đồng thời cả CPU lẫn RAM (Z-score kết hợp cao)")
+                if z_cpu >= 1.8 and z_ram >= 1.8 and p["cpu_pct"] >= 12.0:
+                    is_anomaly = True
+                    reasons.append("Tiến trình lạ tiêu hao đồng thời cả CPU lẫn RAM (Z-score kết hợp cao)")
 
             if is_anomaly:
                 # Composite anomaly score (0 -> 100)
