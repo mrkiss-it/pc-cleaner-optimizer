@@ -43,7 +43,7 @@ if sys.platform != "win32":
 from PyQt5.QtWidgets import QApplication
 
 from app_meta import APP_NAME, APP_VERSION, APP_PUBLISHER
-from installer.setup_wizard import qt_literal_ampersand, SetupWizard
+from installer.setup_wizard import qt_literal_ampersand, SetupWizard, format_uninstall_command, resolve_uninstaller_path
 import installer.setup_wizard as setup_wizard_mod
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -133,6 +133,11 @@ check("qt_literal_ampersand(app_meta.APP_NAME)" in wizard_src,
 build_src = open(os.path.join(ROOT, "installer", "build_installer.py"), encoding="utf-8").read()
 check("--hidden-import=app_meta" in build_src, "Setup PyInstaller bundles app_meta")
 check("--paths=" in build_src, "Setup PyInstaller adds repo root to pathex")
+check("uninstall.exe" in build_src, "build_installer compiles uninstall.exe")
+check(format_uninstall_command("/tmp/uninstall.exe", quiet=False).startswith('"'), "UninstallString quoted")
+check("--quiet" in format_uninstall_command("/tmp/uninstall.exe", quiet=True), "QuietUninstallString uses --quiet")
+check(resolve_uninstaller_path("/no/such/dir") == "", "missing uninstall.exe is empty path")
+check("uninstaller_path = exe_path" not in wizard_src, "wizard does not fall back UninstallString to main exe")
 
 print("===================================================")
 if _failed:
