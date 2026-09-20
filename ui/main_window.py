@@ -912,6 +912,14 @@ class MainWindow(QMainWindow):
         layout_ap.addLayout(row_ap_mode)
         layout.addWidget(card_ap)
 
+        from ui.companion_card import CompanionCard
+        self.companion_card = CompanionCard(
+            config_manager=self.config_manager,
+            parent=scroll_content,
+            compact=False,
+        )
+        layout.addWidget(self.companion_card)
+
         # Card 3: Smart Auto Network Optimization
         card_network = QFrame()
         card_network.setObjectName("SettingCard")
@@ -1772,6 +1780,11 @@ class MainWindow(QMainWindow):
         p_after = res.get("percent_after", 0)
 
         self.config_manager.add_history(0.0, freed, trigger_type="manual")
+        try:
+            from core.companion import observe_ram_optimized
+            observe_ram_optimized(freed, ram_percent=p_before, config_manager=self.config_manager)
+        except Exception:
+            pass
         self.refresh_history_table()
         if hasattr(self, "_ai_advisor"):
             self._ai_advisor.invalidate_cache()
@@ -1784,6 +1797,32 @@ class MainWindow(QMainWindow):
         msg = f"Đã giải phóng thành công {freed:.1f} MB RAM!\n(Mức sử dụng RAM giảm từ {p_before:.1f}% xuống {p_after:.1f}%)"
         self.lbl_status.setText(f"Tối ưu RAM hoàn tất: Thu hồi {freed:.1f} MB")
         QMessageBox.information(self, "Tối Ưu RAM Hoàn Tất", msg)
+
+    def run_light_clean(self):
+        """Dọn nhẹ temp/crash dump — không WinSxS, thùng rác, cache trình duyệt."""
+        from core.exam_focus import LIGHT_CLEAN_TARGETS
+        from core.cleaner import JunkCleaner
+        self.lbl_status.setText("Đang dọn nhẹ temp / crash dump...")
+        try:
+            res = JunkCleaner.clean(dict(LIGHT_CLEAN_TARGETS))
+        except Exception as exc:
+            QMessageBox.warning(self, "Dọn nhẹ", f"Không dọn được: {exc}")
+            return
+        junk = float(res.get("total_freed_mb") or 0.0)
+        files = int(res.get("total_deleted_files") or 0)
+        self.config_manager.add_history(junk, 0.0, trigger_type="clean_light")
+        try:
+            from core.companion import observe_clean
+            observe_clean(junk, light=True, config_manager=self.config_manager)
+        except Exception:
+            pass
+        self.refresh_history_table()
+        if hasattr(self, "_ai_advisor"):
+            self._ai_advisor.invalidate_cache()
+            self._update_ai_badge()
+        msg = f"Đã dọn nhẹ {junk:.1f} MB ({files} file temp/crash). Không đụng WinSxS hay thùng rác."
+        self.lbl_status.setText(msg)
+        QMessageBox.information(self, "Dọn nhẹ hoàn tất", msg)
 
     def _on_worker_progress(self, msg: str, pct: int):
         self.lbl_status.setText(msg)
@@ -1821,6 +1860,16 @@ class MainWindow(QMainWindow):
 
             # Record history
             self.config_manager.add_history(freed_junk_mb, freed_ram_mb, trigger_type="manual")
+            try:
+                from core.companion import observe_clean
+                observe_clean(
+                    freed_junk_mb,
+                    ram_mb=freed_ram_mb,
+                    light=False,
+                    config_manager=self.config_manager,
+                )
+            except Exception:
+                pass
             self.refresh_history_table()
             if hasattr(self, "_ai_advisor"):
                 self._ai_advisor.invalidate_cache()
@@ -1998,6 +2047,8 @@ class MainWindow(QMainWindow):
                 self.enable_game_boost()
             elif action_key in ("enable_exam_focus", "toggle_exam_focus"):
                 self.enable_exam_focus()
+            elif action_key == "clean_light":
+                self.run_light_clean()
             elif action_key in ("optimize_network", "repair_network_now"):
                 self.repair_network_now()
             elif action_key == "unlock_location":
@@ -2133,6 +2184,11 @@ class MainWindow(QMainWindow):
             res = ExamMeetingFocus.disable()
         else:
             res = ExamMeetingFocus.enable(whitelist=whitelist)
+            try:
+                from core.companion import observe_focus_enabled
+                observe_focus_enabled(res, config_manager=self.config_manager)
+            except Exception:
+                pass
 
         self._sync_exam_focus_ui()
         msg = res.get("message") or (

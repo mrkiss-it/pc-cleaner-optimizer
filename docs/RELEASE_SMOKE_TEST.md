@@ -45,6 +45,7 @@ Chạy `PCAutoCleaner_Setup.exe` trên máy **chưa cài** (hoặc đã gỡ s�
   - **Gỡ cài đặt** — nút trong Settings (không nhầm **Gỡ Phần Mềm** trên dashboard)
   - **Ổn định Wi-Fi**
   - **Nhiệt laptop** — ngưỡng °C + toast khi nóng
+  - **AI đồng hành** — giai đoạn 0→3, nhật ký máy, kỹ năng, sổ tay (empty-state nếu cài mới)
 
 ---
 
@@ -75,6 +76,7 @@ Cài lại giữa hai lần. Kiểm **cả hai lối**.
 - [ ] Wi-Fi yếu → thẻ/tip **Ổn định Wi-Fi** hiện; toast **không spam** (cooldown ~30 phút)
 - [ ] **Nhiệt laptop**: dashboard / Pin & Phần cứng hiện số khi có cảm biến; empty-state tiếng Việt nếu không (không bịa °C); Settings có ngưỡng ~90°C
 - [ ] Dashboard **Trước thi / họp**: bật → badge ĐANG TẬP TRUNG; tắt → khôi phục. Không đổi DNS/Wi-Fi
+- [ ] **AI đồng hành**: Copilot hiện giai đoạn tiếng Việt; Settings có thẻ nhật ký/kỹ năng; cài mới hiện empty-state (không bịa kỷ niệm)
 
 ---
 

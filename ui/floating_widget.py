@@ -390,7 +390,12 @@ class FloatingWidget(QWidget):
             ExamMeetingFocus.disable()
             self.setToolTip("Chế độ bình thường\nClick để tối ưu RAM")
         else:
-            ExamMeetingFocus.enable()
+            res = ExamMeetingFocus.enable()
+            try:
+                from core.companion import observe_focus_enabled
+                observe_focus_enabled(res, config_manager=self.config_manager)
+            except Exception:
+                pass
             self.setToolTip("📝 ĐANG BẬT TRƯỚC THI / HỌP\nĐã dọn temp nhẹ, giảm thông báo, thu hồi RAM.")
         if self.monitor_hub:
             self.monitor_hub.force_refresh()

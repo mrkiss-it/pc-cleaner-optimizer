@@ -127,6 +127,7 @@ QUICK_PROMPTS = [
     "🎮 Tối ưu hệ thống để chơi game mượt",
     "💾 Ổ C bị đầy, cần xóa những gì?",
     "📶 Kiểm tra mạng và giảm giật ping",
+    "📓 Nhật ký máy này nhớ gì?",
     "🔋 Làm sao để kéo dài thời lượng pin?",
     "🛡️ Quét kiểm tra tiến trình lạ và an ninh",
 ]
@@ -1282,6 +1283,7 @@ class AICopilotEngine:
         self.config_manager = config_manager
         self.predictive_engine = predictive_engine
         # Optional companion hook: () or (user_prompt=, telemetry=, health_report=) → str | list[str]
+        # None → default diary/stage/skills injection for Gemini + Ollama.
         self.extra_context_provider = extra_context_provider
         self.chat_history: List[ChatMessage] = []
         self._init_welcome_message()
@@ -1289,10 +1291,12 @@ class AICopilotEngine:
     def _init_welcome_message(self):
         """Tin nhắn chào mừng ban đầu."""
         welcome_text = (
-            f"👋 **Xin chào! Tôi là AI Copilot & Bác Sĩ Hệ Thống của {APP_NAME}.**\n\n"
-            "Chế độ Hybrid: Google Gemini khi có mạng + API key; Ollama trên localhost khi offline "
-            "(không giả lập câu trả lời nếu Ollama chưa cài hoặc chưa kéo model).\n\n"
-            "💡 *Bạn có thể hỏi tôi bất kỳ điều gì về máy tính, hoặc bấm vào các câu hỏi nhanh bên dưới!*"
+            f"👋 **Xin chào! Tôi là AI Copilot của {APP_NAME}.**\n\n"
+            "Hybrid: Google Gemini khi có mạng + API key; Ollama trên máy khi offline "
+            "(không giả lập LLM nếu Ollama chưa cài).\n\n"
+            "🌱 **AI đồng hành:** nhật ký local trên máy này, lớn dần theo ngày dùng — "
+            "không phải AGI, không tự huấn luyện mô hình. Nhật ký trống nếu đây là lần đầu.\n\n"
+            "💡 *Hỏi về máy tính, hoặc bấm câu hỏi nhanh bên dưới.*"
         )
         actions = [
             CopilotAction(key="auto_optimize_all", label="✨ Khám Sức Khỏe & Tối Ưu", icon="✨"),
@@ -1313,14 +1317,33 @@ class AICopilotEngine:
         health_report: Optional[AIHealthReport] = None,
         extra_context: Optional[Any] = None,
     ) -> List[str]:
-        """Collect extra LLM prompt strings (companion diary/stage/skills later)."""
+        """Collect extra LLM prompt strings (companion diary/stage/skills)."""
+        provider = self.extra_context_provider
+        if provider is None:
+            provider = self._companion_extra_context
         return collect_extra_prompt_context(
             extra_context,
-            self.extra_context_provider,
+            provider,
             user_prompt=user_prompt,
             telemetry=telemetry,
             health_report=health_report,
         )
+
+    def _companion_extra_context(
+        self,
+        user_prompt: str = "",
+        telemetry: Optional[Dict[str, Any]] = None,
+        health_report: Optional[AIHealthReport] = None,
+    ) -> str:
+        """Shared companion memory for Gemini and Ollama (diary, stage, skills, sổ tay)."""
+        try:
+            from core.companion import build_prompt_context
+            return build_prompt_context(
+                user_text=user_prompt or "",
+                config_manager=self.config_manager,
+            )
+        except Exception:
+            return ""
 
     def ask(
         self,
@@ -1403,6 +1426,17 @@ class AICopilotEngine:
                 CloudAIBrain.last_error = "Đã bật Cloud Gemini nhưng chưa nhập API Key."
                 CloudAIBrain.last_error_short = CloudAIBrain.last_error
 
+        memory_reply = ""
+        try:
+            from core.companion import is_memory_question, memory_answer
+            if is_memory_question(user_prompt_clean) and not cloud_reply:
+                memory_reply = memory_answer(
+                    user_prompt_clean,
+                    config_manager=self.config_manager,
+                )
+        except Exception:
+            memory_reply = ""
+
         if cloud_reply:
             source = "cloud_gemini"
             reply_text = cloud_reply
@@ -1427,6 +1461,10 @@ class AICopilotEngine:
                         + ollama_reply
                     )
                 actions = self._extract_actions_from_text(reply_text + " " + user_prompt_clean)
+            elif memory_reply:
+                source = "offline_expert"
+                reply_text = memory_reply
+                actions = self._extract_actions_from_text(reply_text + " " + user_prompt_clean)
             else:
                 res = OfflineExpertBrain.answer(
                     user_text=user_prompt_clean,
@@ -1434,7 +1472,7 @@ class AICopilotEngine:
                     health_report=health_report,
                     autopilot_state=autopilot_state
                 )
-                reply_text = res.reply
+                reply_text = self._attach_companion_postscript(res.reply, user_prompt_clean)
                 actions = res.actions
                 source = res.source
                 if provider == "ollama":
@@ -1444,7 +1482,7 @@ class AICopilotEngine:
                         "Ứng dụng không bịa câu trả lời LLM khi Ollama chưa sẵn sàng.\n\n"
                         "---\n"
                         "Trong lúc chờ, bộ não chuyên gia cục bộ vẫn có thể giúp câu hỏi về RAM / ổ đĩa / mạng:\n\n"
-                        f"{res.reply}"
+                        f"{reply_text}"
                     )
                 elif gemini_attempted:
                     err = CloudAIBrain.last_error or "Cloud Gemini không phản hồi."
@@ -1453,8 +1491,24 @@ class AICopilotEngine:
                         extra = f"\nOllama: {OllamaAIBrain.last_error}"
                     reply_text = (
                         f"⚠️ Cloud Gemini lỗi: {err}{extra}\n"
-                        f"Đang dùng Offline Expert Brain.\n\n---\n\n{res.reply}"
+                        f"Đang dùng Offline Expert Brain.\n\n---\n\n{reply_text}"
                     )
+
+        try:
+            from core.companion import companion_actions
+            extra_acts = companion_actions(
+                user_prompt_clean,
+                config_manager=self.config_manager,
+            )
+            have = {a.key for a in actions}
+            for key, label in extra_acts:
+                if key in have:
+                    continue
+                actions.append(CopilotAction(key=key, label=label, icon="🌱"))
+                have.add(key)
+            actions = actions[:3]
+        except Exception:
+            pass
 
         badge = (
             f"RAM {telemetry.get('ram', {}).get('percent', 0)}% • "
@@ -1485,6 +1539,31 @@ class AICopilotEngine:
         )
         self.chat_history.append(assistant_msg)
         return assistant_msg
+
+    def _attach_companion_postscript(self, reply_text: str, user_text: str) -> str:
+        """Cite machine diary when present; honest empty hint at stage 0."""
+        try:
+            from core.companion import current_stage, diary_digest, match_skills
+            stage = current_stage(config_manager=self.config_manager)
+            digest = diary_digest(limit=4, days=14)
+            skills = match_skills(user_text=user_text, limit=2)
+        except Exception:
+            return reply_text
+        bits = [f"🌱 {stage.badge_vi()}"]
+        if stage.empty:
+            bits.append("Nhật ký máy còn trống — mình chưa có kỷ niệm trên máy này.")
+        elif digest and "còn trống" not in digest:
+            first = digest.splitlines()[0].lstrip("- ").strip()
+            if first:
+                bits.append(f"Nhật ký: {first}")
+        if skills:
+            bits.append("Kỹ năng máy này: " + skills[0].suggest)
+        elif stage.ask_more:
+            bits.append("Bạn có hay gặp tình trạng này trên máy này không?")
+        extra = " ".join(bits)
+        if extra in (reply_text or ""):
+            return reply_text
+        return f"{reply_text}\n\n{extra}"
 
     def _extract_actions_from_text(self, text: str) -> List[CopilotAction]:
         """Tự động trích xuất các nút hành động phù hợp từ nội dung câu trả lời."""

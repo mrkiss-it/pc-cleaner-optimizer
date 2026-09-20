@@ -190,6 +190,9 @@ class BackgroundScheduler(QObject):
         # 6. Laptop thermal warning (cached WMI / nvidia-smi / psutil — never fake)
         self._maybe_emit_thermal_warning(now, config)
 
+        # 7. Companion diary snapshots + evening sổ tay (local, optional LLM)
+        self._maybe_companion_tick(now, config, wifi_snap, ping)
+
     def run_scheduled_clean(self):
         """
         Dọn dẹp định kỳ theo lịch
@@ -210,6 +213,11 @@ class BackgroundScheduler(QObject):
 
         # Lưu lịch sử
         self.config_manager.add_history(junk_mb, ram_mb, trigger_type="auto_periodic")
+        try:
+            from core.companion import observe_clean
+            observe_clean(junk_mb, ram_mb=ram_mb, config_manager=self.config_manager, source="scheduler")
+        except Exception:
+            pass
 
         # Tự động tối ưu mạng định kỳ (Flush DNS & ARP) nếu bật
         if config.get("auto_network_optimize_enabled", True):
@@ -236,6 +244,16 @@ class BackgroundScheduler(QObject):
         freed_mb = ram_res.get("freed_mb", 0.0)
         
         self.config_manager.add_history(0.0, freed_mb, trigger_type="ram_threshold")
+        try:
+            from core.companion import observe_ram_optimized
+            observe_ram_optimized(
+                freed_mb,
+                ram_percent=ram_res.get("percent_before"),
+                config_manager=self.config_manager,
+                source="scheduler",
+            )
+        except Exception:
+            pass
 
         self.ram_optimized.emit({
             "type": "threshold",
@@ -565,9 +583,64 @@ class BackgroundScheduler(QObject):
             except Exception:
                 return
             self.thermal_warning.emit(payload)
+            try:
+                from core.companion import record_app_event
+                celsius = payload.get("hottest_celsius")
+                if celsius is not None:
+                    record_app_event(
+                        "thermal_warn",
+                        f"Nhiệt đo được {float(celsius):.0f}°C (ngưỡng {int(payload.get('warn_celsius') or 90)}°C)",
+                        metrics={"thermal_c": float(celsius)},
+                        source="scheduler",
+                        config_manager=self.config_manager,
+                    )
+            except Exception:
+                pass
 
         try:
             from core.thermal_monitor import ensure_snapshot_async
             ensure_snapshot_async(_done, force_refresh=False, warn_celsius=warn)
+        except Exception:
+            pass
+
+    def _maybe_companion_tick(self, now, config, wifi_snap, ping):
+        """Light diary snapshots + evening reflection (LLM off the UI thread)."""
+        cfg = config if isinstance(config, dict) else {}
+        if not cfg.get("companion_enabled", True):
+            return
+        try:
+            from core.companion import observe_snapshot, maybe_run_reflection, record_session_day
+            ram_pct = None
+            try:
+                ram_info = SystemMonitor.get_ram_info()
+                ram_pct = float(ram_info.get("percent"))
+            except Exception:
+                ram_pct = None
+            observe_snapshot(
+                ram_percent=ram_pct,
+                ram_threshold=float(cfg.get("ram_threshold_percent", 80) or 80),
+                wifi_unstable=bool((wifi_snap or {}).get("unstable")),
+                ping_ms=float(ping) if ping is not None else None,
+                ping_threshold=float(cfg.get("auto_network_ping_threshold_ms", 180) or 180),
+                now=now,
+                config_manager=self.config_manager,
+            )
+            record_session_day(now=now, config_manager=self.config_manager)
+            if getattr(self, "_companion_reflect_busy", False):
+                return
+            import threading
+            self._companion_reflect_busy = True
+            cfg_mgr = self.config_manager
+            stamp = now
+
+            def _reflect():
+                try:
+                    maybe_run_reflection(cfg_mgr, force=False, now=stamp)
+                except Exception:
+                    pass
+                finally:
+                    self._companion_reflect_busy = False
+
+            threading.Thread(target=_reflect, daemon=True, name="CompanionReflect").start()
         except Exception:
             pass
