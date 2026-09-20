@@ -1881,7 +1881,7 @@ try:
         _json.dump({}, f)
     eula_ui_cfg = _CMEula(config_path=tmp_eula_cfg2)
     dlg_first = EulaDialog(eula_ui_cfg, require_accept=True)
-    assert dlg_first.chk_agree.isVisible() is True
+    assert dlg_first.chk_agree.isHidden() is False
     assert dlg_first.btn_accept is not None and dlg_first.btn_accept.isEnabled() is False
     assert "Từ chối" in dlg_first.btn_decline.text()
     dlg_first.chk_agree.setChecked(True)
@@ -1891,7 +1891,7 @@ try:
     dlg_first.close()
 
     dlg_view = EulaDialog(eula_ui_cfg, require_accept=False)
-    assert dlg_view.chk_agree.isVisible() is False
+    assert dlg_view.chk_agree.isHidden() is True
     assert dlg_view.btn_accept is None
     assert hasattr(dlg_view, "btn_close")
     dlg_view.close()
