@@ -45,6 +45,8 @@ from core.wifi_recovery import (
     WifiRecovery,
     WIFI_WEAK_LINK_MBPS,
     STABILITY_WINDOW_SEC,
+    SUCCESS_TOAST_COOLDOWN_SEC,
+    MIN_OUTAGE_RETOAST_SEC,
     parse_link_mbps,
     parse_wlan_event_ids,
     count_wlan_auth_flaps,
@@ -56,6 +58,8 @@ from core.wifi_recovery import (
     resolve_overlay_wifi_status,
     overlay_word_for_cause,
     is_genuine_link_loss,
+    should_show_recovery_toast,
+    RecoveryToastGate,
 )
 from core.system_monitor import SystemMonitor, format_ping_overlay_text
 from core.network_optimizer import NetworkOptimizer
@@ -627,6 +631,129 @@ def test_config_wifi_defaults():
     assert int(DEFAULT_CONFIG.get("auto_network_wifi_fix_cooldown_seconds", 0)) >= 60
     assert DEFAULT_CONFIG.get("auto_network_ping_fix_enabled") is True
     assert STABILITY_WINDOW_SEC >= 8
+    assert int(DEFAULT_CONFIG.get("auto_network_recovery_success_toast_cooldown_seconds", 0)) >= 60
+    assert int(DEFAULT_CONFIG.get("auto_network_recovery_min_outage_retoast_seconds", 0)) >= 30
+    assert SUCCESS_TOAST_COOLDOWN_SEC >= 60
+    assert MIN_OUTAGE_RETOAST_SEC >= 30
+
+
+def _success_info(cause="adapter_down", kind="wifi_drop", outage=12.0):
+    return {
+        "type": kind,
+        "recovered": True,
+        "cause": cause,
+        "outage_seconds": outage,
+        "message": (
+            f"Nguyên nhân: card Wi-Fi tắt / không Up. "
+            f"Đã sửa: flush DNS, làm mới ARP/NetBIOS. Ping đo được lại: 88 ms."
+        ),
+    }
+
+
+def test_should_show_recovery_toast_rules():
+    kw = dict(
+        recovered=True,
+        kind="wifi_drop",
+        cause="adapter_down",
+        last_success_kind="wifi_drop",
+        last_success_cause="adapter_down",
+        success_cooldown_sec=180,
+        min_outage_retoast_sec=60,
+    )
+    assert should_show_recovery_toast(
+        recovered=True, kind="wifi_drop", cause="adapter_down", now_ts=10,
+    ) is True, "First success toast must show"
+    assert should_show_recovery_toast(now_ts=40, last_success_ts=10, **kw) is False, (
+        "Repeat success within cooldown must be suppressed"
+    )
+    assert should_show_recovery_toast(now_ts=200, last_success_ts=10, **kw) is True, (
+        "Success toast after cooldown must show again"
+    )
+    assert should_show_recovery_toast(
+        now_ts=40, last_success_ts=10, last_success_kind="wifi_drop",
+        last_success_cause="adapter_down", recovered=True, kind="wifi_drop",
+        cause="reconnect_loop", success_cooldown_sec=180, min_outage_retoast_sec=60,
+    ) is True, "Different cause must toast even during cooldown"
+    assert should_show_recovery_toast(
+        now_ts=40, last_success_ts=10, **kw,
+        saw_stable_since_success=True, outage_sec=90,
+    ) is True, "Sustained new outage after a stable window must toast"
+    assert should_show_recovery_toast(
+        now_ts=40, last_success_ts=10, **kw,
+        saw_stable_since_success=False, outage_sec=90,
+    ) is False, "Continuous flap (never stable) must not bypass cooldown"
+    assert should_show_recovery_toast(
+        recovered=False, kind="wifi_drop", cause="adapter_down", now_ts=20,
+        last_success_ts=10, needs_user_cta=True, cta_cooldown_sec=0,
+    ) is True, "Location / DNS CTA must not be throttled by default"
+    assert should_show_recovery_toast(
+        recovered=False, kind="wifi_drop", cause="adapter_down", now_ts=20,
+        last_failure_ts=10, failure_cooldown_sec=45,
+    ) is False, "Generic failure toast is lightly throttled"
+    assert should_show_recovery_toast(
+        recovered=False, kind="wifi_drop", cause="adapter_down", now_ts=60,
+        last_failure_ts=10, failure_cooldown_sec=45,
+    ) is True
+    assert should_show_recovery_toast(
+        recovered=True, kind="ping_threshold", cause="", now_ts=20, last_success_ts=10,
+    ) is True, "Non-recovery network toasts are unchanged"
+
+
+def test_recovery_toast_gate_mt7921_flap_spam():
+    """Simulate MediaTek flap: recovered=True every 15s → one success toast per window."""
+    gate = RecoveryToastGate()
+    shown = []
+    t = 0.0
+    for i in range(12):
+        t += 15.0
+        gate.observe_wifi(True, t)
+        info = _success_info(outage=15.0)
+        shown.append(gate.allow(info, now_ts=t, success_cooldown_sec=180, min_outage_retoast_sec=60))
+    assert shown[0] is True
+    assert shown[1:] == [False] * 11, f"Only the first flap success should toast, got {shown}"
+
+    t += 180.0
+    gate.observe_wifi(True, t)
+    assert gate.allow(_success_info(), now_ts=t, success_cooldown_sec=180) is True
+
+    # Stable, then a long distinct outage → toast even inside a fresh cooldown
+    t += 5.0
+    gate.observe_wifi(False, t)
+    t += 5.0
+    gate.observe_wifi(True, t)
+    t += 70.0
+    info = _success_info(outage=70.0)
+    assert gate.allow(info, now_ts=t, success_cooldown_sec=180, min_outage_retoast_sec=60) is True
+
+    ping_gate = RecoveryToastGate()
+    ping_ok = {
+        "type": "ping_missing",
+        "recovered": True,
+        "cause": "dns_fail",
+        "outage_seconds": 8,
+    }
+    assert ping_gate.allow(ping_ok, now_ts=1.0) is True
+    assert ping_gate.allow(ping_ok, now_ts=20.0) is False
+    cta = {
+        "type": "wifi_drop",
+        "recovered": False,
+        "cause": "adapter_down",
+        "needs_location_unlock": True,
+    }
+    assert ping_gate.allow(cta, now_ts=21.0) is True
+    assert ping_gate.allow(cta, now_ts=22.0) is True  # CTA unthrottled
+    fail = {
+        "type": "wifi_drop",
+        "recovered": False,
+        "cause": "adapter_down",
+    }
+    assert ping_gate.allow(fail, now_ts=23.0) is True
+    assert ping_gate.allow(fail, now_ts=24.0) is False
+
+
+def test_scheduler_has_toast_gate():
+    assert "outage_seconds" in BackgroundScheduler.run_auto_wifi_drop_fix.__code__.co_varnames
+    assert "outage_seconds" in BackgroundScheduler.run_auto_missing_ping_fix.__code__.co_varnames
 
 
 def _install_fake_location_registry(values):
@@ -849,6 +976,9 @@ if __name__ == "__main__":
         test_missing_ping_routes_to_wifi,
         test_connected_weak_skips_ssid_reconnect,
         test_config_wifi_defaults,
+        test_should_show_recovery_toast_rules,
+        test_recovery_toast_gate_mt7921_flap_spam,
+        test_scheduler_has_toast_gate,
         test_location_gpo_detection_mocked_registry,
         test_repair_does_not_auto_unlock_location_gpo,
         test_reconnect_reports_location_blocked_without_unlock,

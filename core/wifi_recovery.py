@@ -1263,6 +1263,213 @@ class WifiRecovery:
         return True
 
 
+# Auto-repair may succeed every ~12–15s on flaky NICs (MT7921). Throttle the
+# "đã ổn định" toast only — repairs themselves stay on the existing cooldown.
+SUCCESS_TOAST_COOLDOWN_SEC = 180.0
+MIN_OUTAGE_RETOAST_SEC = 60.0
+FAILURE_TOAST_COOLDOWN_SEC = 45.0
+CTA_TOAST_COOLDOWN_SEC = 0.0  # Location / DNS CTAs: no throttle by default
+RECOVERY_TOAST_KINDS = frozenset({"wifi_drop", "ping_missing"})
+
+
+def should_show_recovery_toast(
+    recovered: bool,
+    kind: str,
+    cause: str,
+    now_ts: float,
+    *,
+    last_success_ts: float = 0.0,
+    last_success_kind: str = "",
+    last_success_cause: str = "",
+    last_failure_ts: float = 0.0,
+    last_cta_ts: float = 0.0,
+    outage_sec: float = 0.0,
+    saw_stable_since_success: bool = False,
+    needs_user_cta: bool = False,
+    success_cooldown_sec: float = SUCCESS_TOAST_COOLDOWN_SEC,
+    min_outage_retoast_sec: float = MIN_OUTAGE_RETOAST_SEC,
+    failure_cooldown_sec: float = FAILURE_TOAST_COOLDOWN_SEC,
+    cta_cooldown_sec: float = CTA_TOAST_COOLDOWN_SEC,
+) -> bool:
+    """
+    Decide whether an auto Wi-Fi / missing-ping repair should raise a HUD toast.
+
+    Success ("đã ổn định" / "Ping đã đo được lại"): at most once per cooldown
+    unless the cause/kind changed, or the link was stable then down for a
+    sustained outage. Failures needing Location/DNS CTAs stay unthrottled
+    (cta_cooldown_sec=0). Other failures get a short cooldown.
+    """
+    token = str(kind or "")
+    if token not in RECOVERY_TOAST_KINDS:
+        return True
+    now_ts = float(now_ts)
+    if not recovered:
+        if needs_user_cta:
+            if float(cta_cooldown_sec) <= 0:
+                return True
+            return float(last_cta_ts) <= 0 or (now_ts - float(last_cta_ts)) >= float(cta_cooldown_sec)
+        return float(last_failure_ts) <= 0 or (now_ts - float(last_failure_ts)) >= float(failure_cooldown_sec)
+    if float(last_success_ts) <= 0:
+        return True
+    elapsed = now_ts - float(last_success_ts)
+    if elapsed >= float(success_cooldown_sec):
+        return True
+    if str(cause or "") != str(last_success_cause or "") or token != str(last_success_kind or ""):
+        return True
+    if saw_stable_since_success and float(outage_sec) >= float(min_outage_retoast_sec):
+        return True
+    return False
+
+
+class RecoveryToastGate:
+    """Tracks link flaps vs last toast so repeated recovered=True does not spam."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.last_success_ts = 0.0
+        self.last_success_kind = ""
+        self.last_success_cause = ""
+        self.last_failure_ts = 0.0
+        self.last_cta_ts = 0.0
+        self._wifi_outage_start = 0.0
+        self._ping_outage_start = 0.0
+        self.saw_stable_since_wifi_success = False
+        self.saw_ok_since_ping_success = False
+
+    def observe_wifi(self, unstable: bool, now_ts: float) -> None:
+        now_ts = float(now_ts)
+        if unstable:
+            if self._wifi_outage_start <= 0:
+                self._wifi_outage_start = now_ts
+            return
+        if self.last_success_ts > 0:
+            self.saw_stable_since_wifi_success = True
+        self._wifi_outage_start = 0.0
+
+    def observe_ping(self, ping_ok: bool, now_ts: float) -> None:
+        now_ts = float(now_ts)
+        if not ping_ok:
+            if self._ping_outage_start <= 0:
+                self._ping_outage_start = now_ts
+            return
+        if self.last_success_ts > 0 and self.last_success_kind == "ping_missing":
+            self.saw_ok_since_ping_success = True
+        self._ping_outage_start = 0.0
+
+    def wifi_outage_sec(self, now_ts: float) -> float:
+        if self._wifi_outage_start <= 0:
+            return 0.0
+        return max(0.0, float(now_ts) - self._wifi_outage_start)
+
+    def ping_outage_sec(self, now_ts: float) -> float:
+        if self._ping_outage_start <= 0:
+            return 0.0
+        return max(0.0, float(now_ts) - self._ping_outage_start)
+
+    def allow(
+        self,
+        info: Optional[Dict[str, Any]],
+        now_ts: float,
+        *,
+        success_cooldown_sec: float = SUCCESS_TOAST_COOLDOWN_SEC,
+        min_outage_retoast_sec: float = MIN_OUTAGE_RETOAST_SEC,
+        failure_cooldown_sec: float = FAILURE_TOAST_COOLDOWN_SEC,
+        cta_cooldown_sec: float = CTA_TOAST_COOLDOWN_SEC,
+    ) -> bool:
+        payload = info if isinstance(info, dict) else {}
+        kind = str(payload.get("type") or "")
+        if kind not in RECOVERY_TOAST_KINDS:
+            return True
+        recovered = bool(payload.get("recovered"))
+        cause = str(payload.get("cause") or "")
+        needs_cta = (not recovered) and bool(
+            payload.get("needs_location_unlock")
+            or payload.get("location_gpo_locked")
+            or payload.get("needs_dns_confirm")
+        )
+        raw_outage = payload.get("outage_seconds")
+        if kind == "wifi_drop":
+            outage_sec = (
+                float(raw_outage) if raw_outage is not None else self.wifi_outage_sec(now_ts)
+            )
+            saw_stable = self.saw_stable_since_wifi_success
+        else:
+            outage_sec = (
+                float(raw_outage) if raw_outage is not None else self.ping_outage_sec(now_ts)
+            )
+            saw_stable = self.saw_ok_since_ping_success
+        show = should_show_recovery_toast(
+            recovered=recovered,
+            kind=kind,
+            cause=cause,
+            now_ts=now_ts,
+            last_success_ts=self.last_success_ts,
+            last_success_kind=self.last_success_kind,
+            last_success_cause=self.last_success_cause,
+            last_failure_ts=self.last_failure_ts,
+            last_cta_ts=self.last_cta_ts,
+            outage_sec=outage_sec,
+            saw_stable_since_success=saw_stable,
+            needs_user_cta=needs_cta,
+            success_cooldown_sec=success_cooldown_sec,
+            min_outage_retoast_sec=min_outage_retoast_sec,
+            failure_cooldown_sec=failure_cooldown_sec,
+            cta_cooldown_sec=cta_cooldown_sec,
+        )
+        if show:
+            if recovered:
+                self.last_success_ts = float(now_ts)
+                self.last_success_kind = kind
+                self.last_success_cause = cause
+                if kind == "wifi_drop":
+                    self.saw_stable_since_wifi_success = False
+                else:
+                    self.saw_ok_since_ping_success = False
+            elif needs_cta:
+                self.last_cta_ts = float(now_ts)
+            else:
+                self.last_failure_ts = float(now_ts)
+        return show
+
+    def allow_from_config(
+        self,
+        info: Optional[Dict[str, Any]],
+        now_ts: float,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        cfg = config if isinstance(config, dict) else {}
+        return self.allow(
+            info,
+            now_ts,
+            success_cooldown_sec=float(
+                cfg.get(
+                    "auto_network_recovery_success_toast_cooldown_seconds",
+                    SUCCESS_TOAST_COOLDOWN_SEC,
+                )
+            ),
+            min_outage_retoast_sec=float(
+                cfg.get(
+                    "auto_network_recovery_min_outage_retoast_seconds",
+                    MIN_OUTAGE_RETOAST_SEC,
+                )
+            ),
+            failure_cooldown_sec=float(
+                cfg.get(
+                    "auto_network_recovery_failure_toast_cooldown_seconds",
+                    FAILURE_TOAST_COOLDOWN_SEC,
+                )
+            ),
+            cta_cooldown_sec=float(
+                cfg.get(
+                    "auto_network_recovery_cta_toast_cooldown_seconds",
+                    CTA_TOAST_COOLDOWN_SEC,
+                )
+            ),
+        )
+
+
 def _datetime_str() -> str:
     from datetime import datetime
     return datetime.now().strftime("%d/%m/%Y %H:%M:%S")

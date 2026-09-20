@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 import ctypes
 from PyQt5.QtCore import Qt, QSharedMemory
 from PyQt5.QtWidgets import QApplication
@@ -311,6 +312,16 @@ def main():
                 level = "info"
                 action_text = "📶 Xem Mạng"
                 action_cb = main_win.open_network_dialog
+            if kind in ("wifi_drop", "ping_missing"):
+                try:
+                    if not scheduler.recovery_toast_gate.allow_from_config(
+                        info,
+                        now_ts=time.time(),
+                        config=config_mgr.config,
+                    ):
+                        return
+                except Exception:
+                    pass
             tray_mgr.notify(
                 title,
                 msg,
