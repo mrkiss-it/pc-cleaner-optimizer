@@ -688,12 +688,15 @@ assert ok_sc == True, "Tao shortcut bang WScript.Shell/PowerShell phai thanh con
 assert os.path.exists(mock_lnk), "File .lnk phai ton tai tren o dia"
 
 # Test dang ky uninstaller vao Registry
+mock_uninst = os.path.join(mock_temp_dir, "uninstall.exe")
+with open(mock_uninst, "w") as f:
+    f.write("mock uninstaller")
 ok_reg = register_windows_uninstaller(
     install_dir=mock_temp_dir,
     version="9.9.9",
     publisher="PC Cleaner Team",
     display_name="PC Auto Cleaner (Test Mock)",
-    uninstaller_path=mock_exe,
+    uninstaller_path=mock_uninst,
     icon_path=mock_exe
 )
 assert ok_reg == True, "Dang ky Uninstaller vao Windows Registry phai thanh cong"
@@ -727,6 +730,9 @@ wizard.close()
 
 standalone_uninst = StandaloneUninstaller()
 assert standalone_uninst is not None, "Standalone UninstallerDialog phai khoi tao thanh cong"
+assert standalone_uninst.chk_remove_data.isChecked() is False, "Mac dinh khong xoa %APPDATA%\\PCAutoCleaner"
+assert "Xóa cả cấu hình" in standalone_uninst.chk_remove_data.text()
+assert "dữ liệu cá nhân" in standalone_uninst.chk_remove_data.text()
 standalone_uninst.close()
 print(" [PASS] 38. Setup Wizard UI: SetupWizard (4-step Fluent Dark) & Standalone Uninstaller khoi tao hoan hao!")
 
@@ -2163,7 +2169,22 @@ assert "Xin%20phep%20thuong%20mai%20PCAutoCleaner" in (win.btn_open_commercial.t
 assert hasattr(_tray, "show_eula_requested")
 print(" [PASS] 48. Proprietary LICENSE + EULA first-run persist (AppData/config) & Settings/header link!")
 
-print("\n>>> TAT CA 48 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST, AI COPILOT/AUTO-PILOT APPLY, ASYNC GEMINI, SECRET STORAGE, MISSING-PING AUTO-FIX, WIFI DROP RECOVERY, GITHUB UPDATE CHECK & EULA/PROPRIETARY LICENSE DEU THANH CONG 100%! <<<")
+# 49. In-app self-uninstall entry (Settings) + wizard keep-config default
+from installer.uninstall_wizard import SelfUninstallConfirmDialog as _SelfUninstConfirm
+assert hasattr(win, "btn_self_uninstall"), "MainWindow phai co nut Gỡ cài đặt trong Settings"
+assert hasattr(win, "prompt_self_uninstall"), "MainWindow phai co prompt_self_uninstall"
+assert "Gỡ cài đặt" in win.btn_self_uninstall.text()
+assert win.btn_uninstaller is not win.btn_self_uninstall, "Nut Gỡ Phần Mềm (dashboard) khac nut Gỡ cài đặt (Settings)"
+_self_confirm = _SelfUninstConfirm(parent=win)
+assert _self_confirm.chk_remove_data.isChecked() is False
+assert "Xóa cả cấu hình / dữ liệu cá nhân" in _self_confirm.chk_remove_data.text()
+_self_confirm.close()
+_setup_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "installer", "setup_wizard.py"), encoding="utf-8").read()
+assert "uninstaller_path = exe_path" not in _setup_src
+assert "resolve_uninstaller_path" in _setup_src
+print(" [PASS] 49. In-app Gỡ cài đặt (Settings) + confirm keep-config + Setup UninstallString=uninstall.exe!")
+
+print("\n>>> TAT CA 49 BAI KIEM TRA TOAN DIEN HE THONG, REGISTRY, SSD TRIM, HARDWARE, AI ADVISOR, SERVICES, CONTEXT MENU, UNINSTALLER, WINSXS, SETUP WIZARD, PREDICTIVE AI, SETTINGS PERSISTENCE, HUD TOAST, AI COPILOT/AUTO-PILOT APPLY, ASYNC GEMINI, SECRET STORAGE, MISSING-PING AUTO-FIX, WIFI DROP RECOVERY, GITHUB UPDATE CHECK, EULA/PROPRIETARY LICENSE & SELF-UNINSTALL DEU THANH CONG 100%! <<<")
 
 
 

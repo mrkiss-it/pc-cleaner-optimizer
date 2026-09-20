@@ -106,8 +106,38 @@ def create_windows_shortcut(target_exe: str, lnk_path: str, working_dir: str, ic
             return False
 
 
+UNINSTALL_EXE_NAMES = ("uninstall.exe", "Uninstall.exe")
+UNINSTALL_SHORTCUT_NAME = "PC Auto Cleaner – Gỡ cài đặt.lnk"
+MAIN_EXE_NAME = "PCAutoCleaner.exe"
+
+
+def resolve_uninstaller_path(install_dir: str) -> str:
+    """Đường dẫn uninstall.exe trong thư mục cài. Rỗng nếu thiếu — không bao giờ trả về exe chính."""
+    if not install_dir:
+        return ""
+    for name in UNINSTALL_EXE_NAMES:
+        p = os.path.join(install_dir, name)
+        if os.path.isfile(p):
+            return os.path.abspath(p)
+    return ""
+
+
+def format_uninstall_command(uninstaller_path: str, quiet: bool = False) -> str:
+    """UninstallString / QuietUninstallString: luôn quote đường dẫn, không trỏ vào PCAutoCleaner.exe."""
+    quoted = f'"{os.path.abspath(uninstaller_path)}"'
+    if quiet:
+        return f"{quoted} --quiet"
+    return quoted
+
+
 def register_windows_uninstaller(install_dir: str, version: str, publisher: str, display_name: str, uninstaller_path: str, icon_path: str):
     """Đăng ký thông tin vào Windows Registry để hiển thị chuẩn trong Settings > Apps > Installed apps."""
+    if not uninstaller_path or not os.path.isfile(uninstaller_path):
+        print("Lỗi đăng ký Registry Uninstaller: thiếu uninstall.exe")
+        return False
+    if os.path.basename(uninstaller_path).lower() == MAIN_EXE_NAME.lower():
+        print("Lỗi đăng ký Registry Uninstaller: UninstallString không được trỏ vào exe chính.")
+        return False
     reg_key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\PCAutoCleaner"
     try:
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, reg_key_path) as k:
@@ -115,9 +145,9 @@ def register_windows_uninstaller(install_dir: str, version: str, publisher: str,
             winreg.SetValueEx(k, "DisplayVersion", 0, winreg.REG_SZ, version)
             winreg.SetValueEx(k, "Publisher", 0, winreg.REG_SZ, publisher)
             winreg.SetValueEx(k, "InstallLocation", 0, winreg.REG_SZ, install_dir)
-            winreg.SetValueEx(k, "DisplayIcon", 0, winreg.REG_SZ, icon_path or os.path.join(install_dir, "PCAutoCleaner.exe"))
-            winreg.SetValueEx(k, "UninstallString", 0, winreg.REG_SZ, f'"{uninstaller_path}"')
-            winreg.SetValueEx(k, "QuietUninstallString", 0, winreg.REG_SZ, f'"{uninstaller_path}"')
+            winreg.SetValueEx(k, "DisplayIcon", 0, winreg.REG_SZ, icon_path or os.path.join(install_dir, MAIN_EXE_NAME))
+            winreg.SetValueEx(k, "UninstallString", 0, winreg.REG_SZ, format_uninstall_command(uninstaller_path, quiet=False))
+            winreg.SetValueEx(k, "QuietUninstallString", 0, winreg.REG_SZ, format_uninstall_command(uninstaller_path, quiet=True))
             winreg.SetValueEx(k, "NoModify", 0, winreg.REG_DWORD, 1)
             winreg.SetValueEx(k, "NoRepair", 0, winreg.REG_DWORD, 1)
             # Ước tính dung lượng KB
@@ -258,37 +288,48 @@ class InstallWorker(QThread):
             if not os.path.exists(ico_path):
                 ico_path = exe_path
 
-            # Desktop Shortcut
+            # Desktop Shortcut (chỉ lối tắt mở app — không gắn uninstall.exe)
             if self.create_desktop:
                 desk_dir = os.path.join(os.path.expanduser("~"), "Desktop")
                 lnk = os.path.join(desk_dir, "PC Auto Cleaner.lnk")
                 create_windows_shortcut(exe_path, lnk, self.target_dir, ico_path, app_meta.APP_NAME)
 
-            # Start Menu Shortcut
+            uninstaller_path = resolve_uninstaller_path(self.target_dir)
+
+            # Start Menu: lối tắt app + lối tắt gỡ cài đặt (chỉ khi có uninstall.exe)
             if self.create_start_menu:
                 sm_dir = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs")
                 lnk = os.path.join(sm_dir, "PC Auto Cleaner.lnk")
                 create_windows_shortcut(exe_path, lnk, self.target_dir, ico_path, app_meta.APP_NAME)
+                if uninstaller_path:
+                    un_lnk = os.path.join(sm_dir, UNINSTALL_SHORTCUT_NAME)
+                    create_windows_shortcut(
+                        uninstaller_path,
+                        un_lnk,
+                        self.target_dir,
+                        ico_path,
+                        f"Gỡ cài đặt {app_meta.APP_NAME}",
+                    )
 
             # Autostart
             if self.autostart:
                 set_autostart_registry(exe_path, enable=True)
 
             self.progress_signal.emit(90, "Đang đăng ký vào Windows Settings & Control Panel...")
-            # Kiểm tra uninstaller
-            uninstaller_path = os.path.join(self.target_dir, "uninstall.exe")
-            if not os.path.exists(uninstaller_path):
-                # Sao chép uninstall_wizard.py nếu có
-                uninstaller_path = exe_path
-
-            register_windows_uninstaller(
-                install_dir=self.target_dir,
-                version=app_meta.APP_VERSION,
-                publisher=app_meta.APP_PUBLISHER,
-                display_name=app_meta.APP_NAME,
-                uninstaller_path=uninstaller_path,
-                icon_path=ico_path,
-            )
+            if uninstaller_path:
+                register_windows_uninstaller(
+                    install_dir=self.target_dir,
+                    version=app_meta.APP_VERSION,
+                    publisher=app_meta.APP_PUBLISHER,
+                    display_name=app_meta.APP_NAME,
+                    uninstaller_path=uninstaller_path,
+                    icon_path=ico_path,
+                )
+            else:
+                print(
+                    "Cảnh báo: không có uninstall.exe trong thư mục cài — "
+                    "bỏ qua UninstallString (tránh trỏ nhầm vào PCAutoCleaner.exe)."
+                )
 
             self.progress_signal.emit(100, "Cài đặt hoàn tất thành công!")
             self.finished_signal.emit(True, "Cài đặt thành công!")
@@ -723,7 +764,10 @@ class SetupWizard(QDialog):
 
         msg1 = QLabel("• Ứng dụng đã được cài đặt vào thư mục đích.")
         msg2 = QLabel("• Biểu tượng lối tắt đã sẵn sàng trên màn hình Desktop và Start Menu.")
-        msg3 = QLabel("• Bạn có thể gỡ cài đặt bất kỳ lúc nào từ Windows Settings > Apps.")
+        msg3 = QLabel(
+            "• Bạn có thể gỡ cài đặt từ Windows Settings → Ứng dụng, "
+            "Start Menu (Gỡ cài đặt), hoặc trong ứng dụng (tab Tự Động)."
+        )
         for m in [msg1, msg2, msg3]:
             m.setStyleSheet(f"color: {_TEXT_MUTED}; font-size: 11px; line-height: 1.4;")
             c_lay.addWidget(m)

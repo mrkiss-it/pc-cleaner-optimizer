@@ -80,12 +80,18 @@ def build():
         f"--icon={ico_path}",
         f"--distpath={app_dist}",
         f"--workpath={os.path.join(base_dir, 'build', 'uninstaller')}",
+        f"--paths={base_dir}",
+        "--hidden-import=app_meta",
+        f"--add-data={os.path.join(base_dir, 'app_meta.py')};.",
         "--name=uninstall",
         uninst_script
     ]
     res = subprocess.run(cmd_uninst, cwd=base_dir)
-    if res.returncode != 0:
-        print("[!] Cảnh báo: PyInstaller uninstaller thất bại, sao chép script dự phòng.")
+    uninst_exe = os.path.join(app_dist, "uninstall.exe")
+    if res.returncode != 0 or not os.path.isfile(uninst_exe):
+        print("[ERROR] Không tạo được uninstall.exe — Setup sẽ không đăng ký được Uninstall.")
+        return False
+    print(f"[+] Đã tạo {uninst_exe}")
 
     # 3. Nén dist/PCAutoCleaner thành app_bundle.zip
     print("\n[2/3] Đóng gói toàn bộ ứng dụng thành app_bundle.zip...")

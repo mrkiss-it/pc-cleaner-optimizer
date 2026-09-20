@@ -76,6 +76,7 @@ def build():
         "--hidden-import=ui.toast_notification",
         "--hidden-import=ui.ai_copilot_widget",
         "--hidden-import=ui.eula_dialog",
+        "--hidden-import=installer.uninstall_wizard",
         main_script
     ]
 

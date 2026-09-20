@@ -1113,6 +1113,59 @@ class MainWindow(QMainWindow):
         layout_eula.addLayout(eula_btns)
         layout.addWidget(card_eula)
 
+        # Card: Gỡ cài đặt ứng dụng này (không nhầm với "Gỡ Phần Mềm" trên dashboard)
+        card_self_uninst = QFrame()
+        card_self_uninst.setObjectName("SettingCard")
+        card_self_uninst.setStyleSheet(card_style)
+        layout_self_uninst = QVBoxLayout(card_self_uninst)
+        layout_self_uninst.setContentsMargins(18, 16, 18, 16)
+        layout_self_uninst.setSpacing(10)
+
+        lbl_self_uninst_title = QLabel("🗑️ Gỡ cài đặt ứng dụng")
+        lbl_self_uninst_title.setStyleSheet("font-weight: bold; font-size: 14px; color: #f85149;")
+        lbl_self_uninst_desc = QLabel(
+            "Gỡ PC Auto Cleaner & Optimizer khỏi máy tính: xóa tệp chương trình, "
+            "lối tắt Desktop / Start Menu, đăng ký Windows Settings → Ứng dụng "
+            "và mục khởi động cùng Windows.\n"
+            "Cấu hình trong %APPDATA%\\PCAutoCleaner được giữ lại trừ khi bạn chọn xóa "
+            "trên hộp thoại xác nhận."
+        )
+        lbl_self_uninst_desc.setWordWrap(True)
+        lbl_self_uninst_desc.setStyleSheet("color: #64748b; font-size: 11px;")
+
+        self.btn_self_uninstall = QPushButton("Gỡ cài đặt")
+        self.btn_self_uninstall.setCursor(Qt.PointingHandCursor)
+        self.btn_self_uninstall.setToolTip(
+            "Mở hộp thoại xác nhận, thoát ứng dụng rồi chạy trình gỡ cài đặt Windows"
+        )
+        self.btn_self_uninstall.setStyleSheet("""
+            QPushButton {
+                background-color: #b91c1c;
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 10px 20px;
+                border-radius: 8px;
+                border: 1px solid #dc2626;
+            }
+            QPushButton:hover {
+                background-color: #dc2626;
+            }
+            QPushButton:pressed {
+                background-color: #991b1b;
+            }
+        """)
+        self.btn_self_uninstall.clicked.connect(self.prompt_self_uninstall)
+
+        self_uninst_btns = QHBoxLayout()
+        self_uninst_btns.addWidget(self.btn_self_uninstall)
+        self_uninst_btns.addStretch()
+
+        layout_self_uninst.addWidget(lbl_self_uninst_title)
+        layout_self_uninst.addWidget(lbl_self_uninst_desc)
+        layout_self_uninst.addLayout(self_uninst_btns)
+        layout.addWidget(card_self_uninst)
+
         layout.addStretch()
         scroll.setWidget(scroll_content)
         outer_layout.addWidget(scroll, 1)
@@ -1710,9 +1763,48 @@ class MainWindow(QMainWindow):
         dialog.exec_()
 
     def open_uninstaller_dialog(self):
-        """Mở hộp thoại Quản lý Gỡ Phần Mềm & Thợ Săn Rác Còn Sót (v3.5 Pro)."""
+        """Quản lý gỡ phần mềm khác / bloatware — không phải gỡ chính PC Auto Cleaner."""
         dialog = UninstallerDialog(self)
         dialog.exec_()
+
+    def prompt_self_uninstall(self):
+        """Xác nhận rồi khởi chạy uninstall.exe (cùng hệ thống Windows Settings → Ứng dụng)."""
+        from PyQt5.QtWidgets import QDialog
+        from installer.uninstall_wizard import (
+            SelfUninstallConfirmDialog,
+            find_uninstaller_path,
+            launch_uninstaller_process,
+        )
+
+        uninstaller = find_uninstaller_path()
+        if not uninstaller:
+            QMessageBox.warning(
+                self,
+                "Không tìm thấy trình gỡ cài đặt",
+                "Không tìm thấy uninstall.exe cạnh ứng dụng.\n\n"
+                "Hãy gỡ từ Windows Settings → Ứng dụng, hoặc cài lại bằng "
+                "PCAutoCleaner_Setup.exe để đăng ký trình gỡ cài đặt.",
+            )
+            return
+
+        dlg = SelfUninstallConfirmDialog(self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        ok, msg = launch_uninstaller_process(
+            uninstaller,
+            remove_user_data=bool(dlg.remove_user_data),
+            confirmed=True,
+            quiet=False,
+        )
+        if not ok:
+            QMessageBox.warning(self, "Không khởi chạy được trình gỡ cài đặt", msg)
+            return
+        QTimer.singleShot(400, self._quit_for_uninstall)
+
+    def _quit_for_uninstall(self):
+        """Thoát hẳn (không thu nhỏ khay) để uninstaller xóa tệp đang chạy."""
+        self._quit_for_installer()
 
     def open_winsxs_dialog(self):
         """Mở hộp thoại Dọn Dẹp Kho WinSxS & Windows Update Chuyên Sâu (v3.6 Pro)."""
