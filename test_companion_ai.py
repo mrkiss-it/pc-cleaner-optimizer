@@ -256,12 +256,66 @@ check("Pro" not in empty["stage"], "no Pro branding")
 check("&" in APP_NAME or "Optimizer" in APP_NAME, "APP_NAME used")
 print(" [PASS] prompt injection + honest empty states")
 
-from core.ai_copilot import AICopilotEngine
+from core.ai_copilot import AICopilotEngine, CloudAIBrain, OllamaAIBrain, TelemetryCollector
 eng = AICopilotEngine()
 hook_lines = eng.extra_prompt_context(user_prompt="wifi chậm")
 hook_blob = "\n".join(hook_lines)
 check("AI đồng hành" in hook_blob, "extra_context_provider default injects companion")
 check("Wi-Fi" in hook_blob or "wifi" in hook_blob.lower(), "Gemini/Ollama share diary via extra_context")
+
+class _AskCfg:
+    def __init__(self, **store):
+        self.store = dict(store)
+
+    def get(self, key, default=None):
+        return self.store.get(key, default)
+
+    def set(self, key, value):
+        self.store[key] = value
+
+captured = {}
+_tel = {
+    "ram": {"percent": 10.0, "used_gb": 1.0, "total_gb": 8.0},
+    "cpu": {"percent": 5.0, "count": 4},
+    "disk": {"free_gb": 50.0, "total_gb": 256.0},
+    "net": {},
+}
+
+def _fake_gemini(*_a, **kwargs):
+    captured["gemini"] = kwargs.get("extra_context")
+    return "ok-gemini"
+
+def _fake_ollama(*_a, **kwargs):
+    captured["ollama"] = kwargs.get("extra_context")
+    return "ok-ollama"
+
+captured.clear()
+eng_g = AICopilotEngine(config_manager=_AskCfg(
+    ai_copilot_provider="gemini",
+    ai_copilot_gemini_api_key="AIzaSy-test-key",
+))
+with patch.object(CloudAIBrain, "query_gemini", side_effect=_fake_gemini), \
+        patch.object(OllamaAIBrain, "query", side_effect=_fake_ollama), \
+        patch.object(TelemetryCollector, "collect", return_value=_tel):
+    msg_g = eng_g.ask("wifi chậm")
+blob_g = "\n".join(captured.get("gemini") or [])
+check(msg_g.source == "cloud_gemini", "gemini path used")
+check("AI đồng hành" in blob_g, "Gemini extra_context has companion")
+check("Wi-Fi" in blob_g or "wifi" in blob_g.lower(), "Gemini extra_context has diary")
+check(captured.get("ollama") is None, "successful Gemini does not call Ollama")
+
+captured.clear()
+eng_o = AICopilotEngine(config_manager=_AskCfg(ai_copilot_provider="ollama"))
+with patch.object(CloudAIBrain, "query_gemini", side_effect=_fake_gemini), \
+        patch.object(OllamaAIBrain, "query", side_effect=_fake_ollama), \
+        patch.object(TelemetryCollector, "collect", return_value=_tel):
+    msg_o = eng_o.ask("wifi chậm")
+blob_o = "\n".join(captured.get("ollama") or [])
+check(msg_o.source == "local_ollama", "ollama path used")
+check("AI đồng hành" in blob_o, "Ollama extra_context has companion")
+check("Wi-Fi" in blob_o or "wifi" in blob_o.lower(), "Ollama extra_context has diary")
+check(captured.get("gemini") is None, "ollama-only does not call Gemini")
+check(blob_g == blob_o, "Gemini and Ollama receive the same companion memory")
 print(" [PASS] extra_context hook shares companion memory")
 
 
