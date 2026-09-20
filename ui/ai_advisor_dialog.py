@@ -529,7 +529,8 @@ class AIAdvisorDialog(QDialog):
         self._build_ui()
         self._refresh()
 
-        # Auto-refresh mỗi 10 giây
+        # Auto-refresh UI mỗi 10 giây. WinSxS scans behind get_suggestions()
+        # are cached for WinSxSCleaner.CACHE_TTL (5 min); do not lower that TTL.
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(10_000)

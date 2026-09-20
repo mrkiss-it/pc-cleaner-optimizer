@@ -174,7 +174,9 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Timer cập nhật badge AI button mỗi 10 giây
+        # Timer cập nhật badge AI button mỗi 10 giây.
+        # WinSxS/update-cache scans inside get_suggestions() are throttled by
+        # WinSxSCleaner.CACHE_TTL — do not walk SoftwareDistribution on this cadence.
         self._ai_badge_timer = QTimer(self)
         self._ai_badge_timer.timeout.connect(self._update_ai_badge)
         self._ai_badge_timer.start(10_000)

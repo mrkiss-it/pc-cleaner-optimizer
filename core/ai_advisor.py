@@ -129,9 +129,19 @@ class AIAdvisor:
         self._suggestions_cache: List[Suggestion] = []
         self._cache_ts: float = 0.0
         self._cache_ttl: float = 8.0   # giây – refresh suggestions mỗi 8s
+        # WinSxS probe is expensive (filesystem walk + pnputil). feed_snapshot()
+        # and the AI badge (~10s) invalidate the 8s suggestion cache, so this
+        # rule keeps its own TTL — do not call get_summary() on the monitor cadence.
+        self._winsxs_probe_ts: float = 0.0
+        self._winsxs_probe_cache: List[Suggestion] = []
+        self._winsxs_probe_ttl: float = 300.0
 
     def invalidate_cache(self) -> None:
-        """Xóa cache gợi ý để tính toán lại ngay lập tức."""
+        """Xóa cache gợi ý để tính toán lại ngay lập tức.
+
+        Does not reset the WinSxS probe TTL — monitor snapshots / 10s badge
+        refresh must not re-walk SoftwareDistribution.
+        """
         self._cache_ts = 0.0
         self._suggestions_cache = []
 
@@ -161,7 +171,7 @@ class AIAdvisor:
                 self.predictive_engine.feed_snapshot(stats)
             except Exception:
                 pass
-            # Invalidate cache
+            # RAM/CPU rules need a fresh suggestion pass; WinSxS uses its own probe TTL.
             self._cache_ts = 0.0
         except Exception:
             pass
@@ -704,9 +714,15 @@ class AIAdvisor:
 
     # --- WINSXS & UPDATE CACHE ---
     def _rule_winsxs(self) -> List[Suggestion]:
+        now = time.time()
+        if self._winsxs_probe_ts and (now - self._winsxs_probe_ts < self._winsxs_probe_ttl):
+            return list(self._winsxs_probe_cache)
+
         results: List[Suggestion] = []
         try:
             from core.winsxs_cleaner import WinSxSCleaner
+            # Background probe: never force-refresh. Cached get_summary + this TTL
+            # keep idle badge / monitor snapshots from walking WinSxS every ~10s.
             summary = WinSxSCleaner.get_summary()
             cache_mb = summary.get("total_cache_mb", 0.0)
             dup_drivers = summary.get("duplicate_drivers_count", 0)
@@ -740,7 +756,9 @@ class AIAdvisor:
         except Exception:
             pass
 
-        return results
+        self._winsxs_probe_cache = results
+        self._winsxs_probe_ts = now
+        return list(results)
 
     # --- PREDICTIVE AI: DISK EXHAUSTION ---
     def _rule_predictive_disk(self) -> List[Suggestion]:

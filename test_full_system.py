@@ -456,6 +456,160 @@ print(" [PASS] 32. Uninstaller UI: UninstallerDialog (3 tabs) & MainWindow btn_u
 
 # 33. Test Windows Update Caches & Servicing Logs Scanner (v3.6 Pro)
 from core.winsxs_cleaner import WinSxSCleaner, UpdateCacheItem, OemDriverItem
+
+# 33b. Test WinSxS scan throttle & log level (idle AI badge is ~10s; must not rescan/log INFO)
+# Placed before the real-path scan so the throttle contract is exercised even when
+# Windows WinSxS directories are absent (Linux/offscreen CI).
+import logging as _logging
+from core.logger import logger as _app_logger
+
+class _WinSxSLogCap(_logging.Handler):
+    def __init__(self):
+        super().__init__(level=_logging.DEBUG)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+    def info_da_quet(self):
+        return [
+            r for r in self.records
+            if r.levelno == _logging.INFO and "Đã quét" in r.getMessage()
+        ]
+
+_throttle_dir = tempfile.mkdtemp(prefix="pc_cleaner_winsxs_throttle_")
+with open(os.path.join(_throttle_dir, "cache.bin"), "w") as _tf:
+    _tf.write("idle-scan-throttle")
+_orig_targets = WinSxSCleaner.CACHE_TARGETS
+_orig_walk = os.walk
+_walk_calls = {"n": 0}
+
+def _counting_walk(*args, **kwargs):
+    _walk_calls["n"] += 1
+    return _orig_walk(*args, **kwargs)
+
+os.walk = _counting_walk
+WinSxSCleaner.CACHE_TARGETS = [{
+    "key": "throttle_test",
+    "name": "Throttle Test Cache",
+    "path": _throttle_dir,
+    "desc": "Temp dir proving idle callers do not re-walk every ~10s",
+    "safety": "safe",
+    "is_protected_service": False,
+    "service_name": None,
+}]
+
+_cap = _WinSxSLogCap()
+_app_logger.addHandler(_cap)
+_prev_level = _app_logger.level
+_app_logger.setLevel(_logging.DEBUG)
+try:
+    WinSxSCleaner.invalidate_cache()
+    _walk_calls["n"] = 0
+    first = WinSxSCleaner.scan_update_caches()
+    walks_after_first = _walk_calls["n"]
+    assert walks_after_first >= 1, "Lan quet dau phai walk thu muc"
+    assert first is WinSxSCleaner.scan_update_caches(), (
+        "scan_update_caches() phai tra cache trong CACHE_TTL "
+        "(AI badge / Smart Suggestions goi moi ~10s khi idle)"
+    )
+    assert first is WinSxSCleaner.get_summary()["caches"], (
+        "get_summary() idle phai dung cache scan_update_caches, khong walk lai"
+    )
+    assert _walk_calls["n"] == walks_after_first, (
+        "Goi lap lai trong CACHE_TTL khong duoc os.walk lai"
+    )
+    assert len(_cap.info_da_quet()) == 0, (
+        "Routine/idle scan khong duoc ghi INFO 'Da quet' vao app.log"
+    )
+
+    _cap.records.clear()
+    forced = WinSxSCleaner.scan_update_caches(force_refresh=True)
+    assert forced is not first, "force_refresh=True (dialog / Lam moi) phai bo qua cache"
+    assert _walk_calls["n"] > walks_after_first, "force_refresh phai walk lai"
+    assert len(_cap.info_da_quet()) == 1, (
+        "User-initiated force_refresh moi duoc phep INFO 'Da quet'"
+    )
+
+    WinSxSCleaner._cached_caches_ts = 0.0  # het han CACHE_TTL (5 phut)
+    _cap.records.clear()
+    expired = WinSxSCleaner.scan_update_caches()
+    assert expired is not forced, "Het CACHE_TTL phai quet lai"
+    assert len(_cap.info_da_quet()) == 0, (
+        "Rescan khi TTL het han nhung ket qua khong doi van la DEBUG, khong INFO"
+    )
+    assert WinSxSCleaner.CACHE_TTL >= 60.0, (
+        "CACHE_TTL phai la phut-scale, khong duoc ~10s theo AI badge timer"
+    )
+    s1 = WinSxSCleaner.get_summary()
+    s2 = WinSxSCleaner.get_summary()
+    assert s1 is s2, "get_summary() idle phai cache dict, khong goi lai scan/pnputil moi ~10s"
+finally:
+    os.walk = _orig_walk
+    WinSxSCleaner.CACHE_TARGETS = _orig_targets
+    _app_logger.removeHandler(_cap)
+    _app_logger.setLevel(_prev_level)
+    WinSxSCleaner.invalidate_cache()
+    shutil.rmtree(_throttle_dir, ignore_errors=True)
+print(
+    f" [PASS] 33b. WinSxS throttle: cache TTL={WinSxSCleaner.CACHE_TTL:.0f}s, "
+    "idle scan DEBUG-only, force_refresh van quet moi."
+)
+
+# 33c. Verify the idle spam path: monitor snapshots + 10s badge -> Advisor._rule_winsxs
+# must not re-call get_summary() (feed_snapshot wipes the 8s suggestion cache).
+from core.ai_advisor import AIAdvisor as _AIAdvisorForWinsxs
+_summary_calls = {"n": 0}
+_orig_get_summary = WinSxSCleaner.get_summary
+
+@classmethod
+def _counting_get_summary(cls, force_refresh: bool = False):
+    _summary_calls["n"] += 1
+    return _orig_get_summary.__func__(cls, force_refresh=force_refresh)
+
+WinSxSCleaner.get_summary = _counting_get_summary
+_adv_idle = _AIAdvisorForWinsxs(config_manager=cfg)
+_snap = {
+    "ram": {"percent": 40.0},
+    "cpu": {"percent": 10.0},
+    "disk": {"free_gb": 40.0},
+    "net": {"ping_ms": 20.0},
+}
+try:
+    for _ in range(8):
+        _adv_idle.feed_snapshot(_snap)
+    assert _summary_calls["n"] == 0, (
+        "feed_snapshot (monitor interval) khong duoc goi WinSxSCleaner.get_summary"
+    )
+
+    _adv_idle.get_suggestions()
+    assert _summary_calls["n"] == 1, (
+        f"Lan dau get_suggestions phai probe WinSxS mot lan, got {_summary_calls['n']}"
+    )
+
+    # Simulate idle badge ticks: snapshots keep invalidating the 8s suggestion cache.
+    for _ in range(6):
+        _adv_idle.feed_snapshot(_snap)
+        _adv_idle.invalidate_cache()
+        _adv_idle.get_suggestions()
+    assert _summary_calls["n"] == 1, (
+        "Advisor WinSxS probe TTL phai chan get_summary khi badge/snapshot ~10s"
+    )
+    assert _adv_idle._winsxs_probe_ttl >= 60.0, (
+        "WinSxS probe TTL phai la phut-scale, khong theo timer 10s"
+    )
+
+    _adv_idle._winsxs_probe_ts = 0.0
+    _adv_idle.invalidate_cache()
+    _adv_idle.get_suggestions()
+    assert _summary_calls["n"] == 2, "Het probe TTL van phai cho phep quet lai"
+finally:
+    WinSxSCleaner.get_summary = _orig_get_summary
+print(
+    f" [PASS] 33c. Advisor WinSxS probe: feed_snapshot=0 calls, idle badge throttled, "
+    f"TTL={_adv_idle._winsxs_probe_ttl:.0f}s."
+)
+
 caches = WinSxSCleaner.scan_update_caches()
 assert isinstance(caches, list), "Caches phai la list"
 assert len(caches) >= 3, "So luong danh muc update caches phai >= 3"

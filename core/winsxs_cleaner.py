@@ -108,15 +108,28 @@ class WinSxSCleaner:
     _cached_drivers_ts: float = 0.0
     _cached_in_use: Optional[Set[str]] = None
     _cached_in_use_ts: float = 0.0
-    CACHE_TTL: float = 300.0  # 5 phút bộ đệm cho quét driver để tránh gọi pnputil liên tục
+    _cached_caches: Optional[List[UpdateCacheItem]] = None
+    _cached_caches_ts: float = 0.0
+    _cached_caches_fingerprint: Optional[Tuple[Tuple[str, float, int], ...]] = None
+    _cached_summary: Optional[Dict[str, Any]] = None
+    _cached_summary_ts: float = 0.0
+    # Idle AI badge / Smart Suggestions refresh every ~10s. A full SoftwareDistribution
+    # walk must not run on that cadence — cache scans for CACHE_TTL (5 minutes).
+    # Manual/on-demand paths pass force_refresh=True (dialog open, Làm mới, after clean).
+    CACHE_TTL: float = 300.0
 
     @classmethod
     def invalidate_cache(cls) -> None:
-        """Xóa sạch cache quét drivers để quét mới."""
+        """Xóa sạch cache quét drivers, update caches và get_summary để quét mới."""
         cls._cached_drivers = None
         cls._cached_drivers_ts = 0.0
         cls._cached_in_use = None
         cls._cached_in_use_ts = 0.0
+        cls._cached_caches = None
+        cls._cached_caches_ts = 0.0
+        cls._cached_caches_fingerprint = None
+        cls._cached_summary = None
+        cls._cached_summary_ts = 0.0
 
     # Danh mục các đường dẫn đệm Windows Update & System Logs
     CACHE_TARGETS = [
@@ -198,12 +211,32 @@ class WinSxSCleaner:
     # 1. Update Caches Scanner & Cleaner
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _caches_fingerprint(items: List[UpdateCacheItem]) -> Tuple[Tuple[str, float, int], ...]:
+        return tuple((c.key, round(c.size_mb, 2), c.file_count) for c in items)
+
     @classmethod
-    def scan_update_caches(cls) -> List[UpdateCacheItem]:
+    def scan_update_caches(cls, force_refresh: bool = False) -> List[UpdateCacheItem]:
         """
         Quét dung lượng và số lượng tệp của các thư mục đệm Windows Update & Logs.
         Hoạt động hoàn toàn Offline, tốc độ cao, không yêu cầu quyền Admin để đọc.
+
+        Kết quả được cache ``CACHE_TTL`` giây (5 phút) vì AI badge / Smart Suggestions
+        gọi ``get_summary()`` mỗi ~10 giây khi idle. Truyền ``force_refresh=True``
+        khi người dùng mở dialog, bấm Làm mới, hoặc sau khi dọn dẹp.
         """
+        now = time.time()
+        if (
+            not force_refresh
+            and cls._cached_caches is not None
+            and (now - cls._cached_caches_ts < cls.CACHE_TTL)
+        ):
+            logger.debug(
+                f"[WinSxSCleaner] Dùng cache {len(cls._cached_caches)} danh mục đệm "
+                f"(TTL {cls.CACHE_TTL:.0f}s, tránh quét lại mỗi ~10s)."
+            )
+            return cls._cached_caches
+
         results: List[UpdateCacheItem] = []
 
         for target in cls.CACHE_TARGETS:
@@ -238,7 +271,22 @@ class WinSxSCleaner:
                 service_name=target.get("service_name"),
             ))
 
-        logger.info(f"[WinSxSCleaner] Đã quét {len(results)} danh mục đệm hệ thống & cập nhật.")
+        fingerprint = cls._caches_fingerprint(results)
+        changed = (
+            cls._cached_caches_fingerprint is not None
+            and fingerprint != cls._cached_caches_fingerprint
+        )
+        msg = f"[WinSxSCleaner] Đã quét {len(results)} danh mục đệm hệ thống & cập nhật."
+        # Routine idle scans stay at DEBUG so app.log is not flooded.
+        # INFO only for user-initiated refresh or when totals actually changed.
+        if force_refresh or changed:
+            logger.info(msg)
+        else:
+            logger.debug(msg)
+
+        cls._cached_caches = results
+        cls._cached_caches_ts = now
+        cls._cached_caches_fingerprint = fingerprint
         return results
 
     @classmethod
@@ -296,6 +344,7 @@ class WinSxSCleaner:
             msg += f" (Một số tệp hệ thống đang mở không thể xóa)."
 
         logger.info(f"[WinSxSCleaner] {msg}")
+        cls.invalidate_cache()
         return True, msg, deleted_files, freed_mb
 
     # ------------------------------------------------------------------
@@ -599,21 +648,33 @@ class WinSxSCleaner:
     # ------------------------------------------------------------------
 
     @classmethod
-    def get_summary(cls) -> Dict[str, Any]:
+    def get_summary(cls, force_refresh: bool = False) -> Dict[str, Any]:
         """
         Tổng hợp nhanh toàn bộ số liệu:
         - Tổng dung lượng bộ đệm cập nhật và nhật ký servicing có thể dọn ngay.
         - Số lượng gói driver OEM cũ trùng lặp.
+
+        Cache ``CACHE_TTL`` (5 phút). AIAdvisor._rule_winsxs / badge 10s must
+        hit this cache — do not walk or call pnputil on that cadence.
+        ``force_refresh=True`` for dialog / Làm mới / after clean.
         """
-        caches = cls.scan_update_caches()
+        now = time.time()
+        if (
+            not force_refresh
+            and cls._cached_summary is not None
+            and (now - cls._cached_summary_ts < cls.CACHE_TTL)
+        ):
+            return cls._cached_summary
+
+        caches = cls.scan_update_caches(force_refresh=force_refresh)
         total_cache_mb = sum(c.size_mb for c in caches)
         total_files = sum(c.file_count for c in caches)
 
-        _, duplicate_drivers = cls.scan_oem_drivers(force_refresh=False)
+        _, duplicate_drivers = cls.scan_oem_drivers(force_refresh=force_refresh)
         cleanable_count = sum(1 for d in duplicate_drivers if not d.is_in_use)
         protected_count = sum(1 for d in duplicate_drivers if d.is_in_use)
 
-        return {
+        summary = {
             "total_cache_mb": round(total_cache_mb, 2),
             "total_cache_files": total_files,
             "cache_categories_count": len(caches),
@@ -623,3 +684,6 @@ class WinSxSCleaner:
             "caches": caches,
             "duplicate_drivers": duplicate_drivers,
         }
+        cls._cached_summary = summary
+        cls._cached_summary_ts = now
+        return summary
