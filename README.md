@@ -1,13 +1,56 @@
-# ⚡ PC Auto Cleaner & System Optimizer Pro (v3.2)
+# PC Auto Cleaner & Optimizer
 
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![PyQt5 Modern GUI](https://img.shields.io/badge/UI-PyQt5%20Fluent%20Dark-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://pypi.org/project/PyQt5/)
 [![Platform Windows](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://microsoft.com)
-[![Tests Passing](https://img.shields.io/badge/Tests-20%2F20%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)](https://github.com)
+[![GitHub Release](https://img.shields.io/github/v/release/mrkiss-it/pc-cleaner-optimizer?style=for-the-badge&logo=github)](https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/latest)
 [![License Proprietary](https://img.shields.io/badge/License-Proprietary%20%7C%20All%20Rights%20Reserved-red?style=for-the-badge)](LICENSE)
+
+Tên sản phẩm và phiên bản lấy từ `app_meta.py` (`APP_NAME`, `APP_VERSION`) — **không** phải SKU “Pro”. Tag GitHub Releases phải khớp `APP_VERSION` (hiện tại **3.8.3**).
+
+**Cài đặt khuyến nghị:** tải [`PCAutoCleaner_Setup.exe`](https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/latest/download/PCAutoCleaner_Setup.exe) từ [GitHub Releases](https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/latest).
 
 **Phần mềm toàn diện tối ưu hóa Windows, tự động dọn dẹp rác, giải phóng RAM, tăng tốc Gaming, đo tốc độ DNS song song, kiểm tra sức khỏe ổ cứng SSD S.M.A.R.T, đo độ chai pin laptop (Battery Health & Cycles), xuất báo cáo pin HTML Windows, giám sát CPU đa nhân thời gian thực, nhận diện GPU, dọn dẹp an toàn Registry, quét bảo mật hệ thống và bảo vệ quyền riêng tư (Windows Tweaks & Privacy Shield).**
 
+
+---
+
+## 📦 Cài đặt, cập nhật, gỡ cài (Windows)
+
+Official path: [GitHub Releases](https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/latest) → **`PCAutoCleaner_Setup.exe`**. In-app **Cập nhật** downloads that same asset. Uninstall from Settings or Windows Apps.
+
+Áp dụng bản phát hành chính thức trên **Windows 10/11 x64**. Thư mục cài: `%LOCALAPPDATA%\Programs\PCAutoCleaner`.
+
+### 1. Tải bộ cài GitHub Releases
+
+1. Mở [Releases mới nhất](https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/latest).
+2. Tải đúng asset **`PCAutoCleaner_Setup.exe`** (tên này khớp `PREFERRED_SETUP_ASSET` trong `app_meta.py`).
+3. Chạy Setup Wizard (không silent). Cài xong có `PCAutoCleaner.exe` và `uninstall.exe`.
+4. Lần đầu mở app: đồng ý **EULA** (trạng thái lưu tại `%APPDATA%\PCAutoCleaner`; xem lại trong Settings).
+
+Liên kết tải luôn trỏ bản mới nhất (không hard-code số phiên bản trong URL):
+
+```text
+https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/latest/download/PCAutoCleaner_Setup.exe
+```
+
+### 2. Cập nhật trong ứng dụng (GitHub Releases)
+
+Ứng dụng **không** tự cài im lặng. Tab **Tự Động & Lịch Trình** (Cài đặt / Settings) hoặc khay hệ thống:
+
+- **Kiểm Tra Cập Nhật** — hỏi API GitHub Releases công khai, so với `APP_VERSION`.
+- **Cập nhật** — tải `PCAutoCleaner_Setup.exe`, mở bộ cài, **app tự thoát** để Setup ghi đè file đang chạy.
+- Nếu Release chưa có file cài, app mở trang GitHub Releases.
+
+### 3. Gỡ cài đặt
+
+Không nhầm với nút **Gỡ Phần Mềm** trên dashboard (gỡ phần mềm khác trên máy).
+
+- Trong app: Settings → **Gỡ cài đặt** → xác nhận → chạy `uninstall.exe`.
+- Hoặc **Windows Settings → Apps → PC Auto Cleaner & Optimizer**.
+- Cấu hình `%APPDATA%\PCAutoCleaner` **được giữ** trừ khi bạn chọn xóa trên hộp thoại.
+
+Checklist thủ công trước mỗi phát hành (cài mới → cập nhật → gỡ): [docs/RELEASE_SMOKE_TEST.md](docs/RELEASE_SMOKE_TEST.md).
 
 ---
 
@@ -130,7 +173,17 @@
 
 ---
 
-### 11. 🔋 Laptop Battery Health & Deep Hardware Sensors (Sức Khỏe Pin & Phần Cứng)
+### 11. 📶 Ổn định Wi-Fi (hướng dẫn, không sửa driver)
+
+Thẻ **Ổn định Wi-Fi** trong Settings (luôn hiện) và Trung tâm Mạng khi Wi-Fi yếu / rớt / vòng reconnect (hay gặp trên MediaTek MT7921 và 2.4 GHz).
+
+- App **có thể** flush DNS, renew DHCP, reconnect SSID và tắt tiết kiệm pin card.
+- App **không** sửa driver MediaTek hay sóng RF — chỉ gợi ý bước Windows (Settings Wi-Fi, Device Manager, Location).
+- Toast hướng dẫn **không spam** (cooldown khoảng 30 phút). Chi tiết kiểm tra: [docs/RELEASE_SMOKE_TEST.md](docs/RELEASE_SMOKE_TEST.md).
+
+---
+
+### 12. 🔋 Laptop Battery Health & Deep Hardware Sensors (Sức Khỏe Pin & Phần Cứng)
 - **Đo lường độ chai pin chuẩn xác 100%**:
   - Trích xuất dữ liệu Telemetry chính thức của Microsoft Windows (`powercfg /batteryreport`).
   - Dung lượng thiết kế chuẩn từ nhà máy (**Design Capacity** mWh).
@@ -154,9 +207,10 @@
 
 
 ```text
-pc_cleaner_optimizer/
+pc-cleaner-optimizer/
 │
 ├── LICENSE                     # Giấy phép độc quyền (All Rights Reserved) — không MIT
+├── app_meta.py                 # APP_NAME, APP_VERSION, GitHub owner/repo, tên Setup.exe
 ├── main.py                     # Entry point, IPC Single-Instance, CLI & UI switcher
 ├── config_manager.py           # Quản lý cấu hình JSON, whitelist, EULA (AppData) & thiết lập tự động
 ├── startup_manager.py          # Quản lý khởi động cùng Windows (Registry Run Key)
@@ -165,14 +219,19 @@ pc_cleaner_optimizer/
 ├── create_shortcut.ps1         # PowerShell script tạo shortcut Desktop với icon đẹp mắt
 ├── start_cleaner.bat           # Script khởi chạy nhanh bằng Python
 ├── start_silent.vbs            # Script chạy ngầm im lặng vào khay hệ thống (System Tray)
-├── test_full_system.py         # Bộ kiểm thử tự động toàn diện 20/20 tiêu chí (100% PASS)
+├── test_full_system.py         # Bộ kiểm thử tự động toàn diện (cùng các test_*.py khác)
 ├── requirements.txt            # Danh sách thư viện phụ thuộc (PyQt5, psutil, Pillow)
 ├── config.json                 # Cấu hình mặc định của ứng dụng
 │
 ├── assets/                     # Tài nguyên biểu tượng icon (icon.ico, icon.png)
-│
 ├── backups/                    # Thư mục lưu trữ tự động các bản sao lưu Registry (.reg)
-│   └── registry/
+├── docs/
+│   └── RELEASE_SMOKE_TEST.md   # Checklist thủ công: cài mới → cập nhật → gỡ
+│
+├── installer/                  # Setup Wizard + Uninstall Wizard → PCAutoCleaner_Setup.exe
+│   ├── setup_wizard.py
+│   ├── uninstall_wizard.py
+│   └── build_installer.py
 │
 ├── core/                       # Các mô-đun nghiệp vụ nền tảng (Engine Core)
 │   ├── cleaner.py              # Dọn dẹp rác chuyên sâu, cache app, Windows Update
@@ -182,6 +241,10 @@ pc_cleaner_optimizer/
 │   ├── system_monitor.py       # Hub giám sát phần cứng RAM, CPU, Ổ đĩa thời gian thực
 │   ├── hardware_monitor.py     # Đo độ chai pin laptop, Windows battery report, CPU đa nhân, GPU
 │   ├── network_optimizer.py    # Đo tốc độ DNS song song, tối ưu TCP/IP, cấu hình Adapter
+│   ├── wifi_recovery.py        # Phát hiện Wi-Fi rớt / vòng reconnect, DHCP, reconnect SSID
+│   ├── wifi_stability.py       # Gợi ý Ổn định Wi-Fi (Windows; không sửa driver/RF)
+│   ├── update_checker.py       # Kiểm tra GitHub Releases (không tự cài)
+│   ├── update_installer.py     # Tải PCAutoCleaner_Setup.exe rồi mở bộ cài
 │   ├── disk_health_optimizer.py# S.M.A.R.T NVMe/SSD Health, nhiệt độ & TRIM Optimizer
 │   ├── registry_cleaner.py     # Quét dọn Registry an toàn, tự động backup & rollback
 │   ├── security_scanner.py     # Quét bảo mật UAC, Defender, Firewall, Ports 135/445, SMBv1
@@ -196,8 +259,9 @@ pc_cleaner_optimizer/
 └── ui/                         # Giao diện người dùng đồ họa (PyQt5 Fluent Dark UI)
     ├── main_window.py          # Cửa sổ trung tâm điều khiển 8 tab tích hợp
     ├── floating_widget.py      # Widget nổi Desktop kéo thả & điều chỉnh độ mờ
-    ├── tray_icon.py            # Biểu tượng khay hệ thống với menu điều khiển nhanh
+    ├── tray_icon.py            # Khay hệ thống: menu nhanh, Kiểm Tra Cập Nhật, EULA
     ├── eula_dialog.py          # Điều khoản sử dụng (EULA) lần đầu + xem lại
+    ├── wifi_stability_card.py  # Thẻ Ổn định Wi-Fi (Settings / mạng)
     ├── hardware_dialog.py      # Hộp thoại Sức khỏe Pin Laptop & Cảm biến phần cứng CPU/GPU
     ├── network_dialog.py       # Hộp thoại đo tốc độ DNS & Tối ưu mạng
     ├── disk_registry_dialog.py # Hộp thoại Sức khỏe ổ đĩa & Dọn dẹp Registry
@@ -210,7 +274,9 @@ pc_cleaner_optimizer/
 
 ---
 
-## 🚀 Hướng Dẫn Cài Đặt & Sử Dụng
+## 🚀 Chạy từ mã nguồn & đóng gói
+
+Người dùng cuối nên dùng **`PCAutoCleaner_Setup.exe`** ở mục **Cài đặt, cập nhật, gỡ cài** phía trên.
 
 ### Yêu Cầu Hệ Thống
 - Hệ điều hành: Windows 10 hoặc Windows 11 (64-bit).
@@ -243,56 +309,38 @@ Mã nguồn trên GitHub là độc quyền — clone để chạy/xem **không*
 
 ---
 
-### 2. Đóng Gói Thành Tệp Thực Thi Độc Lập (.EXE)
-Ứng dụng đi kèm script đóng gói thông minh với PyInstaller, tích hợp icon và manifest `asInvoker`:
+### 2. Đóng Gói .EXE và bộ cài Setup
+Ứng dụng đi kèm script đóng gói PyInstaller (`asInvoker`) rồi Setup Wizard:
 
 ```bash
 python build_exe.py
+python installer/build_installer.py
 ```
-*Hoặc click đúp vào file `build_exe.bat`*.
+*Hoặc click đúp vào file `build_exe.bat`*, sau đó chạy `build_installer.py`.
 
-Sau khi hoàn tất, tệp thực thi sẽ sẵn sàng tại:
+Kết quả trên Windows:
 ```text
 dist/PCAutoCleaner/PCAutoCleaner.exe
+dist/PCAutoCleaner/uninstall.exe
+dist/PCAutoCleaner_Setup.exe
 ```
-Bạn có thể mang thư mục này sang bất kỳ máy tính Windows nào khác để sử dụng ngay mà không cần cài đặt Python.
+Thư mục `dist/PCAutoCleaner/` có thể mang sang máy Windows khác (portable). Bản phát hành GitHub dùng **`PCAutoCleaner_Setup.exe`**.
 
 ---
 
 ## 🧪 Kiểm Thử & Đảm Bảo Chất Lượng (Quality Assurance)
 
-Trước mỗi GitHub Release, chạy checklist thủ công (cài → cập nhật → gỡ): [docs/RELEASE_SMOKE_TEST.md](docs/RELEASE_SMOKE_TEST.md).
+Trước mỗi GitHub Release, chạy checklist thủ công (cài mới → cập nhật từ Releases → gỡ): [docs/RELEASE_SMOKE_TEST.md](docs/RELEASE_SMOKE_TEST.md). Phiên bản kỳ vọng là `APP_VERSION` / tag mới nhất — checklist **không** ghi cứng số phiên bản.
 
-Dự án đi kèm bộ kiểm thử tự động toàn diện `test_full_system.py` xác thực 19 tiêu chí hoạt động:
+Bộ kiểm thử tự động (không thay thế smoke-test trên Windows):
+
 ```bash
 python test_full_system.py
-```
-
-### Kết Quả Kiểm Thử Thực Tế:
-```text
-[PASS]  1. Import all Core modules
-[PASS]  2. ProcessManager (Top CPU/RAM, Protected system whitelist)
-[PASS]  3. GameBooster Bat (Thu hồi RAM, điều chỉnh tiến trình)
-[PASS]  4. GameBooster Tat (Khôi phục tiến trình bình thường)
-[PASS]  5. JunkCleaner Targets (Quét 6 danh mục rác)
-[PASS]  6. HealthMonitor (Chẩn đoán trạng thái HEALTHY)
-[PASS]  7. AnalyticsReporter (Báo cáo hiệu năng hệ thống)
-[PASS]  8. MemoryLeakDetector (Quét phát hiện rò rỉ RAM)
-[PASS]  9. Process Whitelist (Quản lý danh sách loại trừ an toàn)
-[PASS] 10. UI & MainWindow (8 tabs khởi tạo sạch sẽ, chuyển tab mượt mà)
-[PASS] 11. Network Monitor (Đo tốc độ mạng, Ping, Card mạng)
-[PASS] 12. Network Optimizer (Flush DNS, tối ưu TCP stack, benchmark DNS)
-[PASS] 13. Network UI (Hộp thoại tối ưu mạng & Widget nổi)
-[PASS] 14. Auto Network Optimizer (Tự động kích hoạt khi Ping vượt ngưỡng)
-[PASS] 15. Security Scanner (Quét UAC, Defender, Firewall, Ports 135/445, SMBv1)
-[PASS] 16. Safe Registry Cleaner (Quét khóa hỏng, sao lưu .reg & rollback)
-[PASS] 17. Disk Health & SSD TRIM (S.M.A.R.T NVMe, Wear level, Lệnh TRIM)
-[PASS] 18. Standalone Executable (File .exe độc lập sẵn sàng)
-[PASS] 19. System Tweaker & Privacy Shield (15 tinh chỉnh, 12 khuyên dùng, Apply & Revert 100%)
-
-============================================================
-All 19 tests passed successfully! (100% PASS RATE)
-============================================================
+python test_update_checker.py
+python test_update_installer.py
+python test_setup_wizard.py
+python test_uninstall_wizard.py
+python test_wifi_recovery.py
 ```
 
 

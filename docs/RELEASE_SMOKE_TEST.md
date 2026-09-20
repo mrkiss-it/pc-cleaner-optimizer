@@ -7,7 +7,7 @@ Run on Windows before every GitHub Release: **fresh install → update → unins
 | Mục | Giá trị / Value |
 |---|---|
 | Sản phẩm / Product | **PC Auto Cleaner & Optimizer** (`APP_NAME` trong `app_meta.py`) |
-| Phiên bản / Version | `APP_VERSION` = git tag (ví dụ `3.8.2`) |
+| Phiên bản / Version | `APP_VERSION` trong `app_meta.py` phải khớp git tag GitHub Release mới nhất (không hard-code số phiên bản ở đây) |
 | Bộ cài / Setup asset | `dist/PCAutoCleaner_Setup.exe` (đúng tên này trên Release) |
 | Thư mục cài / Install dir | `%LOCALAPPDATA%\Programs\PCAutoCleaner` |
 
