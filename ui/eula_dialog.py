@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import webbrowser
+from html import escape as html_escape
 from typing import Iterable, Optional
 from urllib.parse import quote
 
@@ -25,8 +26,9 @@ from PyQt5.QtWidgets import (
 from config_manager import ConfigManager, EULA_VERSION
 
 try:
-    from app_meta import GITHUB_OWNER, GITHUB_REPO
+    from app_meta import APP_NAME, GITHUB_OWNER, GITHUB_REPO
 except ImportError:
+    APP_NAME = "PC Auto Cleaner & Optimizer"
     GITHUB_OWNER = "mrkiss-it"
     GITHUB_REPO = "pc-cleaner-optimizer"
 
@@ -52,7 +54,7 @@ COMMERCIAL_PERMISSION_URL = (
 
 EULA_HTML = """
 <h2 style="color:#38bdf8; margin-top:0;">Điều khoản sử dụng (EULA)</h2>
-<p style="color:#94a3b8;"><b>PC Auto Cleaner &amp; System Optimizer Pro</b><br/>
+<p style="color:#94a3b8;"><b>{app_name}</b><br/>
 Bản quyền © 2026 {holder}. Mọi quyền được bảo lưu.<br/>
 Phiên bản điều khoản: {version}</p>
 
@@ -90,6 +92,7 @@ The Software is provided “AS IS”, without warranty of any kind.</p>
 <a href="{commercial_href}" style="color:#38bdf8; text-decoration: underline;">Xin phép thương mại</a>
  — {commercial_email}</p>
 """.format(
+    app_name=html_escape(APP_NAME, quote=True),
     holder=COPYRIGHT_HOLDER,
     version=EULA_VERSION,
     license_href=LICENSE_LINK_HREF,
@@ -207,7 +210,7 @@ class EulaDialog(QDialog):
         super().__init__(parent)
         self.config_manager = config_manager
         self.require_accept = bool(require_accept)
-        self.setWindowTitle("Điều khoản sử dụng — PC Auto Cleaner")
+        self.setWindowTitle(f"Điều khoản sử dụng — {APP_NAME}")
         self.setModal(True)
         self.setWindowModality(Qt.ApplicationModal)
         self.resize(640, 560)
