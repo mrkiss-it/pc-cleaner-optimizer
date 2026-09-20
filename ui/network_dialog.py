@@ -58,9 +58,10 @@ class NetworkOptimizerDialog(QDialog):
     Hộp thoại Quản lý & Tối ưu hóa Mạng hiện đại.
     """
 
-    def __init__(self, monitor_hub=None, parent=None):
+    def __init__(self, monitor_hub=None, parent=None, focus_wifi_stability: bool = False):
         super().__init__(parent)
         self.monitor_hub = monitor_hub
+        self._focus_wifi_stability = bool(focus_wifi_stability)
         self.setWindowTitle("🌐 Trung Tâm Giám Sát & Tối Ưu Hóa Mạng - PC Optimizer")
         self.resize(920, 640)
         self.setMinimumSize(800, 540)
@@ -96,12 +97,22 @@ class NetworkOptimizerDialog(QDialog):
         """)
 
         self.init_ui()
+        if hasattr(self, "wifi_stability_card"):
+            parent_win = self.parent()
+            unlock_cb = getattr(parent_win, "unlock_location_now", None) if parent_win else None
+            power_cb = getattr(parent_win, "disable_wifi_power_saving_now", None) if parent_win else None
+            self.wifi_stability_card.bind(
+                unlock_location=unlock_cb if callable(unlock_cb) else self._on_unlock_location_clicked,
+                disable_power_save=power_cb if callable(power_cb) else None,
+            )
 
         # Kết nối timer cập nhật tốc độ mạng
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self._refresh_live_stats)
         self.monitor_timer.start(800)
         self._refresh_live_stats()
+        if self._focus_wifi_stability:
+            self.focus_wifi_stability()
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -135,6 +146,10 @@ class NetworkOptimizerDialog(QDialog):
 
         self.location_lock_banner = self._create_location_lock_banner()
         main_layout.addWidget(self.location_lock_banner)
+
+        from ui.wifi_stability_card import WifiStabilityCard
+        self.wifi_stability_card = WifiStabilityCard(self, always_visible=False)
+        main_layout.addWidget(self.wifi_stability_card)
 
         # ── TABS ──
         self.tabs = QTabWidget()
@@ -510,6 +525,39 @@ class NetworkOptimizerDialog(QDialog):
         adapter = net.get("adapter", "Wi-Fi")
         self.lbl_adapter_badge.setText(f"Card mạng: {adapter}")
         self._refresh_location_lock_banner()
+        self._refresh_wifi_stability_card()
+
+    def _refresh_wifi_stability_card(self):
+        card = getattr(self, "wifi_stability_card", None)
+        if card is None:
+            return
+        detect = {}
+        report = None
+        try:
+            from core.wifi_recovery import WifiRecovery
+            from core.network_optimizer import NetworkOptimizer
+            detect = getattr(WifiRecovery, "last_detect", None) or {}
+            report = (
+                getattr(NetworkOptimizer, "last_wifi_drop_report", None)
+                or getattr(WifiRecovery, "last_wifi_drop_report", None)
+            )
+        except Exception:
+            detect = {}
+        unrecovered = 0
+        if isinstance(report, dict) and report.get("repaired") and not report.get("recovered"):
+            unrecovered = 1
+        card.refresh_from_detect(
+            detect=detect,
+            last_report=report,
+            unrecovered_repairs=unrecovered,
+            force_show=bool(self._focus_wifi_stability),
+        )
+
+    def focus_wifi_stability(self):
+        self._focus_wifi_stability = True
+        if hasattr(self, "wifi_stability_card"):
+            self.wifi_stability_card.setVisible(True)
+            self.wifi_stability_card.setFocus()
 
     def _run_network_optimization(self):
         self.btn_run_optimize.setEnabled(False)

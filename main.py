@@ -277,18 +277,40 @@ def main():
             except Exception:
                 pass
         if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
-            if kind == "wifi_drop":
+            open_stability = lambda: main_win.open_network_dialog(focus_wifi_stability=True)
+            if kind == "wifi_stability":
+                title = str(info.get("title") or "Ổn định Wi-Fi")
+                level = "warning"
+                needs_loc = bool(info.get("needs_location_unlock") or info.get("location_gpo_locked"))
+                if needs_loc:
+                    action_text = "📍 Gỡ khóa Location"
+                    action_cb = main_win.unlock_location_now
+                else:
+                    action_text = "📶 Ổn định Wi-Fi"
+                    action_cb = open_stability
+                # Gate already consumed in scheduler._maybe_emit_wifi_stability_tip
+            elif kind == "wifi_drop":
                 recovered = info.get("recovered")
                 title = "Wi-Fi đã ổn định" if recovered else "Tự sửa Wi-Fi rớt"
                 level = "success" if recovered else "warning"
                 needs_loc = bool(info.get("needs_location_unlock") or info.get("location_gpo_locked")) and not recovered
                 needs_dns = bool(info.get("needs_dns_confirm")) and not recovered
+                needs_guide = bool(info.get("needs_wifi_stability_guidance")) and not recovered
                 if needs_loc:
                     action_text = "📍 Gỡ khóa Location"
                     action_cb = main_win.unlock_location_now
                 elif needs_dns:
                     action_text = "🌐 Đổi DNS Siêu Tốc"
                     action_cb = main_win.apply_fast_dns
+                elif needs_guide:
+                    action_text = "📶 Ổn định Wi-Fi"
+                    action_cb = open_stability
+                    try:
+                        scheduler.recovery_toast_gate.allow_stability_tip_from_config(
+                            time.time(), config_mgr.config,
+                        )
+                    except Exception:
+                        pass
                 else:
                     action_text = "📶 Xem Mạng"
                     action_cb = main_win.open_network_dialog

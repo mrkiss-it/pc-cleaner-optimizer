@@ -830,6 +830,14 @@ class MainWindow(QMainWindow):
         layout_network.addWidget(self.chk_auto_ping_fix)
         layout_network.addLayout(row_ping_spin)
         layout_network.addWidget(lbl_net_desc)
+
+        from ui.wifi_stability_card import WifiStabilityCard
+        self.wifi_stability_settings = WifiStabilityCard(card_network, always_visible=True)
+        self.wifi_stability_settings.bind(
+            unlock_location=self.unlock_location_now,
+            disable_power_save=self.disable_wifi_power_saving_now,
+        )
+        layout_network.addWidget(self.wifi_stability_settings)
         layout.addWidget(card_network)
 
         # Card 4: Auto Best-DNS Switcher
@@ -1717,10 +1725,18 @@ class MainWindow(QMainWindow):
         dialog = DiskAnalyzerDialog(self)
         dialog.exec_()
 
-    def open_network_dialog(self):
+    def open_network_dialog(self, focus_wifi_stability: bool = False):
         """Mở hộp thoại Giám Sát & Tối Ưu Hóa Mạng."""
-        dialog = NetworkOptimizerDialog(monitor_hub=self.monitor_hub, parent=self)
+        dialog = NetworkOptimizerDialog(
+            monitor_hub=self.monitor_hub,
+            parent=self,
+            focus_wifi_stability=bool(focus_wifi_stability),
+        )
         dialog.exec_()
+
+    def open_wifi_stability(self):
+        """Mở Trung tâm Mạng và hiện thẻ Ổn định Wi-Fi."""
+        self.open_network_dialog(focus_wifi_stability=True)
 
     def open_disk_registry_dialog(self):
         """Mở hộp thoại Quản Lý Sức Khỏe Ổ Đĩa, SSD TRIM & Dọn Dẹp Registry."""
@@ -1833,6 +1849,8 @@ class MainWindow(QMainWindow):
                 self.apply_fast_dns()
             elif action_key == "open_network_dialog":
                 self.open_network_dialog()
+            elif action_key in ("open_wifi_stability", "wifi_stability"):
+                self.open_wifi_stability()
             elif action_key == "battery_saver":
                 self.enable_battery_saver()
             elif action_key in ("open_hardware_dialog", "view_hardware"):
@@ -2004,6 +2022,44 @@ class MainWindow(QMainWindow):
             pass
         return result
 
+    def disable_wifi_power_saving_now(self):
+        """Tắt tiết kiệm pin Wi-Fi (powercfg) rồi mở Device Manager để kiểm tra thêm."""
+        from core.wifi_recovery import WifiRecovery
+        from core.wifi_stability import open_windows_target
+        adapter = ""
+        try:
+            snap = getattr(WifiRecovery, "last_detect", None) or {}
+            adapter = str(snap.get("name") or "")
+        except Exception:
+            adapter = ""
+        try:
+            result = WifiRecovery.disable_wifi_power_saving(adapter)
+        except Exception as exc:
+            result = {
+                "success": False,
+                "message": f"Không đổi được tiết kiệm pin Wi-Fi: {exc}",
+            }
+        msg = str(result.get("message") or "Đã xong.")
+        honest = " Ứng dụng không sửa được driver hay sóng RF."
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText(f"📶 {msg}")
+        try:
+            from ui.toast_notification import ToastManager, LEVEL_SUCCESS, LEVEL_WARNING
+            ToastManager.show_toast(
+                title="Tiết kiệm pin Wi-Fi",
+                message=msg + honest,
+                level=LEVEL_SUCCESS if result.get("success") else LEVEL_WARNING,
+                icon="📶",
+                action_text="Device Manager",
+                action_callback=lambda: open_windows_target("device_manager"),
+                duration_ms=5200,
+                play_sound=bool(self.config_manager.get("notification_sound_enabled", False)),
+            )
+        except Exception:
+            pass
+        open_windows_target("device_manager")
+        return result
+
     def repair_network_now(self, apply_dns: bool = False):
         """Chẩn đoán mạng + sửa an toàn khi Ping không đo được (chạy nền, có thông báo)."""
         if getattr(self, "_network_repair_busy", False):
@@ -2058,6 +2114,9 @@ class MainWindow(QMainWindow):
             elif needs_dns and not recovered:
                 action_text = "🌐 Đổi DNS Siêu Tốc"
                 action_cb = self.apply_fast_dns
+            elif is_wifi and not recovered:
+                action_text = "📶 Ổn định Wi-Fi"
+                action_cb = self.open_wifi_stability
             else:
                 action_text = "📶 Xem Mạng"
                 action_cb = self.open_network_dialog

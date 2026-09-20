@@ -411,6 +411,53 @@ def parse_netadapter_payload(raw: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def parse_wlan_channel(value: Any) -> Optional[int]:
+    """Parse netsh Channel / Kênh. None if missing."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = int(value)
+        return number if number > 0 else None
+    match = re.search(r"(\d+)", str(value))
+    if not match:
+        return None
+    number = int(match.group(1))
+    return number if number > 0 else None
+
+
+def infer_wifi_band_ghz(snapshot: Optional[Dict[str, Any]] = None) -> Optional[float]:
+    """Best-effort 2.4 / 5 / 6 GHz from Band, Channel, or radio type."""
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    blob = " ".join(
+        str(snap.get(key) or "") for key in ("band", "radio_type", "radio")
+    ).lower().replace(",", ".")
+    if "6 ghz" in blob or "6ghz" in blob or "wi-fi 6e" in blob:
+        return 6.0
+    if "5 ghz" in blob or "5ghz" in blob:
+        return 5.0
+    if "2.4" in blob or "2,4" in blob:
+        return 2.4
+    channel = parse_wlan_channel(snap.get("channel"))
+    if channel is not None:
+        if 1 <= channel <= 14:
+            return 2.4
+        if channel >= 32:
+            return 5.0
+    radio = str(snap.get("radio_type") or snap.get("radio") or "").lower()
+    if "802.11b" in radio or "802.11g" in radio:
+        return 2.4
+    if "802.11a" in radio and "ax" not in radio and "ac" not in radio:
+        return 5.0
+    return None
+
+
+def looks_like_mt7921(description: str = "", name: str = "") -> bool:
+    blob = f"{description} {name}".lower().replace("-", "").replace(" ", "")
+    return "mt7921" in blob or ("mediatek" in blob and "7921" in blob)
+
+
 def parse_wlan_interfaces(text: str) -> Dict[str, Any]:
     """Parse `netsh wlan show interfaces` (English + Vietnamese keys)."""
     info: Dict[str, Any] = {
@@ -420,6 +467,9 @@ def parse_wlan_interfaces(text: str) -> Dict[str, Any]:
         "description": "",
         "rx_mbps": -1.0,
         "signal": "",
+        "radio_type": "",
+        "channel": None,
+        "band": "",
         "location_blocked": looks_like_location_permission_error(text or ""),
     }
     if not text:
@@ -448,6 +498,13 @@ def parse_wlan_interfaces(text: str) -> Dict[str, Any]:
             )
         elif key_n in ("signal", "tín hiệu", "tin hieu"):
             info["signal"] = val
+        elif key_n in ("radio type", "radio", "loại radio", "loai radio"):
+            info["radio_type"] = val
+        elif key_n in ("channel", "kênh", "kenh"):
+            info["channel"] = parse_wlan_channel(val)
+        elif key_n in ("band", "băng tần", "bang tan"):
+            info["band"] = val
+    info["band_ghz"] = infer_wifi_band_ghz(info)
     return info
 
 
@@ -685,6 +742,14 @@ class WifiRecovery:
             "ssid": ssid,
             "link_mbps": link_mbps,
             "signal": wlan.get("signal") or "",
+            "radio_type": wlan.get("radio_type") or "",
+            "channel": wlan.get("channel"),
+            "band": wlan.get("band") or "",
+            "band_ghz": infer_wifi_band_ghz({
+                "band": wlan.get("band") or "",
+                "radio_type": wlan.get("radio_type") or "",
+                "channel": wlan.get("channel"),
+            }),
             "dns_servers": dns_servers,
             "filtering_dns": is_filtering_or_custom_dns(dns_servers),
             "status_flaps": status_flaps,
@@ -1089,6 +1154,10 @@ class WifiRecovery:
                 "dns_applied": dns_applied,
                 "needs_dns_confirm": needs_dns_confirm,
                 "needs_location_unlock": needs_location_unlock,
+                "needs_wifi_stability_guidance": (
+                    (not recovered)
+                    or cause in ("weak_link", "reconnect_loop", "link_loss")
+                ),
                 "location_gpo_locked": bool(snap.get("location_gpo_locked")),
                 "stopped_at": stopped_at,
                 "duration_ms": round((time.time() - t0) * 1000, 1),
@@ -1228,7 +1297,10 @@ class WifiRecovery:
             elif needs_dns_confirm:
                 confirm = " Cần quyền Admin để đổi DNS — bấm «Đổi DNS Siêu Tốc»."
             else:
-                confirm = " Nếu vẫn rớt, kiểm tra router / kênh Wi-Fi — ứng dụng không tắt-bật card."
+                confirm = (
+                    " Nếu vẫn rớt, kiểm tra router / kênh Wi-Fi — ứng dụng không tắt-bật card, "
+                    "không sửa được driver hay sóng RF. Xem gợi ý Ổn định Wi-Fi."
+                )
             msg = f"Nguyên nhân: {cause_label}. Đã sửa: {applied}. Wi-Fi chưa ổn định hẳn.{confirm}"
         logger.info(
             f"[WifiRecovery] wifi-drop repair recovered={recovered} ping_after={ping_after} "
@@ -1269,6 +1341,9 @@ SUCCESS_TOAST_COOLDOWN_SEC = 180.0
 MIN_OUTAGE_RETOAST_SEC = 60.0
 FAILURE_TOAST_COOLDOWN_SEC = 45.0
 CTA_TOAST_COOLDOWN_SEC = 0.0  # Location / DNS CTAs: no throttle by default
+# Guidance (5 GHz / driver / power-save): long cooldown — not a repair toast.
+STABILITY_TIP_COOLDOWN_SEC = 1800.0
+STABILITY_TIP_TOAST_KIND = "wifi_stability"
 RECOVERY_TOAST_KINDS = frozenset({"wifi_drop", "ping_missing"})
 
 
@@ -1333,6 +1408,7 @@ class RecoveryToastGate:
         self.last_success_cause = ""
         self.last_failure_ts = 0.0
         self.last_cta_ts = 0.0
+        self.last_stability_tip_ts = 0.0
         self._wifi_outage_start = 0.0
         self._ping_outage_start = 0.0
         self.saw_stable_since_wifi_success = False
@@ -1465,6 +1541,36 @@ class RecoveryToastGate:
                 cfg.get(
                     "auto_network_recovery_cta_toast_cooldown_seconds",
                     CTA_TOAST_COOLDOWN_SEC,
+                )
+            ),
+        )
+
+    def allow_stability_tip(
+        self,
+        now_ts: float,
+        *,
+        cooldown_sec: float = STABILITY_TIP_COOLDOWN_SEC,
+    ) -> bool:
+        """Throttle MT7921 / weak-link guidance so it is not a 15s nag."""
+        now_ts = float(now_ts)
+        last = float(self.last_stability_tip_ts or 0.0)
+        if last <= 0 or (now_ts - last) >= float(cooldown_sec):
+            self.last_stability_tip_ts = now_ts
+            return True
+        return False
+
+    def allow_stability_tip_from_config(
+        self,
+        now_ts: float,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        cfg = config if isinstance(config, dict) else {}
+        return self.allow_stability_tip(
+            now_ts,
+            cooldown_sec=float(
+                cfg.get(
+                    "auto_network_wifi_stability_tip_cooldown_seconds",
+                    STABILITY_TIP_COOLDOWN_SEC,
                 )
             ),
         )
