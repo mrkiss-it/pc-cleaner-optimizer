@@ -1124,6 +1124,7 @@ class PredictiveAIEngine:
         disk_free_gb = float(disk.get("free_gb", 50.0))
         disk_total_gb = float(disk.get("total_gb", 256.0))
         ping_ms = float(net.get("ping_ms", -1.0))
+        ping_measured = bool(net.get("ping_measured", False))
 
         leaks_list = leaks or []
         anom_list = anomalies if anomalies is not None else self.detect_anomalies(limit=3)
@@ -1186,6 +1187,8 @@ class PredictiveAIEngine:
             s_net = 8
         elif ping_ms > 100:
             s_net = 4
+        elif ping_measured:
+            s_net = 3
         else:
             s_net = 7
 
@@ -1262,7 +1265,17 @@ class PredictiveAIEngine:
             })
             potential_gain += 6
 
-        if ping_ms > 100:
+        if ping_measured and ping_ms <= 0:
+            issues.append("Không đo được Ping (timeout / mất kết nối)")
+            prescription.append({
+                "title": "Kiểm Tra & Sửa Mạng",
+                "desc": "Chẩn đoán card mạng, DNS, gateway rồi làm mới DNS cache (an toàn, không reset Winsock).",
+                "action_key": "repair_network_now",
+                "action_label": "🛠️ Sửa Mạng Ngay",
+                "points_gain": 4
+            })
+            potential_gain += 4
+        elif ping_ms > 100:
             issues.append(f"Độ trễ mạng cao ({ping_ms:.0f}ms)")
             prescription.append({
                 "title": "Tối Ưu Hóa Mạng & DNS Siêu Tốc",

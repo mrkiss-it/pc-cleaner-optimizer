@@ -104,6 +104,7 @@ class ApplyBestDnsWorker(QThread):
 class MainWindow(QMainWindow):
     floating_widget_toggled = pyqtSignal(bool)
     floating_widget_opacity_changed = pyqtSignal(int)
+    network_repair_done = pyqtSignal(dict)
 
     def __init__(self, config_manager: ConfigManager, tray_manager=None, monitor_hub=None):
         super().__init__()
@@ -150,6 +151,7 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_settings_into_ui()
         self.refresh_history_table()
+        self.network_repair_done.connect(self._on_network_repair_done)
 
         # Đồng bộ hóa dữ liệu thời gian thực từ trạm điều phối trung tâm
         if self.monitor_hub:
@@ -591,6 +593,12 @@ class MainWindow(QMainWindow):
         self.chk_auto_net = QCheckBox("Bật tự động tối ưu hóa mạng (Flush DNS định kỳ & khi Ping cao)")
         self.chk_auto_net.setStyleSheet("font-weight: bold; font-size: 14px; color: #38bdf8;")
 
+        self.chk_auto_ping_fix = QCheckBox(
+            "Khi Ping không đo được: tự kiểm tra mạng và sửa ngay (Flush DNS / ARP)"
+        )
+        self.chk_auto_ping_fix.setStyleSheet("font-weight: bold; font-size: 13px; color: #7dd3fc;")
+        self.chk_auto_ping_fix.setChecked(self.config_manager.get("auto_network_ping_fix_enabled", True))
+
         row_ping_spin = QHBoxLayout()
         lbl_ping_spin = QLabel("Ngưỡng Ping tự động kích hoạt tối ưu:")
         lbl_ping_spin.setStyleSheet("color: #94a3b8;")
@@ -601,7 +609,9 @@ class MainWindow(QMainWindow):
         self.spin_ping_threshold.setValue(self.config_manager.get("auto_network_ping_threshold_ms", 180))
 
         lbl_net_desc = QLabel(
-            "Tự động xóa sạch bộ nhớ đệm DNS bị kẹt khi dọn dẹp định kỳ hoặc khi độ trễ Ping vượt ngưỡng."
+            "Tự động xóa DNS cache khi dọn định kỳ hoặc khi Ping cao. "
+            "Nếu Ping timeout / unreachable, tự chẩn đoán (card, DNS, gateway) rồi làm mới DNS — "
+            "không reset Winsock, không restart card. Có thể tắt bên dưới."
         )
         lbl_net_desc.setStyleSheet("color: #64748b; font-size: 11px;")
         lbl_net_desc.setWordWrap(True)
@@ -611,6 +621,7 @@ class MainWindow(QMainWindow):
         row_ping_spin.addStretch()
 
         layout_network.addWidget(self.chk_auto_net)
+        layout_network.addWidget(self.chk_auto_ping_fix)
         layout_network.addLayout(row_ping_spin)
         layout_network.addWidget(lbl_net_desc)
         layout.addWidget(card_network)
@@ -789,6 +800,7 @@ class MainWindow(QMainWindow):
         self.chk_ai_autopilot.toggled.connect(self._auto_save_automation_settings)
         self.combo_ai_autopilot_mode.currentIndexChanged.connect(self._auto_save_automation_settings)
         self.chk_auto_net.toggled.connect(self._auto_save_automation_settings)
+        self.chk_auto_ping_fix.toggled.connect(self._auto_save_automation_settings)
         self.spin_ping_threshold.valueChanged.connect(self._auto_save_automation_settings)
         self.chk_auto_best_dns.toggled.connect(self._auto_save_automation_settings)
         self.combo_dns_interval.currentIndexChanged.connect(self._auto_save_automation_settings)
@@ -898,6 +910,7 @@ class MainWindow(QMainWindow):
             self.chk_floating_widget.setChecked(cfg.get("floating_widget_enabled", True))
             self.chk_leak_detection.setChecked(cfg.get("memory_leak_detection_enabled", True))
             self.chk_auto_net.setChecked(cfg.get("auto_network_optimize_enabled", True))
+            self.chk_auto_ping_fix.setChecked(cfg.get("auto_network_ping_fix_enabled", True))
             self.spin_ping_threshold.setValue(cfg.get("auto_network_ping_threshold_ms", 180))
 
             # Auto Best-DNS
@@ -946,6 +959,7 @@ class MainWindow(QMainWindow):
         self.config_manager.set("ai_autopilot_enabled", ap_enabled)
         self.config_manager.set("ai_autopilot_mode", ap_mode)
         self.config_manager.set("auto_network_optimize_enabled", self.chk_auto_net.isChecked())
+        self.config_manager.set("auto_network_ping_fix_enabled", self.chk_auto_ping_fix.isChecked())
         self.config_manager.set("auto_network_ping_threshold_ms", self.spin_ping_threshold.value())
 
         # Auto Best-DNS
@@ -1375,8 +1389,8 @@ class MainWindow(QMainWindow):
             elif action_key in ("enable_game_boost", "toggle_game_boost"):
                 # Copilot/Advisor labels say "Kích Hoạt" — enable only, never toggle off.
                 self.enable_game_boost()
-            elif action_key == "optimize_network":
-                self.open_network_dialog()
+            elif action_key in ("optimize_network", "repair_network_now"):
+                self.repair_network_now()
             elif action_key == "switch_dns":
                 self.apply_fast_dns()
             elif action_key == "open_network_dialog":
@@ -1502,6 +1516,64 @@ class MainWindow(QMainWindow):
             self.lbl_status.setText(msg)
         if best.get("success"):
             QMessageBox.information(self, "Đổi DNS Siêu Tốc", msg)
+
+    def repair_network_now(self, apply_dns: bool = False):
+        """Chẩn đoán mạng + sửa an toàn khi Ping không đo được (chạy nền, có thông báo)."""
+        if getattr(self, "_network_repair_busy", False):
+            if hasattr(self, "lbl_status"):
+                self.lbl_status.setText("🌐 Đang kiểm tra mạng...")
+            return
+        self._network_repair_busy = True
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText("🌐 Đang kiểm tra mạng vì Ping không đo được...")
+
+        import threading
+
+        def _worker():
+            from core.network_optimizer import NetworkOptimizer
+            try:
+                result = NetworkOptimizer.diagnose_and_repair_missing_ping(apply_dns=apply_dns)
+            except Exception as e:
+                result = {
+                    "success": False,
+                    "repaired": False,
+                    "recovered": False,
+                    "message": f"Không kiểm tra được mạng: {e}",
+                }
+            self.network_repair_done.emit(result)
+
+        threading.Thread(target=_worker, daemon=True, name="ManualPingFix").start()
+
+    def _on_network_repair_done(self, result: dict):
+        self._network_repair_busy = False
+        msg = result.get("message", "Đã kiểm tra mạng.")
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.setText(f"🌐 {msg}")
+        if hasattr(self, "_ai_advisor"):
+            try:
+                self._ai_advisor.invalidate_cache()
+            except Exception:
+                pass
+        try:
+            from ui.toast_notification import ToastManager, LEVEL_SUCCESS, LEVEL_WARNING
+            recovered = bool(result.get("recovered"))
+            ToastManager.show_toast(
+                title="Ping đã đo được" if recovered else "Đã kiểm tra / sửa mạng",
+                message=msg,
+                level=LEVEL_SUCCESS if recovered else LEVEL_WARNING,
+                icon="🌐",
+                action_text="📶 Xem Mạng",
+                action_callback=self.open_network_dialog,
+                duration_ms=5200,
+                play_sound=bool(self.config_manager.get("notification_sound_enabled", False)),
+            )
+        except Exception:
+            pass
+        if self.monitor_hub:
+            try:
+                self.monitor_hub.force_refresh()
+            except Exception:
+                pass
 
     def _update_ai_badge(self):
         """Cập nhật màu/text button AI theo số lượng suggestions nghiêm trọng và AI Health Score."""

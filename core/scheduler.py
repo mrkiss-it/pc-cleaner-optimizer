@@ -26,6 +26,10 @@ class BackgroundScheduler(QObject):
         self.ram_cooldown_seconds = 180
         self.last_net_trigger = datetime.now() - timedelta(minutes=10)
         self.net_cooldown_seconds = 300
+        self.last_ping_fix_trigger = datetime.now() - timedelta(minutes=30)
+        self.ping_fix_cooldown_seconds = 300
+        self.ping_fix_unrecovered = 0
+        self.ping_fix_max_unrecovered = 2
         self.last_dns_trigger = datetime.now() - timedelta(hours=2)
         self.dns_cooldown_seconds = 7200
         self.last_security_trigger = datetime.now() - timedelta(hours=23)  # Run first scan sooner
@@ -64,15 +68,37 @@ class BackgroundScheduler(QObject):
                     self.run_auto_ram_boost()
 
         # 3. Check High Ping Network Auto-Optimization
+        net_info = SystemMonitor.get_network_info()
+        ping = net_info.get("ping_ms", -1)
+        if ping > 0:
+            self.ping_fix_unrecovered = 0
+
         if config.get("auto_network_optimize_enabled", True):
-            net_info = SystemMonitor.get_network_info()
-            ping = net_info.get("ping_ms", -1)
             ping_threshold = config.get("auto_network_ping_threshold_ms", 180)
             if ping > ping_threshold and ping > 0:
                 cooldown_elapsed = (now - self.last_net_trigger).total_seconds()
                 if cooldown_elapsed >= self.net_cooldown_seconds:
                     self.last_net_trigger = now
                     self.run_auto_network_boost(ping, ping_threshold)
+
+        # 3b. Missing / failed ping → health check + safe repair (throttled)
+        if self.should_trigger_missing_ping_fix(
+            enabled=bool(config.get("auto_network_ping_fix_enabled", True)),
+            ping_ms=float(ping),
+            ping_measured=bool(net_info.get("ping_measured", False)),
+            fail_streak=int(net_info.get("ping_fail_streak", 0)),
+            min_streak=int(config.get("auto_network_ping_fail_streak", 3)),
+            now_ts=now.timestamp(),
+            last_trigger_ts=self.last_ping_fix_trigger.timestamp(),
+            cooldown_sec=float(config.get(
+                "auto_network_ping_fix_cooldown_seconds",
+                self.ping_fix_cooldown_seconds
+            )),
+            unrecovered_repairs=self.ping_fix_unrecovered,
+            max_unrecovered=self.ping_fix_max_unrecovered,
+        ):
+            self.last_ping_fix_trigger = now
+            self.run_auto_missing_ping_fix()
 
         # 4. Check Auto Best-DNS Switcher
         if config.get("auto_best_dns_enabled", False):
@@ -146,6 +172,50 @@ class BackgroundScheduler(QObject):
             "percent_after": ram_res.get("percent_after", 0)
         })
 
+    @staticmethod
+    def should_trigger_missing_ping_fix(
+        enabled: bool,
+        ping_ms: float,
+        ping_measured: bool,
+        fail_streak: int,
+        min_streak: int,
+        now_ts: float,
+        last_trigger_ts: float,
+        cooldown_sec: float,
+        unrecovered_repairs: int,
+        max_unrecovered: int = 2,
+    ) -> bool:
+        """
+        Quyết định có chạy auto-fix khi Ping không đo được hay không.
+
+        Không kích hoạt khi:
+          - tính năng tắt
+          - đồng hồ chưa đo lần nào (tránh 'sửa' vì meter chưa chạy)
+          - ping_ms > 0 (mạng ổn)
+          - chưa đủ chuỗi thất bại liên tiếp
+          - đang trong cooldown
+          - đã sửa N lần liên tiếp mà Ping vẫn không về
+        """
+        if not enabled:
+            return False
+        if not ping_measured:
+            return False
+        if ping_ms is None:
+            return False
+        try:
+            ping_val = float(ping_ms)
+        except (TypeError, ValueError):
+            ping_val = -1.0
+        if ping_val > 0:
+            return False
+        if int(fail_streak) < int(min_streak):
+            return False
+        if int(unrecovered_repairs) >= int(max_unrecovered):
+            return False
+        if last_trigger_ts > 0 and (now_ts - last_trigger_ts) < float(cooldown_sec):
+            return False
+        return True
+
     def run_auto_network_boost(self, ping: float, threshold: float):
         """
         Tự động làm mới đường truyền và giải phóng DNS cache khi Ping vượt ngưỡng.
@@ -163,6 +233,49 @@ class BackgroundScheduler(QObject):
         except Exception as e:
             from core.logger import logger
             logger.error(f"[Scheduler] Lỗi khi tự động tối ưu mạng: {e}")
+
+    def run_auto_missing_ping_fix(self):
+        """
+        Tự động chẩn đoán + sửa an toàn khi Ping timeout / unreachable / -1.
+        Chạy nền để không đóng băng UI.
+        """
+        import threading
+
+        def _worker():
+            try:
+                from core.network_optimizer import NetworkOptimizer
+                from core.logger import logger
+                result = NetworkOptimizer.diagnose_and_repair_missing_ping(apply_dns=False)
+                recovered = bool(result.get("recovered"))
+                if recovered:
+                    self.ping_fix_unrecovered = 0
+                elif result.get("repaired"):
+                    self.ping_fix_unrecovered += 1
+                    logger.info(
+                        f"[Scheduler] Missing-ping repair chưa khôi phục Ping "
+                        f"(lần {self.ping_fix_unrecovered}/{self.ping_fix_max_unrecovered})."
+                    )
+                self.network_optimized.emit({
+                    "type": "ping_missing",
+                    "success": result.get("success", False),
+                    "repaired": result.get("repaired", False),
+                    "recovered": recovered,
+                    "ping_before": result.get("ping_before", -1),
+                    "ping_after": result.get("ping_after", -1),
+                    "issues": result.get("issues", []),
+                    "steps": result.get("steps", []),
+                    "skipped": result.get("skipped", []),
+                    "details": result,
+                    "message": result.get(
+                        "message",
+                        "Đã kiểm tra mạng vì Ping không đo được."
+                    ),
+                })
+            except Exception as e:
+                from core.logger import logger
+                logger.error(f"[Scheduler] Lỗi khi tự sửa mạng (Ping missing): {e}")
+
+        threading.Thread(target=_worker, daemon=True, name="MissingPingFix").start()
 
     def run_auto_best_dns(self):
         """

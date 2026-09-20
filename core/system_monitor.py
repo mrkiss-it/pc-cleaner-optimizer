@@ -1,8 +1,18 @@
 import os
 import time
+import threading
 import psutil
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
+
+# TCP probes used as a lightweight "ping" (ICMP is often blocked / needs admin).
+PING_TARGETS: Tuple[Tuple[str, int], ...] = (
+    ("8.8.8.8", 53),
+    ("1.1.1.1", 53),
+    ("1.1.1.1", 443),
+)
+PING_REFRESH_SEC = 4.0
+PING_SOCKET_TIMEOUT = 0.45
 
 class SystemMonitor:
     _last_cpu_time = 0.0
@@ -16,6 +26,12 @@ class SystemMonitor:
     _cached_ping = -1.0
     _last_ping_time = 0.0
     _cached_adapter = ""
+    _ping_measured = False
+    _ping_fail_streak = 0
+    _ping_status = "unknown"   # unknown | ok | timeout | unreachable
+    _last_ping_error = "timeout"
+    _ping_thread_running = False
+    _ping_lock = threading.Lock()
 
     @staticmethod
     def get_ram_info() -> Dict[str, Any]:
@@ -91,17 +107,91 @@ class SystemMonitor:
             return f"{bps / (1024 * 1024):.2f} MB/s"
 
     @staticmethod
-    def _measure_quick_ping() -> float:
+    def _measure_quick_ping(timeout: float = PING_SOCKET_TIMEOUT) -> float:
+        """
+        Đo độ trễ TCP tới vài máy chủ công cộng. Trả về ms của lần thành công
+        đầu tiên, hoặc -1 nếu tất cả đều timeout / không tới được.
+        Không dùng ICMP để tránh cần raw socket / quyền admin.
+        """
         import socket
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(0.35)
-            t0 = time.time()
-            s.connect(("8.8.8.8", 53))
-            s.close()
-            return round((time.time() - t0) * 1000, 1)
-        except Exception:
-            return -1.0
+        last_error = "timeout"
+        for host, port in PING_TARGETS:
+            s = None
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(timeout)
+                t0 = time.time()
+                s.connect((host, port))
+                return round((time.time() - t0) * 1000, 1)
+            except (socket.timeout, TimeoutError):
+                last_error = "timeout"
+            except OSError:
+                last_error = "unreachable"
+            except Exception:
+                last_error = "unreachable"
+            finally:
+                if s is not None:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+        # Stash last error class on the function for callers that care.
+        SystemMonitor._last_ping_error = last_error
+        return -1.0
+
+    @classmethod
+    def _record_ping_result(cls, ping: float) -> None:
+        cls._cached_ping = ping
+        cls._ping_measured = True
+        cls._last_ping_time = time.time()
+        if ping > 0:
+            cls._ping_fail_streak = 0
+            cls._ping_status = "ok"
+        else:
+            cls._ping_fail_streak += 1
+            cls._ping_status = getattr(cls, "_last_ping_error", "timeout") or "timeout"
+
+    @classmethod
+    def measure_ping_now(cls, timeout: float = PING_SOCKET_TIMEOUT) -> float:
+        """Đo ping ngay (bỏ qua cache 4 giây). Dùng cho Copilot / chẩn đoán."""
+        ping = cls._measure_quick_ping(timeout=timeout)
+        with cls._ping_lock:
+            cls._record_ping_result(ping)
+        return ping
+
+    @classmethod
+    def _ensure_ping_async(cls) -> None:
+        """Đo ping nền mỗi 4 giây — không chặn UI thread của SystemMonitorHub."""
+        now = time.time()
+        if cls._ping_measured and (now - cls._last_ping_time) <= PING_REFRESH_SEC:
+            return
+        if cls._ping_thread_running:
+            return
+        cls._ping_thread_running = True
+        # Stamp the clock so the hub does not spawn a thread every 800ms.
+        if cls._last_ping_time <= 0:
+            cls._last_ping_time = now
+
+        def _worker():
+            try:
+                ping = cls._measure_quick_ping()
+                with cls._ping_lock:
+                    cls._record_ping_result(ping)
+            finally:
+                cls._ping_thread_running = False
+
+        threading.Thread(target=_worker, daemon=True, name="PingProbe").start()
+
+    @classmethod
+    def reset_ping_state(cls) -> None:
+        """Reset cache — dùng trong unit test."""
+        with cls._ping_lock:
+            cls._cached_ping = -1.0
+            cls._last_ping_time = 0.0
+            cls._ping_measured = False
+            cls._ping_fail_streak = 0
+            cls._ping_status = "unknown"
+            cls._ping_thread_running = False
 
     @staticmethod
     def _detect_active_adapter() -> str:
@@ -145,10 +235,8 @@ class SystemMonitor:
         cls._last_net_bytes_sent = bytes_sent
         cls._last_net_time = now
 
-        # Đo ping định kỳ mỗi 4 giây
-        if now - cls._last_ping_time > 4.0:
-            cls._cached_ping = cls._measure_quick_ping()
-            cls._last_ping_time = now
+        # Đo ping định kỳ mỗi 4 giây trên thread riêng (không block UI 800ms).
+        cls._ensure_ping_async()
 
         # Xác định card mạng chính
         if not cls._cached_adapter or (int(now) % 10 == 0):
@@ -162,6 +250,9 @@ class SystemMonitor:
             "total_recv_mb": round(bytes_recv / (1024 ** 2), 1),
             "total_sent_mb": round(bytes_sent / (1024 ** 2), 1),
             "ping_ms": cls._cached_ping,
+            "ping_status": cls._ping_status,
+            "ping_measured": cls._ping_measured,
+            "ping_fail_streak": cls._ping_fail_streak,
             "adapter": cls._cached_adapter
         }
 

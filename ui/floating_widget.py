@@ -190,6 +190,10 @@ class FloatingWidget(QWidget):
         if ping_val <= 0:
             ping_text  = "-- ms"
             ping_color = "#64748b"   # Xám - không đo được
+            if net_info.get("ping_measured"):
+                self.lbl_ping_title.setToolTip("Ping không đo được (timeout / mất mạng)")
+            else:
+                self.lbl_ping_title.setToolTip("Đang đo Ping...")
         elif ping_val < 40:
             ping_text  = f"{ping_val:.0f} ms"
             ping_color = "#34d399"   # Xanh lá - cực nhanh

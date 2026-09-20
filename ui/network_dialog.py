@@ -331,9 +331,14 @@ class NetworkOptimizerDialog(QDialog):
             else:
                 self.card_ping._lbl_val.setStyleSheet("color: #f43f5e; font-size: 20px; font-weight: bold;")
                 self.card_ping._lbl_sub.setText("Độ trễ cao 🔴")
-        else:
+        elif not net.get("ping_measured"):
             self.card_ping._lbl_val.setText("-- ms")
             self.card_ping._lbl_sub.setText("Đang đo...")
+        else:
+            self.card_ping._lbl_val.setText("-- ms")
+            self.card_ping._lbl_val.setStyleSheet("color: #94a3b8; font-size: 20px; font-weight: bold;")
+            status = net.get("ping_status") or "timeout"
+            self.card_ping._lbl_sub.setText(f"Không đo được ({status}) • kiểm tra mạng")
 
         tot_mb = net.get("total_recv_mb", 0) + net.get("total_sent_mb", 0)
         self.card_total._lbl_val.setText(f"{tot_mb:.1f} MB")
