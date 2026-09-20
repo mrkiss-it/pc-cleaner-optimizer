@@ -456,64 +456,10 @@ print(" [PASS] 32. Uninstaller UI: UninstallerDialog (3 tabs) & MainWindow btn_u
 
 # 33. Test Windows Update Caches & Servicing Logs Scanner (v3.6 Pro)
 from core.winsxs_cleaner import WinSxSCleaner, UpdateCacheItem, OemDriverItem
-caches = WinSxSCleaner.scan_update_caches()
-assert isinstance(caches, list), "Caches phai la list"
-assert len(caches) >= 3, "So luong danh muc update caches phai >= 3"
-sample_cache = caches[0]
-assert hasattr(sample_cache, "size_mb") and hasattr(sample_cache, "file_count"), "Cache item phai co size_mb va file_count"
-total_cache_size = sum(c.size_mb for c in caches)
-print(f" [PASS] 33. Update Caches Scanner: Quet duoc {len(caches)} danh muc bo dem/logs ({total_cache_size:.1f} MB phat hien).")
 
-# 34. Test DriverStore OEM Drivers Scanner & Deduplicator (v3.6 Pro)
-all_oem, dup_oem = WinSxSCleaner.scan_oem_drivers()
-assert isinstance(all_oem, list) and isinstance(dup_oem, list), "Drivers phai la list"
-assert len(all_oem) > 0, "So luong OEM drivers phai > 0"
-summary_winsxs = WinSxSCleaner.get_summary()
-assert "total_cache_mb" in summary_winsxs and "duplicate_drivers_count" in summary_winsxs
-assert summary_winsxs["duplicate_drivers_count"] == len(dup_oem), "Duplicate drivers count phai khop voi list"
-if dup_oem:
-    assert dup_oem[0].is_duplicate == True, "Duplicate driver phai co is_duplicate == True"
-print(f" [PASS] 34. DriverStore Scanner: Nhan dien {len(all_oem)} OEM Drivers, {len(dup_oem)} goi driver cu trung lap.")
-
-# 35. Test Update Cache Clean Logic & Mock Directory (v3.6 Pro)
-mock_cache_dir = tempfile.mkdtemp(prefix="pc_cleaner_mock_cache_")
-with open(os.path.join(mock_cache_dir, "mock_update.cab"), "w") as f:
-    f.write("mock update cab content" * 100)
-
-mock_cache_item = UpdateCacheItem(
-    key="test_mock",
-    name="Mock Cache Target",
-    path=mock_cache_dir,
-    size_mb=0.1,
-    file_count=1,
-    description="Test mock cache",
-)
-dry_ok, dry_msg, dry_fc, dry_mb = WinSxSCleaner.clean_cache_item(mock_cache_item, dry_run=True)
-assert dry_ok == True and dry_fc == 1, "Dry run phai bao cao 1 file"
-assert os.path.exists(os.path.join(mock_cache_dir, "mock_update.cab")), "Dry run khong duoc xoa file that"
-
-real_ok, real_msg, real_fc, real_mb = WinSxSCleaner.clean_cache_item(mock_cache_item, dry_run=False)
-assert real_ok == True and real_fc == 1, "Real clean phai xoa 1 file thanh cong"
-assert not os.path.exists(os.path.join(mock_cache_dir, "mock_update.cab")), "File trong mock cache phai bi xoa"
-shutil.rmtree(mock_cache_dir, ignore_errors=True)
-print(" [PASS] 35. Cache Clean Logic: Dry-run & Real-clean hoat dong an toan 100%, quan ly file he thong chuan xac.")
-
-# 36. Test WinSxS Dialog UI & MainWindow Integration (v3.6 Pro)
-from ui.winsxs_dialog import WinSxSDialog
-winsxs_dlg = WinSxSDialog(parent=win)
-assert winsxs_dlg.tabs.count() == 3, "WinSxSDialog phai co 3 tabs (WinSxS, Caches, DriverStore)"
-assert hasattr(win, "btn_winsxs"), "MainWindow phai co nut btn_winsxs"
-assert hasattr(win, "open_winsxs_dialog"), "MainWindow phai co ham open_winsxs_dialog"
-dispatched = []
-orig_open = win.open_winsxs_dialog
-win.open_winsxs_dialog = lambda: dispatched.append(True)
-win._ai_action_dispatcher("open_winsxs_dialog")
-assert len(dispatched) == 1, "Action dispatcher phai kich hoat open_winsxs_dialog"
-win.open_winsxs_dialog = orig_open
-winsxs_dlg.close()
-print(" [PASS] 36. WinSxS UI: WinSxSDialog (3 tabs) & MainWindow Integration khoi tao thanh cong!")
-
-# 36b. Test WinSxS scan throttle & log level (idle AI badge is ~10s; must not rescan/log INFO)
+# 33b. Test WinSxS scan throttle & log level (idle AI badge is ~10s; must not rescan/log INFO)
+# Placed before the real-path scan so the throttle contract is exercised even when
+# Windows WinSxS directories are absent (Linux/offscreen CI).
 import logging as _logging
 from core.logger import logger as _app_logger
 
@@ -603,9 +549,66 @@ finally:
     WinSxSCleaner.invalidate_cache()
     shutil.rmtree(_throttle_dir, ignore_errors=True)
 print(
-    f" [PASS] 36b. WinSxS throttle: cache TTL={WinSxSCleaner.CACHE_TTL:.0f}s, "
+    f" [PASS] 33b. WinSxS throttle: cache TTL={WinSxSCleaner.CACHE_TTL:.0f}s, "
     "idle scan DEBUG-only, force_refresh van quet moi."
 )
+
+caches = WinSxSCleaner.scan_update_caches()
+assert isinstance(caches, list), "Caches phai la list"
+assert len(caches) >= 3, "So luong danh muc update caches phai >= 3"
+sample_cache = caches[0]
+assert hasattr(sample_cache, "size_mb") and hasattr(sample_cache, "file_count"), "Cache item phai co size_mb va file_count"
+total_cache_size = sum(c.size_mb for c in caches)
+print(f" [PASS] 33. Update Caches Scanner: Quet duoc {len(caches)} danh muc bo dem/logs ({total_cache_size:.1f} MB phat hien).")
+
+# 34. Test DriverStore OEM Drivers Scanner & Deduplicator (v3.6 Pro)
+all_oem, dup_oem = WinSxSCleaner.scan_oem_drivers()
+assert isinstance(all_oem, list) and isinstance(dup_oem, list), "Drivers phai la list"
+assert len(all_oem) > 0, "So luong OEM drivers phai > 0"
+summary_winsxs = WinSxSCleaner.get_summary()
+assert "total_cache_mb" in summary_winsxs and "duplicate_drivers_count" in summary_winsxs
+assert summary_winsxs["duplicate_drivers_count"] == len(dup_oem), "Duplicate drivers count phai khop voi list"
+if dup_oem:
+    assert dup_oem[0].is_duplicate == True, "Duplicate driver phai co is_duplicate == True"
+print(f" [PASS] 34. DriverStore Scanner: Nhan dien {len(all_oem)} OEM Drivers, {len(dup_oem)} goi driver cu trung lap.")
+
+# 35. Test Update Cache Clean Logic & Mock Directory (v3.6 Pro)
+mock_cache_dir = tempfile.mkdtemp(prefix="pc_cleaner_mock_cache_")
+with open(os.path.join(mock_cache_dir, "mock_update.cab"), "w") as f:
+    f.write("mock update cab content" * 100)
+
+mock_cache_item = UpdateCacheItem(
+    key="test_mock",
+    name="Mock Cache Target",
+    path=mock_cache_dir,
+    size_mb=0.1,
+    file_count=1,
+    description="Test mock cache",
+)
+dry_ok, dry_msg, dry_fc, dry_mb = WinSxSCleaner.clean_cache_item(mock_cache_item, dry_run=True)
+assert dry_ok == True and dry_fc == 1, "Dry run phai bao cao 1 file"
+assert os.path.exists(os.path.join(mock_cache_dir, "mock_update.cab")), "Dry run khong duoc xoa file that"
+
+real_ok, real_msg, real_fc, real_mb = WinSxSCleaner.clean_cache_item(mock_cache_item, dry_run=False)
+assert real_ok == True and real_fc == 1, "Real clean phai xoa 1 file thanh cong"
+assert not os.path.exists(os.path.join(mock_cache_dir, "mock_update.cab")), "File trong mock cache phai bi xoa"
+shutil.rmtree(mock_cache_dir, ignore_errors=True)
+print(" [PASS] 35. Cache Clean Logic: Dry-run & Real-clean hoat dong an toan 100%, quan ly file he thong chuan xac.")
+
+# 36. Test WinSxS Dialog UI & MainWindow Integration (v3.6 Pro)
+from ui.winsxs_dialog import WinSxSDialog
+winsxs_dlg = WinSxSDialog(parent=win)
+assert winsxs_dlg.tabs.count() == 3, "WinSxSDialog phai co 3 tabs (WinSxS, Caches, DriverStore)"
+assert hasattr(win, "btn_winsxs"), "MainWindow phai co nut btn_winsxs"
+assert hasattr(win, "open_winsxs_dialog"), "MainWindow phai co ham open_winsxs_dialog"
+dispatched = []
+orig_open = win.open_winsxs_dialog
+win.open_winsxs_dialog = lambda: dispatched.append(True)
+win._ai_action_dispatcher("open_winsxs_dialog")
+assert len(dispatched) == 1, "Action dispatcher phai kich hoat open_winsxs_dialog"
+win.open_winsxs_dialog = orig_open
+winsxs_dlg.close()
+print(" [PASS] 36. WinSxS UI: WinSxSDialog (3 tabs) & MainWindow Integration khoi tao thanh cong!")
 
 # 37. Test Setup Wizard Helpers: Shortcuts & Windows Registry Registration (v3.7 Pro)
 from installer.setup_wizard import (
