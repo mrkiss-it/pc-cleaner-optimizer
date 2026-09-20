@@ -3,7 +3,7 @@
 ; MyAppName / MyAppVersion / MyAppPublisher MUST match app_meta.py (enforced by tests).
 
 #define MyAppName "PC Auto Cleaner & Optimizer"
-#define MyAppVersion "3.8.1"
+#define MyAppVersion "3.8.2"
 #define MyAppPublisher "PC Cleaner Team"
 #define MyAppURL "https://github.com/mrkiss-it/pc-cleaner-optimizer"
 #define MyAppExeName "PCAutoCleaner.exe"
@@ -46,4 +46,5 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
 
