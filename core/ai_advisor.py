@@ -707,6 +707,8 @@ class AIAdvisor:
         results: List[Suggestion] = []
         try:
             from core.winsxs_cleaner import WinSxSCleaner
+            # Background rule: use cached scan (CACHE_TTL). Do not force-refresh
+            # here — AI badge / dialog auto-refresh every ~10s would flood I/O.
             summary = WinSxSCleaner.get_summary()
             cache_mb = summary.get("total_cache_mb", 0.0)
             dup_drivers = summary.get("duplicate_drivers_count", 0)

@@ -513,6 +513,100 @@ win.open_winsxs_dialog = orig_open
 winsxs_dlg.close()
 print(" [PASS] 36. WinSxS UI: WinSxSDialog (3 tabs) & MainWindow Integration khoi tao thanh cong!")
 
+# 36b. Test WinSxS scan throttle & log level (idle AI badge is ~10s; must not rescan/log INFO)
+import logging as _logging
+from core.logger import logger as _app_logger
+
+class _WinSxSLogCap(_logging.Handler):
+    def __init__(self):
+        super().__init__(level=_logging.DEBUG)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+    def info_da_quet(self):
+        return [
+            r for r in self.records
+            if r.levelno == _logging.INFO and "Đã quét" in r.getMessage()
+        ]
+
+_throttle_dir = tempfile.mkdtemp(prefix="pc_cleaner_winsxs_throttle_")
+with open(os.path.join(_throttle_dir, "cache.bin"), "w") as _tf:
+    _tf.write("idle-scan-throttle")
+_orig_targets = WinSxSCleaner.CACHE_TARGETS
+_orig_walk = os.walk
+_walk_calls = {"n": 0}
+
+def _counting_walk(*args, **kwargs):
+    _walk_calls["n"] += 1
+    return _orig_walk(*args, **kwargs)
+
+os.walk = _counting_walk
+WinSxSCleaner.CACHE_TARGETS = [{
+    "key": "throttle_test",
+    "name": "Throttle Test Cache",
+    "path": _throttle_dir,
+    "desc": "Temp dir proving idle callers do not re-walk every ~10s",
+    "safety": "safe",
+    "is_protected_service": False,
+    "service_name": None,
+}]
+
+_cap = _WinSxSLogCap()
+_app_logger.addHandler(_cap)
+_prev_level = _app_logger.level
+_app_logger.setLevel(_logging.DEBUG)
+try:
+    WinSxSCleaner.invalidate_cache()
+    _walk_calls["n"] = 0
+    first = WinSxSCleaner.scan_update_caches()
+    walks_after_first = _walk_calls["n"]
+    assert walks_after_first >= 1, "Lan quet dau phai walk thu muc"
+    assert first is WinSxSCleaner.scan_update_caches(), (
+        "scan_update_caches() phai tra cache trong CACHE_TTL "
+        "(AI badge / Smart Suggestions goi moi ~10s khi idle)"
+    )
+    assert first is WinSxSCleaner.get_summary()["caches"], (
+        "get_summary() idle phai dung cache scan_update_caches, khong walk lai"
+    )
+    assert _walk_calls["n"] == walks_after_first, (
+        "Goi lap lai trong CACHE_TTL khong duoc os.walk lai"
+    )
+    assert len(_cap.info_da_quet()) == 0, (
+        "Routine/idle scan khong duoc ghi INFO 'Da quet' vao app.log"
+    )
+
+    _cap.records.clear()
+    forced = WinSxSCleaner.scan_update_caches(force_refresh=True)
+    assert forced is not first, "force_refresh=True (dialog / Lam moi) phai bo qua cache"
+    assert _walk_calls["n"] > walks_after_first, "force_refresh phai walk lai"
+    assert len(_cap.info_da_quet()) == 1, (
+        "User-initiated force_refresh moi duoc phep INFO 'Da quet'"
+    )
+
+    WinSxSCleaner._cached_caches_ts = 0.0  # het han CACHE_TTL (5 phut)
+    _cap.records.clear()
+    expired = WinSxSCleaner.scan_update_caches()
+    assert expired is not forced, "Het CACHE_TTL phai quet lai"
+    assert len(_cap.info_da_quet()) == 0, (
+        "Rescan khi TTL het han nhung ket qua khong doi van la DEBUG, khong INFO"
+    )
+    assert WinSxSCleaner.CACHE_TTL >= 60.0, (
+        "CACHE_TTL phai la phut-scale, khong duoc ~10s theo AI badge timer"
+    )
+finally:
+    os.walk = _orig_walk
+    WinSxSCleaner.CACHE_TARGETS = _orig_targets
+    _app_logger.removeHandler(_cap)
+    _app_logger.setLevel(_prev_level)
+    WinSxSCleaner.invalidate_cache()
+    shutil.rmtree(_throttle_dir, ignore_errors=True)
+print(
+    f" [PASS] 36b. WinSxS throttle: cache TTL={WinSxSCleaner.CACHE_TTL:.0f}s, "
+    "idle scan DEBUG-only, force_refresh van quet moi."
+)
+
 # 37. Test Setup Wizard Helpers: Shortcuts & Windows Registry Registration (v3.7 Pro)
 from installer.setup_wizard import (
     get_default_install_dir, create_windows_shortcut,

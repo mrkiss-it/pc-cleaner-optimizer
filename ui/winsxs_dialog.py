@@ -500,7 +500,8 @@ class WinSxSDialog(QDialog):
         self.lbl_status.setText("⏳ Đang rà soát bộ nhớ đệm Windows Update và DriverStore...")
         QApplication.processEvents()
 
-        summary = WinSxSCleaner.get_summary()
+        # On-demand: bypass idle CACHE_TTL so opening the dialog / Làm mới is fresh.
+        summary = WinSxSCleaner.get_summary(force_refresh=True)
 
         self._caches_cache = summary.get("caches", [])
         self._drivers_all_cache, self._drivers_dup_cache = WinSxSCleaner.scan_oem_drivers()
