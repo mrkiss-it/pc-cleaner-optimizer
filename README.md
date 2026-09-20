@@ -200,6 +200,10 @@ Thẻ **Ổn định Wi-Fi** trong Settings (luôn hiện) và Trung tâm Mạng
   - Bảng trực quan mức tải thời gian thực trên từng luồng (Core 0 -> Core 15) với dải màu linh hoạt (xanh lục, cam, đỏ) và xung nhịp hiện tại / Max GHz.
 - **Nhận Diện Card Đồ Họa (GPU)**:
   - Quét qua WMI/CIM hiển thị tên GPU (Intel Iris Xe, NVIDIA GeForce, AMD Radeon), phiên bản Driver và dung lượng bộ nhớ VRAM.
+- **Giám sát nhiệt laptop (CPU / package / GPU)**:
+  - Hiện nhiệt độ khi máy lộ cảm biến; **không bịa số** nếu Windows để trống `MSAcpi_ThermalZoneTemperature` / `Win32_TemperatureProbe` (phổ biến trên nhiều laptop, kể cả ASUS + MediaTek Wi-Fi).
+  - Đọc LibreHardwareMonitor / OpenHardwareMonitor WMI nếu bạn đã cài và chạy nền; `nvidia-smi` khi có GPU NVIDIA.
+  - Toast / banner khi vượt ngưỡng (mặc định **90°C** package, chỉnh trong Settings) — có cooldown ~30 phút để không spam.
 
 ---
 
@@ -240,6 +244,7 @@ pc-cleaner-optimizer/
 │   ├── game_booster.py         # Chế độ Game Boost (ưu tiên CPU, dồn tài nguyên)
 │   ├── system_monitor.py       # Hub giám sát phần cứng RAM, CPU, Ổ đĩa thời gian thực
 │   ├── hardware_monitor.py     # Đo độ chai pin laptop, Windows battery report, CPU đa nhân, GPU
+│   ├── thermal_monitor.py      # Nhiệt CPU/GPU (LHM/OHM WMI, nvidia-smi, ACPI) — không bịa số
 │   ├── network_optimizer.py    # Đo tốc độ DNS song song, tối ưu TCP/IP, cấu hình Adapter
 │   ├── wifi_recovery.py        # Phát hiện Wi-Fi rớt / vòng reconnect, DHCP, reconnect SSID
 │   ├── wifi_stability.py       # Gợi ý Ổn định Wi-Fi (Windows; không sửa driver/RF)
@@ -262,6 +267,7 @@ pc-cleaner-optimizer/
     ├── tray_icon.py            # Khay hệ thống: menu nhanh, Kiểm Tra Cập Nhật, EULA
     ├── eula_dialog.py          # Điều khoản sử dụng (EULA) lần đầu + xem lại
     ├── wifi_stability_card.py  # Thẻ Ổn định Wi-Fi (Settings / mạng)
+    ├── thermal_card.py         # Thẻ nhiệt laptop (dashboard / phần cứng / empty-state)
     ├── hardware_dialog.py      # Hộp thoại Sức khỏe Pin Laptop & Cảm biến phần cứng CPU/GPU
     ├── network_dialog.py       # Hộp thoại đo tốc độ DNS & Tối ưu mạng
     ├── disk_registry_dialog.py # Hộp thoại Sức khỏe ổ đĩa & Dọn dẹp Registry

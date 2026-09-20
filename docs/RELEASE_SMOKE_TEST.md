@@ -44,6 +44,7 @@ Chạy `PCAutoCleaner_Setup.exe` trên máy **chưa cài** (hoặc đã gỡ s�
   - **Cập nhật** — Kiểm Tra Cập Nhật / Cập nhật
   - **Gỡ cài đặt** — nút trong Settings (không nhầm **Gỡ Phần Mềm** trên dashboard)
   - **Ổn định Wi-Fi**
+  - **Nhiệt laptop** — ngưỡng °C + toast khi nóng
 
 ---
 
@@ -71,6 +72,7 @@ Cài lại giữa hai lần. Kiểm **cả hai lối**.
 
 - [ ] Có Gemini API key (Copilot) → chat chạy, không crash
 - [ ] Wi-Fi yếu → thẻ/tip **Ổn định Wi-Fi** hiện; toast **không spam** (cooldown ~30 phút)
+- [ ] **Nhiệt laptop**: dashboard / Pin & Phần cứng hiện số khi có cảm biến; empty-state tiếng Việt nếu không (không bịa °C); Settings có ngưỡng ~90°C
 
 ---
 

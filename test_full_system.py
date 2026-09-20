@@ -159,6 +159,8 @@ from core.scheduler import BackgroundScheduler
 sched = BackgroundScheduler(cfg)
 assert hasattr(sched, "network_optimized"), "BackgroundScheduler phai co signal network_optimized"
 assert hasattr(sched, "recovery_toast_gate"), "BackgroundScheduler phai co RecoveryToastGate"
+assert hasattr(sched, "thermal_toast_gate"), "BackgroundScheduler phai co ThermalToastGate"
+assert hasattr(sched, "thermal_warning"), "BackgroundScheduler phai co signal thermal_warning"
 assert hasattr(sched, "security_scan_completed"), "BackgroundScheduler phai co signal security_scan_completed"
 assert cfg.get("auto_network_optimize_enabled") is not None, "Phai co config auto_network_optimize_enabled"
 assert cfg.get("auto_security_scan_enabled") is not None, "Phai co config auto_security_scan_enabled"
@@ -234,6 +236,12 @@ else:
 
 # 20. Test Hardware Sensors & Battery Health (v3.2 Pro)
 from core.hardware_monitor import HardwareMonitor
+from core.thermal_monitor import (
+    EMPTY_STATE_VI as _THERMAL_EMPTY,
+    build_thermal_snapshot as _build_th,
+    collect_thermal_snapshot as _collect_th,
+    reset_thermal_cache as _reset_th,
+)
 from ui.hardware_dialog import HardwareMonitorDialog
 
 bat_info = HardwareMonitor.get_battery_info()
@@ -255,7 +263,19 @@ hw_dlg = HardwareMonitorDialog()
 assert hw_dlg.tabs.count() == 2, "HardwareMonitorDialog phai co 2 tabs"
 assert APP_NAME in hw_dlg.windowTitle(), "Hardware dialog title uses APP_NAME"
 assert "Optimizer Pro" not in hw_dlg.windowTitle()
+assert hasattr(hw_dlg, "thermal_card"), "Hardware dialog phai co thermal_card"
 assert hasattr(win, "btn_hardware"), "MainWindow phai co nut btn_hardware"
+assert hasattr(win, "thermal_card"), "Dashboard phai co thermal_card"
+assert hasattr(win, "spin_thermal_warn"), "Settings phai co nguong nhiet"
+assert hasattr(win, "chk_thermal_monitor"), "Settings phai co checkbox giam sat nhiet"
+assert "Nhiệt laptop" in win.thermal_card.lbl_title.text()
+_empty_th = _build_th([])
+assert _empty_th["available"] is False and _empty_th["hottest_celsius"] is None
+assert "cảm biến" in _empty_th["empty_message"].lower()
+assert _THERMAL_EMPTY == _empty_th["empty_message"]
+_reset_th()
+_injected = _collect_th(force_refresh=True, probes=[])
+assert _injected["available"] is False and _injected["cpu_celsius"] is None
 hw_dlg.close()
 
 if bat_info["has_battery"]:
@@ -1893,6 +1913,9 @@ assert "Disable-NetAdapter" in _WR.skipped_nic_toggle() or "tắt/bật" in _WR.
 assert int(_DC.get("auto_network_wifi_fix_first_cooldown_seconds", 99)) <= 15
 assert int(_DC.get("auto_network_recovery_success_toast_cooldown_seconds", 0)) >= 60
 assert int(_DC.get("auto_network_wifi_stability_tip_cooldown_seconds", 0)) >= 300
+assert _DC.get("thermal_monitor_enabled") is True
+assert int(_DC.get("thermal_warn_celsius", 0)) == 90
+assert int(_DC.get("thermal_warn_toast_cooldown_seconds", 0)) >= 300
 assert hasattr(sched, "recovery_toast_gate")
 assert hasattr(sched, "_maybe_emit_wifi_stability_tip")
 _gate = _RTG()

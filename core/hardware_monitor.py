@@ -15,6 +15,7 @@ class HardwareMonitor:
     - Xuất báo cáo pin HTML chuẩn Windows Powercfg.
     - Giám sát CPU đa nhân (Per-core load), xung nhịp, tên vi xử lý.
     - Nhận diện card đồ họa GPU (Intel, NVIDIA, AMD), VRAM và Driver version.
+    - Ủy quyền giám sát nhiệt laptop (thermal_monitor) — không bịa số khi Windows trống cảm biến.
     """
     _battery_cache = {}
     _battery_cache_time = 0.0
@@ -374,3 +375,9 @@ class HardwareMonitor:
         cls._gpu_cache = gpus
         cls._gpu_cache_time = now
         return gpus
+
+    @classmethod
+    def get_thermal_snapshot(cls, force_refresh: bool = False, warn_celsius: float = 90.0) -> Dict[str, Any]:
+        """Nhiệt CPU/GPU khi cảm biến đọc được; empty-state nếu Windows không lộ sensor."""
+        from core.thermal_monitor import collect_thermal_snapshot
+        return collect_thermal_snapshot(force_refresh=force_refresh, warn_celsius=warn_celsius)

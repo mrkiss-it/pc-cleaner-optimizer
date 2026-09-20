@@ -400,6 +400,47 @@ def main():
 
     scheduler.security_scan_completed.connect(on_auto_security_scan_done)
 
+    def on_thermal_snapshot(info):
+        if not isinstance(info, dict):
+            return
+        if hasattr(main_win, "thermal_card"):
+            try:
+                main_win.thermal_card.set_warn_celsius(
+                    float(config_mgr.get("thermal_warn_celsius", 90))
+                )
+                main_win.thermal_card.apply_snapshot(info)
+            except Exception:
+                pass
+
+    def on_thermal_warning(info):
+        msg = str(info.get("message") or "Laptop đang nóng.")
+        title = str(info.get("title") or "Laptop đang nóng")
+        try:
+            main_win.lbl_status.setText(f"🌡️ {msg}")
+        except Exception:
+            pass
+        if hasattr(main_win, "thermal_card") and isinstance(info.get("snapshot"), dict):
+            try:
+                main_win.thermal_card.apply_snapshot(info["snapshot"])
+            except Exception:
+                pass
+        if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
+            tray_mgr.notify(
+                title,
+                msg,
+                level="warning",
+                icon="🌡️",
+                action_text="🔋 Xem nhiệt",
+                action_callback=lambda: (
+                    force_activate_window(main_win),
+                    main_win.open_hardware_dialog(),
+                ),
+                duration_ms=6500,
+            )
+
+    scheduler.thermal_snapshot_ready.connect(on_thermal_snapshot)
+    scheduler.thermal_warning.connect(on_thermal_warning)
+
     # Kiểm tra GitHub Releases (trễ vài giây, không chặn khởi động)
     try:
         main_win.start_update_checker(delay_ms=4500)

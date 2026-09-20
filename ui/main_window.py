@@ -26,6 +26,7 @@ from ui.disk_analyzer_dialog import DiskAnalyzerDialog
 from ui.network_dialog import NetworkOptimizerDialog
 from ui.disk_registry_dialog import DiskRegistryDialog
 from ui.hardware_dialog import HardwareMonitorDialog
+from ui.thermal_card import ThermalCard
 from ui.ai_advisor_dialog import AIAdvisorDialog
 from ui.service_context_dialog import ServiceContextDialog
 from ui.uninstaller_dialog import UninstallerDialog
@@ -612,6 +613,16 @@ class MainWindow(QMainWindow):
         stats_layout.addWidget(self.card_net)
         layout.addLayout(stats_layout)
 
+        self.thermal_card = ThermalCard(
+            self.tab_dashboard,
+            compact=True,
+            show_sensors=False,
+            warn_celsius=float(self.config_manager.get("thermal_warn_celsius", 90)),
+            open_hardware=self.open_hardware_dialog,
+        )
+        layout.addWidget(self.thermal_card)
+        self.thermal_card.refresh(force=False)
+
     def init_tab_targets(self):
         outer_layout = QVBoxLayout(self.tab_targets)
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -747,6 +758,47 @@ class MainWindow(QMainWindow):
         layout_ram.addWidget(self.chk_auto_ram)
         layout_ram.addLayout(row_ram_spin)
         layout.addWidget(card_ram)
+
+        # Card 2a: Laptop thermal monitoring
+        card_thermal = QFrame()
+        card_thermal.setObjectName("SettingCard")
+        card_thermal.setStyleSheet(card_style)
+        layout_thermal = QVBoxLayout(card_thermal)
+        layout_thermal.setContentsMargins(18, 16, 18, 16)
+        layout_thermal.setSpacing(10)
+
+        self.chk_thermal_monitor = QCheckBox("Bật giám sát nhiệt laptop (CPU / package / GPU khi có cảm biến)")
+        self.chk_thermal_monitor.setStyleSheet("font-weight: bold; font-size: 14px; color: #38bdf8;")
+        self.chk_thermal_monitor.setChecked(True)
+        self.chk_thermal_warn_toast = QCheckBox("Toast / banner khi nhiệt vượt ngưỡng (có cooldown, không spam)")
+        self.chk_thermal_warn_toast.setStyleSheet("font-weight: bold; font-size: 13px; color: #7dd3fc;")
+        self.chk_thermal_warn_toast.setChecked(True)
+
+        row_thermal_spin = QHBoxLayout()
+        lbl_thermal_spin = QLabel("Ngưỡng cảnh báo nhiệt (CPU package / GPU):")
+        lbl_thermal_spin.setStyleSheet("color: #94a3b8;")
+        self.spin_thermal_warn = QSpinBox()
+        self.spin_thermal_warn.setRange(70, 105)
+        self.spin_thermal_warn.setSuffix(" °C")
+        self.spin_thermal_warn.setValue(int(self.config_manager.get("thermal_warn_celsius", 90)))
+        row_thermal_spin.addWidget(lbl_thermal_spin)
+        row_thermal_spin.addWidget(self.spin_thermal_warn)
+        row_thermal_spin.addStretch()
+
+        lbl_thermal_desc = QLabel(
+            "Mặc định 90°C — quanh mốc laptop Intel/AMD bắt đầu throttle (~95–100°C). "
+            "Nhiều máy (kể cả ASUS + MediaTek Wi-Fi) để trống ACPI / Win32_TemperatureProbe; "
+            "app không bịa số. Nếu đã cài LibreHardwareMonitor và chạy nền (WMI), app sẽ đọc CPU/GPU. "
+            "Toast cùng kiểu cooldown ~30 phút như gợi ý Ổn định Wi-Fi."
+        )
+        lbl_thermal_desc.setWordWrap(True)
+        lbl_thermal_desc.setStyleSheet("color: #64748b; font-size: 11px;")
+
+        layout_thermal.addWidget(self.chk_thermal_monitor)
+        layout_thermal.addWidget(self.chk_thermal_warn_toast)
+        layout_thermal.addLayout(row_thermal_spin)
+        layout_thermal.addWidget(lbl_thermal_desc)
+        layout.addWidget(card_thermal)
 
         # Card 2b: AI Auto-Pilot
         card_ap = QFrame()
@@ -1183,6 +1235,9 @@ class MainWindow(QMainWindow):
         self.combo_interval.currentIndexChanged.connect(self._auto_save_automation_settings)
         self.chk_auto_ram.toggled.connect(self._auto_save_automation_settings)
         self.spin_ram_threshold.valueChanged.connect(self._auto_save_automation_settings)
+        self.chk_thermal_monitor.toggled.connect(self._auto_save_automation_settings)
+        self.chk_thermal_warn_toast.toggled.connect(self._auto_save_automation_settings)
+        self.spin_thermal_warn.valueChanged.connect(self._auto_save_automation_settings)
         self.chk_ai_autopilot.toggled.connect(self._auto_save_automation_settings)
         self.combo_ai_autopilot_mode.currentIndexChanged.connect(self._auto_save_automation_settings)
         self.chk_auto_net.toggled.connect(self._auto_save_automation_settings)
@@ -1286,6 +1341,12 @@ class MainWindow(QMainWindow):
             self.chk_auto_clean.setChecked(cfg.get("auto_clean_enabled", True))
             self.chk_auto_ram.setChecked(cfg.get("auto_ram_optimize_enabled", True))
             self.spin_ram_threshold.setValue(cfg.get("ram_threshold_percent", 80))
+            self.chk_thermal_monitor.setChecked(cfg.get("thermal_monitor_enabled", True))
+            self.chk_thermal_warn_toast.setChecked(cfg.get("thermal_warn_toast_enabled", True))
+            try:
+                self.spin_thermal_warn.setValue(int(cfg.get("thermal_warn_celsius", 90)))
+            except (TypeError, ValueError):
+                self.spin_thermal_warn.setValue(90)
             self.chk_ai_autopilot.setChecked(cfg.get("ai_autopilot_enabled", True))
             ap_mode = str(cfg.get("ai_autopilot_mode", "auto")).lower()
             if ap_mode in getattr(self, "_ap_mode_values", []):
@@ -1339,6 +1400,11 @@ class MainWindow(QMainWindow):
         self.config_manager.set("interval_minutes", interval_min)
         self.config_manager.set("auto_ram_optimize_enabled", self.chk_auto_ram.isChecked())
         self.config_manager.set("ram_threshold_percent", self.spin_ram_threshold.value())
+        self.config_manager.set("thermal_monitor_enabled", self.chk_thermal_monitor.isChecked())
+        self.config_manager.set("thermal_warn_toast_enabled", self.chk_thermal_warn_toast.isChecked())
+        self.config_manager.set("thermal_warn_celsius", int(self.spin_thermal_warn.value()))
+        if hasattr(self, "thermal_card"):
+            self.thermal_card.set_warn_celsius(self.spin_thermal_warn.value())
         ap_enabled = self.chk_ai_autopilot.isChecked()
         ap_idx = self.combo_ai_autopilot_mode.currentIndex()
         ap_mode = self._ap_mode_values[ap_idx] if 0 <= ap_idx < len(self._ap_mode_values) else "auto"
@@ -1492,6 +1558,18 @@ class MainWindow(QMainWindow):
             ping = net.get("ping_ms", -1)
             ping_str = f"{ping:.0f} ms" if ping > 0 else "--"
             self.card_net.set_value(f"↓ {down_str}", f"Tải lên: ↑ {up_str} • Ping: {ping_str}")
+
+        if hasattr(self, "thermal_card") and self.config_manager.get("thermal_monitor_enabled", True):
+            try:
+                from core.thermal_monitor import peek_cached_snapshot
+                cached = peek_cached_snapshot()
+                if cached:
+                    self.thermal_card.set_warn_celsius(
+                        float(self.config_manager.get("thermal_warn_celsius", 90))
+                    )
+                    self.thermal_card.apply_snapshot(cached)
+            except Exception:
+                pass
 
         # Update tray tooltip
         if self.tray_manager:
@@ -1744,7 +1822,7 @@ class MainWindow(QMainWindow):
         dialog.exec_()
 
     def open_hardware_dialog(self):
-        """Mở hộp thoại Quản Lý Sức Khỏe Pin Laptop & Cảm Biến Phần Cứng (v3.2 Pro)."""
+        """Mở hộp thoại Quản Lý Sức Khỏe Pin Laptop, Cảm Biến Phần Cứng và nhiệt độ."""
         dialog = HardwareMonitorDialog(self)
         dialog.exec_()
 

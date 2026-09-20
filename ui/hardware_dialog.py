@@ -5,6 +5,7 @@ Cung cấp:
 2. Xuất báo cáo lịch sử Pin HTML chuẩn của Windows (powercfg /batteryreport).
 3. Giám sát CPU đa nhân (Per-core load visualizer), xung nhịp, tên vi xử lý.
 4. Nhận diện GPU: Tên card đồ họa, Driver Version, VRAM.
+5. Giám sát nhiệt laptop (CPU package / GPU) — empty-state trung thực nếu không có cảm biến.
 """
 
 import sys
@@ -19,6 +20,7 @@ from PyQt5.QtWidgets import (
 from app_meta import APP_NAME
 from core.hardware_monitor import HardwareMonitor
 from core.logger import logger
+from ui.thermal_card import ThermalCard
 
 
 class HardwareMonitorDialog(QDialog):
@@ -159,7 +161,11 @@ class HardwareMonitorDialog(QDialog):
 
         # Footer
         footer_layout = QHBoxLayout()
-        lbl_hint = QLabel("💡 Lưu ý: Báo cáo pin dựa trên telemetry chính thức của hệ điều hành Windows qua công cụ Powercfg.")
+        lbl_hint = QLabel(
+            "💡 Pin: Powercfg Windows. Nhiệt: LibreHardwareMonitor/OHM WMI, nvidia-smi hoặc ACPI "
+            "nếu máy lộ cảm biến — không bịa số khi Windows để trống."
+        )
+        lbl_hint.setWordWrap(True)
         lbl_hint.setStyleSheet("font-size: 11px; color: #64748b; font-style: italic;")
         footer_layout.addWidget(lbl_hint)
         footer_layout.addStretch()
@@ -467,6 +473,15 @@ class HardwareMonitorDialog(QDialog):
 
         cpu_data = HardwareMonitor.get_cpu_details()
 
+        self.thermal_card = ThermalCard(
+            content,
+            compact=False,
+            show_sensors=True,
+            warn_celsius=self._thermal_warn_celsius(),
+        )
+        layout.addWidget(self.thermal_card)
+        self.thermal_card.refresh(force=False)
+
         # 1. CPU Card
         cpu_frame = QFrame()
         cpu_frame.setStyleSheet("""
@@ -681,6 +696,9 @@ class HardwareMonitorDialog(QDialog):
             f"Xung nhịp: {cpu['current_freq_ghz']} GHz (Tối đa {cpu['max_freq_ghz']} GHz)"
         )
 
+        if hasattr(self, "thermal_card"):
+            self.thermal_card.refresh(force=False)
+
         per_core = cpu.get("per_core_percent", [])
         for i, val in enumerate(per_core):
             if i < len(self.core_bars):
@@ -718,6 +736,9 @@ class HardwareMonitorDialog(QDialog):
             self.lbl_advice.setText(bat.get("advice", ""))
 
         self.refresh_cpu_live()
+        if hasattr(self, "thermal_card"):
+            self.thermal_card.set_warn_celsius(self._thermal_warn_celsius())
+            self.thermal_card.refresh(force=True)
         QMessageBox.information(
             self,
             "Đã Làm Mới",
@@ -735,6 +756,16 @@ class HardwareMonitorDialog(QDialog):
                 "Không Thể Tạo Báo Cáo",
                 "Không thể trích xuất báo cáo pin Windows từ công cụ Powercfg. Vui lòng thử lại sau."
             )
+
+    def _thermal_warn_celsius(self) -> float:
+        parent = self.parent()
+        cfg = getattr(parent, "config_manager", None) if parent is not None else None
+        if cfg is not None:
+            try:
+                return float(cfg.get("thermal_warn_celsius", 90))
+            except (TypeError, ValueError):
+                return 90.0
+        return 90.0
 
     def closeEvent(self, event):
         self.update_timer.stop()
