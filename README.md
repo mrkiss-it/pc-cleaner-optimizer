@@ -99,7 +99,7 @@ Một nút trên **Bảng Điều Khiển** (và khay hệ thống) để chuẩ
 
 - **Copilot** dùng **Google Gemini** khi có mạng và API key (Cấu Hình AI).
 - Nếu Gemini không dùng được (mất mạng / chưa có key), app **nói thật** — cần mạng / API key — rồi dùng Offline Expert Brain. Không bịa câu trả lời LLM.
-- **AI đồng hành**: nhật ký / giai đoạn / kỹ năng / sổ tay **local trên máy này**, tiêm vào prompt Gemini qua `extra_context` (ngắn, có gợi ý riêng máy). Copilot hiện giai đoạn 0→3 tiếng Việt và vì sao giai đoạn đó. App tự ghi nhật ký khi dọn rác, Wi-Fi yếu/ổn định lại, nhiệt, Trước thi, cập nhật, và khi bạn làm theo hoặc từ chối gợi ý — gom sự kiện ồn ào, không spam. Phản tỉnh kết tinh thói quen lặp thành kỹ năng (vẫn xem/xóa được). Gợi ý nhẹ chỉ khi đã lớn dần hoặc đủ bằng chứng, có công tắc tắt. Cài mới hiện empty-state — không bịa kỷ niệm, không phải AGI, không tự huấn luyện mô hình, không Ollama.
+- **AI đồng hành**: nhật ký / giai đoạn / kỹ năng / sổ tay / hồ sơ thói quen **local trên máy này**, tiêm vào prompt Gemini qua `extra_context` (ngắn, đúng chủ đề câu hỏi). Copilot hiện giai đoạn 0→3 tiếng Việt và vì sao giai đoạn đó. App tự ghi nhật ký khi dọn rác, Wi-Fi yếu/ổn định lại, nhiệt, Trước thi, cập nhật, và khi bạn làm theo hoặc từ chối gợi ý — gom sự kiện ồn ào, không spam. Hồ sơ nhớ điều máy này hay gặp (Wi-Fi buổi tối, nhiệt, thứ Sáu tập trung). Có thể đặt **một mục tiêu** ngắn; để trống thì không nhắc. Phản tỉnh cập nhật hồ sơ và kết tinh tối đa 1–2 kỹ năng gắn mục tiêu hoặc lỗi lặp. Bảng điều khiển có một dòng «Hôm nay: …», bấm Ẩn là tắt dòng đó. Gợi ý nhẹ chỉ khi đã lớn dần hoặc đủ bằng chứng, có công tắc tắt. Cài mới hiện empty-state — không bịa kỷ niệm, không phải AGI, không tự huấn luyện mô hình, không Ollama.
 
 ---
 

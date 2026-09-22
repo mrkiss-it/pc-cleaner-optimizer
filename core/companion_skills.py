@@ -302,11 +302,20 @@ def match_skills(
     scored: List[CompanionSkill] = []
     for skill in skills:
         blob = _fold(f"{skill.title} {skill.if_condition} {skill.suggest} {skill.issue_class}")
-        if any(token in text for token in _class_tokens(skill.issue_class)) or any(
+        if any(_term_in(text, token) for token in _class_tokens(skill.issue_class)) or any(
             token in blob for token in text.split() if len(token) >= 4
         ):
             scored.append(skill)
-    return (scored or skills)[:limit]
+    return scored[:limit]
+
+
+def _term_in(text: str, token: str) -> bool:
+    needle = str(token or "").strip().lower()
+    if not needle:
+        return False
+    if " " in needle:
+        return needle in text
+    return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", text) is not None
 
 
 def _class_tokens(issue_class: str) -> List[str]:
@@ -474,13 +483,42 @@ def evidence_suggest(issue_class: str, events: Optional[List[Dict[str, Any]]] = 
     return template
 
 
+_OPEN_FAILURES = {
+    "wifi_weak": ({"wifi_weak", "ping_high"}, {"wifi_repaired", "ping_repaired"}),
+    "thermal": ({"thermal_warn"}, set()),
+    "high_ram": ({"high_ram"}, {"ram_optimized"}),
+}
+
+
+def issue_is_open_failure(
+    issue_class: str,
+    events: Optional[List[Dict[str, Any]]] = None,
+    min_warn: int = 3,
+) -> bool:
+    """Repeated warnings that never recovered — worth a skill more than a one-off."""
+    spec = _OPEN_FAILURES.get(str(issue_class or "").strip().lower())
+    if not spec:
+        return False
+    warn_kinds, ok_kinds = spec
+    if _weighted(events, warn_kinds) < int(min_warn):
+        return False
+    if ok_kinds and _weighted(events, ok_kinds, outcome="ok") > 0:
+        return False
+    return True
+
+
 def crystallize_skills(
     kind_counts: Optional[Dict[str, int]] = None,
     events: Optional[List[Dict[str, Any]]] = None,
     base_dir: Optional[str] = None,
     max_new: int = 2,
+    prefer_issues: Optional[List[str]] = None,
 ) -> List[CompanionSkill]:
-    """Save at most a couple of high-quality skills. Never duplicates or destructive actions."""
+    """Save at most 1–2 skills tied to the goal or an open failure.
+
+    When nothing is goal-related or still failing, fall back to the strongest
+    repeated playbook so a machine without a goal can still learn.
+    """
     counts = kind_counts or {}
     rows = events or []
     rejected = rejected_issue_classes(rows)
@@ -489,22 +527,36 @@ def crystallize_skills(
         count_issue_classes(counts).items(),
         key=lambda item: (-int(item[1]), item[0]),
     )
-    saved: List[CompanionSkill] = []
+    hits_by_issue = {issue: int(hits) for issue, hits in ranked}
+    qualified: List[str] = []
     for issue, hits in ranked:
-        if len(saved) >= max(1, int(max_new)):
-            break
         if issue in have or issue in rejected:
             continue
         if not should_crystallize(issue, counts, rows):
             continue
+        qualified.append(issue)
+    requested = [str(issue or "").strip().lower() for issue in (prefer_issues or []) if str(issue or "").strip()]
+    preferred = [issue for issue in requested if issue in qualified]
+    failures = [issue for issue in qualified if issue_is_open_failure(issue, rows)]
+    # A set goal narrows new skills to that goal or an open failure — not every playbook.
+    if requested or failures:
+        pool = []
+        for issue in preferred + failures:
+            if issue not in pool:
+                pool.append(issue)
+    else:
+        pool = list(qualified)
+    saved: List[CompanionSkill] = []
+    for issue in pool:
+        if len(saved) >= max(1, int(max_new)):
+            break
         skill = save_skill(
             issue,
-            hit_count=int(hits),
+            hit_count=int(hits_by_issue.get(issue) or 0),
             base_dir=base_dir,
             suggest=evidence_suggest(issue, rows),
         )
         if skill is None or skill.action_key in BLOCKED_ACTION_KEYS:
             continue
         saved.append(skill)
-        have.add(issue)
     return saved

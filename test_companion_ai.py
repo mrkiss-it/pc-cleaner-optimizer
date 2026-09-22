@@ -662,6 +662,235 @@ print(" [PASS] declined skill offer cools down")
 
 
 # ---------------------------------------------------------------------------
+# Profile, optional goal, grounded retrieval, one insight
+# ---------------------------------------------------------------------------
+
+from core.companion_profile import (
+    clear_habits,
+    current_insight,
+    dismiss_insight,
+    goal_status,
+    load_profile,
+    refresh_profile,
+    set_goal,
+)
+from core.companion import local_grounding_text
+
+friday = datetime(2026, 9, 18, 19, 0, 0)
+check(friday.weekday() == 4, "fixture Friday is Friday")
+root = _fresh_dir()
+for offset in (0, 7):
+    record_app_event(
+        "focus_mode",
+        "Người dùng bật Trước thi / họp",
+        now=friday + timedelta(days=offset),
+        base_dir=root,
+        coalesce=False,
+        outcome="ok",
+        tags=["focus"],
+    )
+focus_profile = load_profile(root)
+focus_blob = " ".join(
+    f"{item.get('label_vi')} {item.get('detail_vi')}" for item in focus_profile.get("habits") or []
+)
+check("thứ Sáu" in focus_blob, "profile remembers Friday exam focus")
+print(" [PASS] Friday focus habit")
+
+root = _fresh_dir()
+evening = datetime(2026, 9, 20, 21, 0, 0)
+noon = datetime(2026, 9, 20, 12, 0, 0)
+for i in range(3):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=evening + timedelta(days=i),
+        base_dir=root,
+        coalesce=False,
+    )
+for i in range(2):
+    record_app_event(
+        "thermal_warn",
+        "Nhiệt cao",
+        metrics={"thermal_c": 91},
+        now=noon + timedelta(days=i),
+        base_dir=root,
+        coalesce=False,
+    )
+for i in range(3):
+    record_app_event(
+        "clean_light",
+        f"Dọn nhẹ {10 + i} MB",
+        metrics={"junk_freed_mb": 10 + i},
+        now=noon + timedelta(days=i, hours=1),
+        base_dir=root,
+        coalesce=False,
+    )
+record_app_event(
+    "update_fail",
+    "Không tải được bản cập nhật",
+    now=evening + timedelta(hours=1),
+    base_dir=root,
+    coalesce=False,
+)
+for i in range(2):
+    observe_suggestion(
+        False,
+        action_key="clean_light",
+        base_dir=root,
+        now=noon + timedelta(days=i, hours=3),
+        coalesce=False,
+    )
+note_user_feedback(False, base_dir=root, now=evening + timedelta(days=3))
+note_user_feedback(False, base_dir=root, now=evening + timedelta(days=3, minutes=5))
+
+profile = load_profile(root)
+blob = " ".join(
+    f"{item.get('label_vi')} {item.get('detail_vi')}" for item in profile.get("habits") or []
+)
+check("buổi tối" in blob and "Wi-Fi" in blob, "profile remembers evening Wi-Fi")
+check("Nhạy với nhiệt" in blob, "profile remembers thermal sensitivity")
+check("bỏ qua" in blob, "profile remembers rejected clean suggestions")
+check(profile.get("coaching") == "ask_more", "repeated unhelpful feedback asks more")
+reloaded = load_profile(root)
+check(reloaded.get("updated_at"), "profile is persisted")
+check(len(reloaded.get("habits") or []) == len(profile.get("habits") or []), "reload keeps habits")
+
+ctx_wifi = build_prompt_context("wifi chậm buổi tối", base_dir=root, now=evening + timedelta(days=4))
+check("wifi_weak" in ctx_wifi, "wifi question retrieves wifi episodes")
+check("thermal_warn" not in ctx_wifi, "wifi question leaves thermal episodes out")
+check("clean_light" not in ctx_wifi and "update_fail" not in ctx_wifi, "wifi question leaves clean and update out")
+check("Về máy này" in ctx_wifi and "buổi tối" in ctx_wifi, "wifi question includes the matching habit")
+check("Gợi ý máy này" in ctx_wifi, "wifi context still has machine hints")
+check(len(ctx_wifi) <= CONTEXT_CHAR_BUDGET, "grounded wifi context stays in budget")
+
+ctx_heat = build_prompt_context("máy nóng", base_dir=root, now=evening + timedelta(days=4))
+check("thermal_warn" in ctx_heat, "heat question retrieves thermal episodes")
+check("wifi_weak" not in ctx_heat, "heat question leaves wifi episodes out")
+check("Nhạy với nhiệt" in ctx_heat, "heat question includes the thermal habit")
+
+ctx_clean = build_prompt_context("dọn rác ổ C", base_dir=root, now=evening + timedelta(days=4))
+check("clean_light" in ctx_clean, "clean question retrieves clean episodes")
+check("wifi_weak" not in ctx_clean and "thermal_warn" not in ctx_clean, "clean question stays on disk")
+
+ctx_update = build_prompt_context("cập nhật bị lỗi", base_dir=root, now=evening + timedelta(days=4))
+check("update_fail" in ctx_update, "update question retrieves the failed update")
+check("wifi_weak" not in ctx_update and "thermal_warn" not in ctx_update, "update question stays on updates")
+print(" [PASS] profile + topic retrieval")
+
+goal_at = evening + timedelta(days=4)
+goal = set_goal("ổn định Wi-Fi trước họp", base_dir=root, now=goal_at)
+check(goal and goal.get("topic") == "wifi", "wifi goal infers wifi")
+idle = goal_status(base_dir=root, now=goal_at)
+check(idle and idle["related_count"] == 0, "episodes before the goal do not count as progress")
+check("chưa có diễn biến" in idle["summary_vi"], "empty progress stays quiet")
+check(not idle["next_action_vi"], "no next-action nag before any new episode")
+record_app_event(
+    "wifi_weak",
+    "Wi-Fi yếu trước họp",
+    now=goal_at + timedelta(hours=2),
+    base_dir=root,
+    coalesce=False,
+)
+record_app_event(
+    "wifi_repaired",
+    "Wi-Fi đã ổn định lại",
+    now=goal_at + timedelta(hours=3),
+    base_dir=root,
+    coalesce=False,
+    outcome="ok",
+    tags=["wifi"],
+)
+progress = goal_status(base_dir=root, now=goal_at + timedelta(hours=4))
+check(progress["open_count"] >= 1 and progress["improved_count"] >= 1, "goal tracks new weak and repaired episodes")
+check("Mục tiêu" in progress["summary_vi"], "progress names the goal")
+check("tiết kiệm" in progress["next_action_vi"], "next action is the safe wifi step")
+ctx_goal = build_prompt_context("wifi họp", base_dir=root, now=goal_at + timedelta(hours=4))
+check("Mục tiêu" in ctx_goal and "ổn định Wi-Fi" in ctx_goal, "copilot context includes goal status")
+check(len(ctx_goal) <= CONTEXT_CHAR_BUDGET, "goal context stays in budget")
+
+study = _fresh_dir()
+study_goal = set_goal("máy mát khi học", base_dir=study, now=evening)
+check(study_goal and study_goal.get("topic") == "thermal", "cool-while-studying goal is thermal")
+check("focus" in (study_goal.get("topics") or []), "study goal also notices focus")
+check(plan_companion_nudge(now=evening, base_dir=study) is None, "a goal alone does not toast")
+set_goal("", base_dir=study)
+check(goal_status(base_dir=study) is None, "clearing the goal stops coaching")
+print(" [PASS] optional goal coaching")
+
+kept_goal = set_goal("ổn định Wi-Fi trước họp", base_dir=root, now=goal_at)
+check(kept_goal, "goal stored before habit clear")
+clear_habits(base_dir=root, now=goal_at + timedelta(days=2))
+after_habits = load_profile(root)
+check(not after_habits.get("habits"), "habit clear removes the profile lines")
+check((after_habits.get("goal") or {}).get("text"), "habit clear keeps the typed goal")
+refresh_profile(base_dir=root, now=goal_at + timedelta(days=1))
+check(not load_profile(root).get("habits"), "old episodes do not restore a cleared profile")
+wiped = clear_local_memory(base_dir=root)
+check(wiped.get("profile", 0) >= 1, "full clear removes the profile file")
+check(goal_status(base_dir=root) is None, "full clear removes the goal")
+print(" [PASS] profile browse/clear")
+
+root = _fresh_dir()
+for i in range(4):
+    record_app_event(
+        "clean_freed",
+        "Dọn rác 40 MB",
+        metrics={"junk_freed_mb": 40},
+        now=noon + timedelta(days=i),
+        base_dir=root,
+        coalesce=False,
+    )
+for i in range(3):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=evening + timedelta(days=i),
+        base_dir=root,
+        coalesce=False,
+    )
+set_goal("ổn định Wi-Fi trước họp", base_dir=root, now=evening + timedelta(days=3))
+reflected = maybe_run_reflection(
+    _Cfg(),
+    force=True,
+    provider=TemplateReflectionProvider(),
+    base_dir=root,
+    now=evening + timedelta(days=3, hours=1),
+)
+check(reflected and reflected.get("skills") == ["wifi_weak"], "reflection saves the goal skill, not the unrelated clean")
+check(len(load_skills(base_dir=root)) == 1, "at most the goal skill this pass")
+note = reflected.get("note") or ""
+check("buổi tối" in note or "Wi-Fi" in note, "sổ tay mentions the learned habit")
+check("kết tinh" in note, "sổ tay still records the new skill")
+check(load_profile(root).get("habits"), "reflection refreshed the profile")
+grounded = local_grounding_text("wifi chậm", base_dir=root, now=evening + timedelta(days=3, hours=2))
+check("Wi-Fi" in grounded or "buổi tối" in grounded, "offline grounding cites this machine")
+check("Mục tiêu" in grounded, "offline grounding cites the goal when Gemini is absent")
+print(" [PASS] reflection updates profile and prefers the goal skill")
+
+root = _fresh_dir()
+for i in range(3):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=evening + timedelta(days=i),
+        base_dir=root,
+        coalesce=False,
+    )
+insight_now = evening + timedelta(days=3)
+insight = current_insight(base_dir=root, now=insight_now)
+check(insight and str(insight.get("text") or "").startswith("Hôm nay:"), "insight is a single Hôm nay line")
+dismiss_insight(insight["id"], base_dir=root, now=insight_now)
+check(current_insight(base_dir=root, now=insight_now) is None, "dismissing hides the strip for the rest of the day")
+later = current_insight(base_dir=root, now=insight_now + timedelta(days=1))
+check(later is None or later.get("id") != insight["id"], "the dismissed line does not come back")
+check(
+    current_insight(base_dir=root, now=evening + timedelta(days=3), enabled=False) is None,
+    "companion off hides insight",
+)
+print(" [PASS] dismissible companion insight")
+
+
+# ---------------------------------------------------------------------------
 # Qt smoke: Settings card + memory dialog
 # ---------------------------------------------------------------------------
 
@@ -677,6 +906,9 @@ check("&" not in card.btn_manage.text(), "manage button has no Qt mnemonic amper
 check(hasattr(card, "lbl_legend") and "Mới gặp" in card.lbl_legend.text(), "card shows stage legend")
 check(hasattr(card, "lbl_reason") and "ngày dùng" in card.lbl_reason.text(), "card explains why the stage is what it is")
 check(hasattr(card, "chk_nudges") and "thói quen" in card.chk_nudges.text(), "card can turn calm nudges off")
+check(hasattr(card, "txt_goal") and "Wi-Fi" in card.txt_goal.placeholderText(), "card has one optional goal field")
+check("tuỳ chọn" in card.lbl_goal.text(), "empty goal stays quiet")
+check(card.insight_bar.isHidden(), "fresh card hides the insight strip")
 check("Ollama" not in card.chk_reflect.text(), "companion checkbox does not mention Ollama")
 check("vài ngày" in card.lbl_diary.text(), "card honest empty diary")
 check("Pro" not in card.lbl_title.text(), "no Pro on companion card")
@@ -685,6 +917,8 @@ dlg = CompanionDialog(config_manager=_Cfg())
 check(dlg.btn_reflect.text() == REFLECT_BUTTON_VI, "dialog reflect button")
 check(hasattr(dlg, "list_diary") and hasattr(dlg, "list_skills"), "dialog lists diary and skills")
 check(hasattr(dlg, "btn_clear_all") and "bộ nhớ" in dlg.btn_clear_all.text(), "dialog can clear all memory")
+check(hasattr(dlg, "lbl_profile") and "hồ sơ" in dlg.lbl_profile.text().lower(), "dialog shows the habit profile")
+check(hasattr(dlg, "btn_clear_profile"), "dialog can clear the habit profile")
 check("vài ngày" in dlg.lbl_diary_empty.text(), "dialog empty diary copy")
 check(dlg.list_diary.count() == 0, "new install diary list empty")
 check(dlg.list_skills.count() == 0, "new install skills list empty")
@@ -699,8 +933,23 @@ record_app_event(
 card.refresh()
 check("Wi-Fi" in card.lbl_learning.text(), "card shows what was just learned")
 check("Đang học" in card.lbl_reason.text(), "card explains the move to Đang học")
+for extra in range(2):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=datetime(2026, 9, 21, 21, 0, 0) + timedelta(days=extra),
+        base_dir=root,
+        coalesce=False,
+    )
+card.txt_goal.setText("ổn định Wi-Fi trước họp")
+card._save_goal()
+check("Mục tiêu" in card.lbl_goal.text() and "Wi-Fi" in card.lbl_goal.text(), "card shows the saved goal")
+check(not card.insight_bar.isHidden(), "card shows one insight after real episodes")
+check(card.insight_bar.lbl_insight.text().startswith("Hôm nay:"), "card insight is the Hôm nay line")
+card.insight_bar._dismiss()
+check(card.insight_bar.isHidden(), "Ẩn hides the insight on the card")
 dlg = CompanionDialog(config_manager=_Cfg())
-check(dlg.list_diary.count() == 1, "dialog lists the new wifi episode")
+check(dlg.list_diary.count() >= 1, "dialog lists the new wifi episode")
 check("Đang học" in dlg.lbl_legend.text() or "ngày dùng" in dlg.lbl_legend.text(), "dialog explains the stage")
 dlg.close()
 card.deleteLater()

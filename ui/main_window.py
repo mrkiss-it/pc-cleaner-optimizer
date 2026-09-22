@@ -490,6 +490,14 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
 
+        from ui.companion_card import CompanionInsightBar
+        self.companion_insight = CompanionInsightBar(
+            config_manager=self.config_manager,
+            parent=content,
+        )
+        layout.addWidget(self.companion_insight)
+        self.companion_insight.refresh()
+
         # Row 1: Circular Gauges (RAM, CPU, DISK)
         gauge_layout = QHBoxLayout()
         gauge_layout.setSpacing(16)
@@ -2628,8 +2636,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, "config_manager") and self.config_manager:
             self.config_manager.set("last_active_tab", idx)
 
-        if hasattr(self, "tabs") and self.tabs.widget(idx) == self.tab_performance:
+        if hasattr(self, "tabs") and self.tabs.widget(idx) == self.tab_dashboard:
+            if hasattr(self, "companion_insight"):
+                self.companion_insight.refresh()
+        elif hasattr(self, "tabs") and self.tabs.widget(idx) == self.tab_performance:
             self.refresh_process_table()
+        elif hasattr(self, "tabs") and hasattr(self, "companion_card") and self.tabs.widget(idx) == self.tab_automation:
+            self.companion_card.refresh()
         elif hasattr(self, "tabs") and self.tabs.widget(idx) == self.tab_analytics:
             self._refresh_analytics_cards()
         elif hasattr(self, "tabs") and hasattr(self, "tab_tweaks") and self.tabs.widget(idx) == self.tab_tweaks:

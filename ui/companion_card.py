@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -49,9 +50,17 @@ from core.companion import (
     load_reflection_meta,
     maybe_run_reflection,
     note_user_feedback,
+    clear_profile_habits,
     pending_skill_offer,
     recent_learning_text,
     stage_legend_vi,
+)
+from core.companion_profile import (
+    current_insight,
+    dismiss_insight,
+    format_profile_browse,
+    goal_status,
+    set_goal,
 )
 
 
@@ -102,6 +111,62 @@ _LIST_STYLE = """
     QListWidget::item { padding: 4px 6px; }
     QListWidget::item:selected { background: #334155; color: #f8fafc; }
 """
+
+
+class CompanionInsightBar(QFrame):
+    """One calm, dismissible line: «Hôm nay: …». Hidden when there is nothing to say."""
+
+    dismissed = pyqtSignal()
+
+    def __init__(self, config_manager=None, parent=None):
+        super().__init__(parent)
+        self.config_manager = config_manager
+        self._insight_id = ""
+        self.setObjectName("CompanionInsightBar")
+        self.setStyleSheet(
+            "QFrame#CompanionInsightBar { background-color: #1e1b4b; border: 1px solid #4338ca; "
+            "border-radius: 10px; }"
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(8)
+        self.lbl_insight = QLabel("")
+        self.lbl_insight.setWordWrap(True)
+        self.lbl_insight.setTextFormat(Qt.PlainText)
+        self.lbl_insight.setStyleSheet(
+            "color: #e0e7ff; font-size: 12px; background: transparent; border: none;"
+        )
+        self.btn_dismiss = QPushButton("Ẩn")
+        self.btn_dismiss.setStyleSheet(_BTN_STYLE)
+        self.btn_dismiss.setToolTip("Ẩn insight này. AI không hiện lại cùng một dòng.")
+        self.btn_dismiss.clicked.connect(self._dismiss)
+        row.addWidget(self.lbl_insight, stretch=1)
+        row.addWidget(self.btn_dismiss)
+        self.hide()
+
+    def refresh(self):
+        enabled = is_enabled(self.config_manager)
+        if enabled:
+            try:
+                from core.companion_profile import refresh_profile
+                refresh_profile()
+            except Exception:
+                pass
+        insight = current_insight(enabled=enabled) if enabled else None
+        if not insight:
+            self._insight_id = ""
+            self.lbl_insight.setText("")
+            self.hide()
+            return
+        self._insight_id = str(insight.get("id") or "")
+        self.lbl_insight.setText(str(insight.get("text") or ""))
+        self.show()
+
+    def _dismiss(self):
+        if self._insight_id:
+            dismiss_insight(self._insight_id)
+        self.refresh()
+        self.dismissed.emit()
 
 
 def _confirm(parent, prompt: dict) -> bool:
@@ -172,6 +237,9 @@ class CompanionCard(QFrame):
         header.addWidget(self.lbl_badge)
         layout.addLayout(header)
 
+        self.insight_bar = CompanionInsightBar(config_manager=self.config_manager, parent=self)
+        layout.addWidget(self.insight_bar)
+
         self.lbl_blurb = QLabel("")
         self.lbl_blurb.setWordWrap(True)
         self.lbl_blurb.setStyleSheet("color: #94a3b8; font-size: 12px; background: transparent; border: none;")
@@ -213,6 +281,32 @@ class CompanionCard(QFrame):
         self.lbl_note.setTextFormat(Qt.PlainText)
         self.lbl_note.setStyleSheet("color: #94a3b8; font-size: 11px; background: transparent; border: none;")
         layout.addWidget(self.lbl_note)
+
+        self.txt_goal = QLineEdit()
+        self.txt_goal.setPlaceholderText("Mục tiêu ngắn, ví dụ: ổn định Wi-Fi trước họp")
+        self.txt_goal.setMaxLength(80)
+        self.txt_goal.setStyleSheet(
+            "QLineEdit { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; "
+            "border-radius: 6px; padding: 6px 8px; font-size: 12px; }"
+        )
+        layout.addWidget(self.txt_goal)
+        goal_btns = QHBoxLayout()
+        self.btn_goal_save = QPushButton("Lưu mục tiêu")
+        self.btn_goal_save.setStyleSheet(_BTN_STYLE)
+        self.btn_goal_save.setToolTip("Một mục tiêu ngắn. Để trống rồi lưu là bỏ mục tiêu.")
+        self.btn_goal_save.clicked.connect(self._save_goal)
+        self.btn_goal_clear = QPushButton("Xóa mục tiêu")
+        self.btn_goal_clear.setStyleSheet(_BTN_STYLE)
+        self.btn_goal_clear.clicked.connect(self._clear_goal)
+        goal_btns.addWidget(self.btn_goal_save)
+        goal_btns.addWidget(self.btn_goal_clear)
+        goal_btns.addStretch()
+        layout.addLayout(goal_btns)
+        self.lbl_goal = QLabel("")
+        self.lbl_goal.setWordWrap(True)
+        self.lbl_goal.setTextFormat(Qt.PlainText)
+        self.lbl_goal.setStyleSheet("color: #fde68a; font-size: 11px; background: transparent; border: none;")
+        layout.addWidget(self.lbl_goal)
 
         if not self.compact:
             self.chk_enabled = QCheckBox("Ghi nhật ký máy (local, không gửi đám mây)")
@@ -390,7 +484,39 @@ class CompanionCard(QFrame):
             if len(preview) > 220:
                 preview = preview[:219] + "…"
             self.lbl_note.setText(prefix + preview)
+        if hasattr(self, "insight_bar"):
+            self.insight_bar.refresh()
+        self._refresh_goal()
         self.stage_changed.emit()
+
+    def _refresh_goal(self):
+        status = goal_status()
+        if not self.txt_goal.hasFocus():
+            self.txt_goal.setText(status.get("text") if status else "")
+        if not status:
+            self.lbl_goal.setText(empty_states_vi()["goal"])
+            self.btn_goal_clear.hide()
+            return
+        lines = [status.get("summary_vi") or ""]
+        if status.get("next_action_vi"):
+            lines.append(status["next_action_vi"])
+        self.lbl_goal.setText("\n".join(line for line in lines if line))
+        self.btn_goal_clear.show()
+
+    def _save_goal(self):
+        try:
+            set_goal(self.txt_goal.text())
+        except Exception:
+            pass
+        self.refresh()
+
+    def _clear_goal(self):
+        try:
+            set_goal("")
+        except Exception:
+            pass
+        self.txt_goal.clear()
+        self.refresh()
 
     def _feedback(self, helpful: bool):
         try:
@@ -447,7 +573,7 @@ class CompanionDialog(QDialog):
         self.config_manager = config_manager
         self._reflect_worker: Optional[CompanionReflectWorker] = None
         self.setWindowTitle(f"AI đồng hành — {APP_NAME}")
-        self.resize(560, 640)
+        self.resize(560, 720)
         self.setStyleSheet("QDialog { background: #0f172a; color: #e2e8f0; }")
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -465,6 +591,20 @@ class CompanionDialog(QDialog):
         self.lbl_legend.setWordWrap(True)
         self.lbl_legend.setStyleSheet("color: #64748b; font-size: 11px;")
         root.addWidget(self.lbl_legend)
+
+        root.addWidget(QLabel("Hồ sơ thói quen"))
+        self.lbl_profile = QLabel("")
+        self.lbl_profile.setWordWrap(True)
+        self.lbl_profile.setTextFormat(Qt.PlainText)
+        self.lbl_profile.setStyleSheet("color: #e2e8f0; font-size: 12px;")
+        root.addWidget(self.lbl_profile)
+        profile_btns = QHBoxLayout()
+        self.btn_clear_profile = QPushButton("Xóa hồ sơ thói quen…")
+        self.btn_clear_profile.setStyleSheet(_DANGER_BTN_STYLE)
+        self.btn_clear_profile.clicked.connect(self._clear_profile)
+        profile_btns.addWidget(self.btn_clear_profile)
+        profile_btns.addStretch()
+        root.addLayout(profile_btns)
 
         reflect_row = QHBoxLayout()
         self.btn_reflect = QPushButton(REFLECT_BUTTON_VI)
@@ -486,7 +626,7 @@ class CompanionDialog(QDialog):
         root.addWidget(self.lbl_diary_empty)
         self.list_diary = QListWidget()
         self.list_diary.setStyleSheet(_LIST_STYLE)
-        self.list_diary.setMaximumHeight(150)
+        self.list_diary.setMaximumHeight(120)
         root.addWidget(self.list_diary)
 
         diary_btns = QHBoxLayout()
@@ -508,7 +648,7 @@ class CompanionDialog(QDialog):
         root.addWidget(self.lbl_skills_empty)
         self.list_skills = QListWidget()
         self.list_skills.setStyleSheet(_LIST_STYLE)
-        self.list_skills.setMaximumHeight(120)
+        self.list_skills.setMaximumHeight(100)
         root.addWidget(self.list_skills)
 
         skill_btns = QHBoxLayout()
@@ -567,6 +707,7 @@ class CompanionDialog(QDialog):
         learned = recent_learning_text()
         if learned:
             self.lbl_legend.setText(self.lbl_legend.text() + "\n" + learned)
+        self.lbl_profile.setText(format_profile_browse() or empty["profile"])
 
         diary_rows = list_diary_rows(limit=20, days=30)
         self.list_diary.clear()
@@ -649,6 +790,12 @@ class CompanionDialog(QDialog):
         if not _confirm(self, confirm_clear_prompt("skills")):
             return
         clear_skills_memory()
+        self.refresh()
+
+    def _clear_profile(self):
+        if not _confirm(self, confirm_clear_prompt("profile")):
+            return
+        clear_profile_habits()
         self.refresh()
 
     def _clear_all(self):
