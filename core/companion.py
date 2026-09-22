@@ -45,7 +45,6 @@ from core.companion_skills import (
     clear_skills,
     crystallize_skills,
     delete_skill,
-    fold_vi,
     format_skill_row,
     format_skills_context,
     has_skill,
@@ -158,6 +157,11 @@ def record_app_event(
         if event:
             mark_active_day(now=now, base_dir=base_dir)
             _refresh_skill_offer(base_dir=base_dir, now=now)
+            try:
+                from core.companion_profile import refresh_profile
+                refresh_profile(base_dir=base_dir, now=now)
+            except Exception:
+                pass
         return event
     except Exception:
         return None
@@ -410,10 +414,19 @@ def confirm_clear_prompt(target: str) -> Dict[str, str]:
             "body": "Xóa sổ tay phản tỉnh local. Có thể viết lại sau. Không thể hoàn tác.",
             "ok": "Xóa sổ tay",
         }
+    if kind == "profile":
+        return {
+            "title": "Xóa hồ sơ thói quen?",
+            "body": (
+                "Xóa hồ sơ thói quen local (điều AI nhớ về máy này). "
+                "Mục tiêu bạn đã gõ và nhật ký vẫn giữ. Không thể hoàn tác."
+            ),
+            "ok": "Xóa hồ sơ",
+        }
     return {
         "title": "Xóa hết bộ nhớ local?",
         "body": (
-            "Xóa nhật ký, kỹ năng và sổ tay trên máy này (AppData). "
+            "Xóa nhật ký, hồ sơ thói quen, mục tiêu, kỹ năng và sổ tay trên máy này (AppData). "
             "Giai đoạn (ngày dùng) vẫn giữ. Gemini không nhận dữ liệu đã xóa. Không thể hoàn tác."
         ),
         "ok": "Xóa bộ nhớ",
@@ -459,21 +472,40 @@ def clear_reflection_memory(base_dir: Optional[str] = None) -> bool:
         return False
 
 
+def clear_profile_habits(base_dir: Optional[str] = None) -> int:
+    try:
+        from core.companion_profile import clear_habits
+        return int(clear_habits(base_dir=base_dir) or 0)
+    except Exception:
+        return 0
+
+
+def clear_profile_memory(base_dir: Optional[str] = None) -> int:
+    try:
+        from core.companion_profile import clear_profile
+        return int(clear_profile(base_dir=base_dir) or 0)
+    except Exception:
+        return 0
+
+
 def clear_local_memory(
     *,
     diary: bool = True,
     skills: bool = True,
     reflection: bool = True,
+    profile: bool = True,
     base_dir: Optional[str] = None,
 ) -> Dict[str, int]:
-    """Privacy clear: diary / skills / sổ tay. Does not reset days-of-use stage."""
-    counts = {"diary": 0, "skills": 0, "reflection": 0}
+    """Privacy clear: diary / profile / skills / sổ tay. Does not reset days-of-use stage."""
+    counts = {"diary": 0, "skills": 0, "reflection": 0, "profile": 0}
     if diary:
         counts["diary"] = clear_diary_memory(base_dir=base_dir)
     if skills:
         counts["skills"] = clear_skills_memory(base_dir=base_dir)
     if reflection:
         counts["reflection"] = 1 if clear_reflection_memory(base_dir=base_dir) else 0
+    if profile:
+        counts["profile"] = clear_profile_memory(base_dir=base_dir)
     return counts
 
 
@@ -503,16 +535,6 @@ def reset_postscript_gate() -> None:
     _last_postscript_sig = ""
 
 
-_QUERY_TAGS = (
-    (("wifi", "wi-fi", "mang", "ping", "rot", "yeu"), {"wifi", "ping"}),
-    (("ram", "bo nho", "nho", "do may", "lag"), {"ram"}),
-    (("rac", "o c", "disk", "dung", "temp", "don"), {"disk", "clean"}),
-    (("nong", "nhiet", "quat"), {"thermal"}),
-    (("thi", "hop", "tap trung", "focus"), {"focus"}),
-    (("cap nhat", "update", "ban moi"), {"update"}),
-)
-
-
 def _clip(text: str, limit: int) -> str:
     raw = str(text or "").strip()
     if limit <= 0 or len(raw) <= limit:
@@ -526,25 +548,28 @@ def select_relevant_events(
     user_text: str = "",
     events: Optional[List[Dict[str, Any]]] = None,
     limit: int = 4,
+    topics: Optional[List[str]] = None,
+    goal_topics: Optional[List[str]] = None,
+    now: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
-    """Prefer diary rows whose tags match the question; otherwise the newest real events."""
+    """Rank diary rows for the question: topic, then goal, then recency. Not a keyword dump."""
     rows = list(events or [])
     if not rows:
         return []
-    folded = fold_vi(user_text)
-    wanted: set = set()
-    for needles, tags in _QUERY_TAGS:
-        if any(token in folded for token in needles):
-            wanted |= set(tags)
-    if wanted:
-        matched = [
-            item for item in rows
-            if set(item.get("tags") or []) & wanted
-        ]
-        if matched:
-            return matched[-max(1, int(limit)):]
-    interesting = [item for item in rows if item.get("kind") != "session_day"] or rows
-    return interesting[-max(1, int(limit)):]
+    try:
+        from core.companion_profile import infer_topics, rank_events
+        wanted = list(topics) if topics is not None else infer_topics(user_text)
+        return rank_events(
+            user_text,
+            rows,
+            limit=limit,
+            topics=wanted,
+            goal_topics=goal_topics,
+            now=now,
+        )
+    except Exception:
+        interesting = [item for item in rows if item.get("kind") != "session_day"] or rows
+        return interesting[-max(1, int(limit)):]
 
 
 def _format_context_event(event: Dict[str, Any]) -> str:
@@ -719,6 +744,54 @@ def active_guidance_text(base_dir: Optional[str] = None, limit: int = 2) -> str:
     return "Gợi ý đã học:\n" + "\n".join(lines)
 
 
+def _grounding_parts(
+    user_text: str = "",
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    event_limit: int = 4,
+) -> Dict[str, Any]:
+    """Profile, goal, and the diary rows that match this question."""
+    from core.companion_profile import (
+        format_goal_status,
+        format_profile_lines,
+        goal_status,
+        infer_topics,
+        load_profile,
+        refresh_profile,
+    )
+    try:
+        profile = refresh_profile(base_dir=base_dir, now=now)
+    except Exception:
+        profile = load_profile(base_dir)
+    topics = infer_topics(user_text)
+    status = goal_status(base_dir=base_dir, now=now, profile=profile)
+    goal_topics = list(status.get("topics") or []) if status else []
+    events = recent_events(days=21, limit=40, base_dir=base_dir, now=now)
+    # A named topic stays on that topic. A vague question may lean on the goal.
+    if topics:
+        rank_goal = goal_topics if set(goal_topics) & set(topics) else []
+    else:
+        rank_goal = goal_topics
+    picked = select_relevant_events(
+        user_text,
+        events,
+        limit=event_limit,
+        topics=topics,
+        goal_topics=rank_goal,
+        now=now,
+    )
+    return {
+        "profile": profile,
+        "topics": topics,
+        "events": events,
+        "picked": picked,
+        "goal": status,
+        "profile_lines": format_profile_lines(profile, topics or None, limit=2),
+        "goal_text": format_goal_status(profile, base_dir=base_dir, now=now, events=events),
+    }
+
+
 def build_prompt_context(
     user_text: str = "",
     config_manager: Optional[Any] = None,
@@ -729,17 +802,20 @@ def build_prompt_context(
     if config_manager is not None and not is_enabled(config_manager):
         return ""
     stage = current_stage(config_manager=config_manager, base_dir=base_dir)
-    events = recent_events(days=21, limit=40, base_dir=base_dir, now=now)
-    picked = select_relevant_events(user_text, events, limit=4)
+    parts = _grounding_parts(user_text, base_dir=base_dir, now=now, event_limit=4)
+    picked = parts["picked"]
+    events = parts["events"]
     if picked:
         digest = "\n".join(_format_context_event(item) for item in picked)
     else:
         digest = "Nhật ký máy còn trống (cài mới). Không bịa kỷ niệm."
-    skills = match_skills(user_text=user_text, base_dir=base_dir, limit=3)
+    skills = match_skills(user_text=user_text, base_dir=base_dir, limit=2)
     skills_text = format_skills_context(skills, empty_vi="Chưa có kỹ năng lưu cho máy này.")
-    hints = derive_machine_hints(events, skills, limit=3, now=now, for_nudge=False)
-    hint_text = "\n".join(f"- {item['text']}" for item in hints) or "Chưa đủ mẫu lặp để gợi ý riêng máy này."
-    note = _clip(latest_reflection(base_dir) or "Chưa có sổ tay (chưa phản tỉnh hoặc cài mới).", 180)
+    hints = derive_machine_hints(events, skills, limit=2, now=now, for_nudge=False)
+    if parts["topics"]:
+        hints = [item for item in hints if _hint_matches_topics(item, parts["topics"])]
+    hint_text = "\n".join(f"- {item['text']}" for item in hints[:2]) or "Chưa đủ mẫu lặp để gợi ý riêng máy này."
+    note = _clip(latest_reflection(base_dir) or "Chưa có sổ tay (chưa phản tỉnh hoặc cài mới).", 160)
     policy = (
         "Hỏi nhiều, đề xuất ít."
         if stage.ask_more
@@ -747,11 +823,18 @@ def build_prompt_context(
     )
     if not stage.may_propose_actions:
         policy += " Người dùng chưa bật quyền đề xuất hành động."
+    profile_lines = parts["profile_lines"]
+    profile_text = "\n".join(f"- {line}" for line in profile_lines) or "Chưa đủ mẫu để ghi thói quen máy này."
+    goal_text = parts["goal_text"] or "Không đặt mục tiêu."
     lines = [
         "[AI đồng hành — bộ nhớ local trên máy này, không phải AGI]",
         f"Giai đoạn: {stage.badge_vi()} ({stage.active_days} ngày dùng máy).",
         stage.blurb_vi,
         f"Quy tắc: {policy}",
+        "Về máy này:",
+        profile_text,
+        "Mục tiêu:",
+        goal_text,
         "Gợi ý máy này:",
         hint_text,
         "Nhật ký liên quan:",
@@ -773,9 +856,62 @@ def build_prompt_context(
     return _clip(text, budget)
 
 
+def _hint_matches_topics(hint: Dict[str, str], topics: List[str]) -> bool:
+    issue = str(hint.get("issue_class") or "")
+    mapping = {
+        "wifi_weak": "wifi",
+        "thermal": "thermal",
+        "high_ram": "ram",
+        "disk_low": "disk",
+        "focus": "focus",
+        "update": "update",
+    }
+    topic = mapping.get(issue, "")
+    return not topic or topic in topics
+
+
 def is_memory_question(user_text: str) -> bool:
     blob = str(user_text or "").lower()
     return any(token in blob for token in _MEMORY_HINTS)
+
+
+def local_grounding_text(
+    user_text: str = "",
+    config_manager: Optional[Any] = None,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> str:
+    """Short machine-specific note when Gemini is unavailable. Empty if companion is off."""
+    if config_manager is not None and not is_enabled(config_manager):
+        return ""
+    try:
+        stage = current_stage(config_manager=config_manager, base_dir=base_dir)
+        parts = _grounding_parts(user_text, base_dir=base_dir, now=now, event_limit=2)
+    except Exception:
+        return ""
+    bits = [f"🌱 {stage.badge_vi()}"]
+    if stage.empty and not parts["picked"]:
+        bits.append("Nhật ký máy còn trống — mình chưa có kỷ niệm trên máy này.")
+        return " ".join(bits)
+    if parts["profile_lines"]:
+        bits.append("Về máy này: " + parts["profile_lines"][0])
+    goal = parts.get("goal")
+    topics = parts.get("topics") or []
+    if goal and (not topics or goal.get("topic") in topics or set(goal.get("topics") or []) & set(topics)):
+        summary = str(goal.get("summary_vi") or "").strip()
+        if summary:
+            bits.append(summary)
+        nxt = str(goal.get("next_action_vi") or "").strip()
+        if nxt and int(goal.get("related_count") or 0) > 0:
+            bits.append(nxt)
+    picked = parts.get("picked") or []
+    if picked:
+        summary = _clip(picked[-1].get("summary") or "", 90)
+        if summary:
+            bits.append(f"Nhật ký: {summary}")
+    elif stage.ask_more:
+        bits.append("Bạn có hay gặp tình trạng này trên máy này không?")
+    return " ".join(bit for bit in bits if bit)
 
 
 def memory_answer(
@@ -787,9 +923,17 @@ def memory_answer(
     digest = diary_digest(base_dir=base_dir)
     skills = load_skills(base_dir)
     note = latest_reflection(base_dir)
+    try:
+        from core.companion_profile import format_profile_browse
+        profile_text = format_profile_browse(base_dir=base_dir)
+    except Exception:
+        profile_text = ""
     lines = [
         f"🌱 AI đồng hành — {stage.badge_vi()}",
         stage.blurb_vi,
+        "",
+        "Hồ sơ máy này:",
+        profile_text or "Chưa có hồ sơ thói quen.",
         "",
         "Nhật ký máy này:",
         digest,
@@ -859,7 +1003,31 @@ def maybe_run_reflection(
     stage = current_stage(config_manager=config_manager, base_dir=base_dir)
     events = recent_events(days=21, limit=0, base_dir=base_dir, now=stamp)
     counts = count_by_kind(events)
-    new_skills = crystallize_skills(counts, events, base_dir=base_dir)
+    profile_text = ""
+    goal_text = ""
+    prefer: List[str] = []
+    try:
+        from core.companion_profile import (
+            format_goal_status,
+            format_profile_lines,
+            goal_issue_classes,
+            refresh_profile,
+        )
+        profile = refresh_profile(base_dir=base_dir, now=stamp, events=events)
+        profile_text = "\n".join(format_profile_lines(profile, limit=3))
+        goal_text = format_goal_status(profile, base_dir=base_dir, now=stamp, events=events)
+        prefer = goal_issue_classes(profile)
+    except Exception:
+        profile_text = ""
+        goal_text = ""
+        prefer = []
+    new_skills = crystallize_skills(
+        counts,
+        events,
+        base_dir=base_dir,
+        max_new=2,
+        prefer_issues=prefer,
+    )
     if new_skills:
         state_now = load_state(base_dir)
         offer = state_now.get("pending_skill_offer")
@@ -890,6 +1058,8 @@ def maybe_run_reflection(
         provider=llm,
         base_dir=base_dir,
         now=stamp,
+        profile_text=profile_text,
+        goal_text=goal_text,
     )
     if new_skills and result.get("source") == "template":
         titles = ", ".join(skill.title for skill in new_skills)
@@ -1206,6 +1376,8 @@ def empty_states_vi() -> Dict[str, str]:
         "reflection_empty": (
             f"Chưa có nhật ký — dùng app vài ngày rồi bấm {REFLECT_BUTTON_VI}."
         ),
+        "profile": "Chưa có hồ sơ thói quen — dùng máy vài ngày để AI nhớ điều máy này hay gặp.",
+        "goal": "Chưa đặt mục tiêu (tuỳ chọn).",
     }
 
 
@@ -1271,4 +1443,7 @@ __all__ = [
     "should_emit_postscript",
     "stage_caption_vi",
     "stage_legend_vi",
+    "clear_profile_habits",
+    "clear_profile_memory",
+    "local_grounding_text",
 ]

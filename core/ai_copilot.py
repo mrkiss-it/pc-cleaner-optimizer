@@ -1199,41 +1199,17 @@ class AICopilotEngine:
         return assistant_msg
 
     def _attach_companion_postscript(self, reply_text: str, user_text: str) -> str:
-        """Cite machine diary when present; honest empty hint at stage 0 (cooldown)."""
+        """Cite this machine's profile, goal, and diary when Gemini is unavailable."""
         try:
-            from core.companion import (
-                current_stage,
-                derive_machine_hints,
-                diary_digest,
-                match_skills,
-                recent_events,
-                should_emit_postscript,
-            )
-            stage = current_stage(config_manager=self.config_manager)
-            digest = diary_digest(limit=4, days=14)
-            skills = match_skills(user_text=user_text, limit=2)
-            hints = derive_machine_hints(
-                recent_events(days=21, limit=30),
-                skills,
-                limit=1,
+            from core.companion import local_grounding_text, should_emit_postscript
+            extra = local_grounding_text(
+                user_text,
+                config_manager=self.config_manager,
             )
         except Exception:
             return reply_text
-        bits = [f"🌱 {stage.badge_vi()}"]
-        if stage.empty:
-            bits.append("Nhật ký máy còn trống — mình chưa có kỷ niệm trên máy này.")
-        elif digest and "còn trống" not in digest:
-            first = digest.splitlines()[0].lstrip("- ").strip()
-            if first:
-                bits.append(f"Nhật ký: {first}")
-        if skills:
-            bits.append("Kỹ năng máy này: " + skills[0].suggest)
-        elif hints:
-            bits.append(hints[0]["text"])
-        elif stage.ask_more:
-            bits.append("Bạn có hay gặp tình trạng này trên máy này không?")
-        extra = " ".join(bits)
-        if extra in (reply_text or ""):
+        extra = str(extra or "").strip()
+        if not extra or extra in (reply_text or ""):
             return reply_text
         try:
             if not should_emit_postscript(extra):

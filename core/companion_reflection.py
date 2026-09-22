@@ -174,6 +174,8 @@ def template_reflection(
     active_days: int = 0,
     stage_label: str = "",
     now: Optional[datetime] = None,
+    profile_text: str = "",
+    goal_text: str = "",
 ) -> str:
     """Honest metrics-only sổ tay. No invented personality or 'wisdom'."""
     stamp = (now or datetime.now()).strftime("%Y-%m-%d")
@@ -208,6 +210,13 @@ def template_reflection(
             bits.append(f"{label} {n} lần")
     if bits:
         lines.append("Chi tiết: " + "; ".join(bits) + ".")
+    profile_body = (profile_text or "").strip()
+    if profile_body:
+        lines.append("Hồ sơ máy này:")
+        lines.append(profile_body)
+    goal_body = (goal_text or "").strip()
+    if goal_body:
+        lines.append(goal_body)
     digest_text = (digest or "").strip()
     if digest_text and "còn trống" not in digest_text:
         lines.append("Tóm tắt nhật ký:")
@@ -224,6 +233,8 @@ def build_reflection_prompt(
     stage_label: str,
     skills_text: str,
     kind_counts: Optional[Dict[str, int]] = None,
+    profile_text: str = "",
+    goal_text: str = "",
 ) -> str:
     counts = kind_counts or {}
     count_line = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()) if v) or "không có"
@@ -232,9 +243,12 @@ def build_reflection_prompt(
         "(không nhận là AGI, không bịa sự kiện).\n"
         f"Giai đoạn đồng hành: {stage_label}\n"
         f"Đếm sự kiện: {count_line}\n"
+        f"Hồ sơ thói quen máy này:\n{profile_text or '(chưa đủ mẫu)'}\n"
+        f"Mục tiêu người dùng:\n{goal_text or '(không đặt — đừng nhắc mục tiêu)'}\n"
         f"Nhật ký:\n{digest or '(trống)'}\n"
         f"Kỹ năng đã lưu:\n{skills_text or '(chưa có)'}\n"
-        "Tối đa 8 câu. Nếu nhật ký trống, nói thẳng là chưa có dữ liệu."
+        "Tối đa 8 câu. Cập nhật nhận xét theo hồ sơ và mục tiêu nếu có. "
+        "Nếu nhật ký trống, nói thẳng là chưa có dữ liệu. Đề xuất tối đa một việc tiếp theo."
     )
 
 
@@ -248,6 +262,8 @@ def run_reflection(
     provider: Optional[CompanionLLMProvider] = None,
     base_dir: Optional[str] = None,
     now: Optional[datetime] = None,
+    profile_text: str = "",
+    goal_text: str = "",
 ) -> Dict[str, str]:
     """Write sổ tay. LLM is optional; always falls back to the metrics template."""
     fallback = template_reflection(
@@ -256,6 +272,8 @@ def run_reflection(
         active_days=active_days,
         stage_label=stage_label,
         now=now,
+        profile_text=profile_text,
+        goal_text=goal_text,
     )
     used = "template"
     note = fallback
@@ -266,6 +284,8 @@ def run_reflection(
             stage_label=stage_label,
             skills_text=skills_text,
             kind_counts=kind_counts,
+            profile_text=profile_text,
+            goal_text=goal_text,
         )
         try:
             generated = llm.generate(prompt)
