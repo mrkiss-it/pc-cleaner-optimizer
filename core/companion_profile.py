@@ -112,6 +112,9 @@ _ACTION_TOPIC = {
     "clean_junk": "disk",
     "repair_network_now": "wifi",
     "optimize_network": "wifi",
+    "open_wifi_stability": "wifi",
+    "disable_wifi_power_save": "wifi",
+    "open_thermal_card": "thermal",
     "view_hardware": "thermal",
     "open_hardware_dialog": "thermal",
     "battery_saver": "thermal",
@@ -140,6 +143,7 @@ def default_profile() -> Dict[str, Any]:
         "dismissed_insights": [],
         "insight_snooze_date": "",
         "habits_after": "",
+        "last_chat": None,
     }
 
 
@@ -180,6 +184,14 @@ def load_profile(base_dir: Optional[str] = None) -> Dict[str, Any]:
         merged["coaching"] = "steady"
     merged["insight_snooze_date"] = str(merged.get("insight_snooze_date") or "")[:10]
     merged["habits_after"] = str(merged.get("habits_after") or "")
+    last_chat = merged.get("last_chat")
+    if isinstance(last_chat, dict) and str(last_chat.get("topic") or "").strip():
+        merged["last_chat"] = {
+            "topic": str(last_chat.get("topic") or "")[:24],
+            "at": str(last_chat.get("at") or "")[:32],
+        }
+    else:
+        merged["last_chat"] = None
     return merged
 
 
@@ -237,7 +249,8 @@ def infer_topics(text: str) -> List[str]:
                 score += 2 if (" " in term or "-" in term) else 1
         if score:
             scores[topic] = score
-    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    order = {name: index for index, (name, _terms) in enumerate(_TOPIC_TERMS)}
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], order.get(item[0], 99)))
     return [topic for topic, _score in ranked]
 
 
@@ -259,6 +272,21 @@ def _topic_of_kind(kind: str) -> str:
     for topic, meta in TOPIC_META.items():
         if key in meta["kinds"]:
             return topic
+    return ""
+
+
+def event_topic(event: Optional[Dict[str, Any]]) -> str:
+    """Topic of a diary row. Chat notes carry the topic in tags, not the kind."""
+    if not isinstance(event, dict):
+        return ""
+    kind = str(event.get("kind") or "")
+    topic = _topic_of_kind(kind)
+    if topic:
+        return topic
+    if kind == "chat_note":
+        for tag in event.get("tags") or []:
+            if str(tag) in TOPIC_META:
+                return str(tag)
     return ""
 
 
@@ -313,9 +341,17 @@ def derive_habits(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     rejected: Dict[str, int] = {}
     helpful = 0
     unhelpful = 0
+    chat_hits: Dict[str, int] = {}
     for event in rows:
         kind = str(event.get("kind") or "")
         weight = event_weight(event)
+        if kind == "chat_note":
+            tags = {str(tag) for tag in (event.get("tags") or [])}
+            if "feedback" not in tags:
+                asked = event_topic(event)
+                if asked:
+                    chat_hits[asked] = chat_hits.get(asked, 0) + weight
+            continue
         topic = _topic_of_kind(kind)
         if topic:
             by_topic[topic].append(event)
@@ -462,6 +498,18 @@ def derive_habits(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
                 rejected[topic],
                 "avoid",
             ))
+    for topic, hits in chat_hits.items():
+        if hits < 2 or topic not in TOPIC_META:
+            continue
+        name = str(TOPIC_META[topic]["name"])
+        habits.append(_habit(
+            f"{topic}_asks",
+            topic,
+            f"Bạn hay hỏi về {name}",
+            f"Bạn đã hỏi Copilot về {name} {hits} lần trên máy này.",
+            hits,
+            "interest",
+        ))
     habits.sort(key=lambda item: (-int(item.get("evidence") or 0), str(item.get("id") or "")))
     # One concern/preference story per topic, plus a separate avoid line.
     kept: List[Dict[str, Any]] = []
@@ -746,7 +794,7 @@ def rank_events(
 
     def _score(event: Dict[str, Any]) -> float:
         kind = str(event.get("kind") or "")
-        topic = _topic_of_kind(kind)
+        topic = event_topic(event)
         score = 0.0
         if kind == "session_day":
             score -= 40
@@ -776,7 +824,7 @@ def rank_events(
     scored = [( _score(item), _parse_ts(str(item.get("ts") or "")) or 0.0, item) for item in rows]
     if wanted:
         matched = [item for item in scored if item[0] >= 40]
-        pool = matched or [item for item in scored if _topic_of_kind(str(item[2].get("kind") or "")) in wanted]
+        pool = matched or [item for item in scored if event_topic(item[2]) in wanted]
     else:
         pool = [item for item in scored if str(item[2].get("kind") or "") != "session_day"] or scored
     pool.sort(key=lambda item: (item[0], item[1]))

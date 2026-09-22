@@ -891,6 +891,235 @@ print(" [PASS] dismissible companion insight")
 
 
 # ---------------------------------------------------------------------------
+# Chat memory, insight actions, stage voice, weekly digest
+# ---------------------------------------------------------------------------
+
+from core.companion_diary import event_weight
+from core.companion_moment import (
+    INSIGHT_ACTION_ALLOWLIST,
+    action_cap_for_stage,
+    is_allowed_insight_action,
+    learn_from_chat,
+    local_weekly_summary,
+    maybe_weekly_digest,
+    relevant_chat_topics,
+    resolve_insight_action,
+    stage_voice,
+    weekly_digest_due,
+)
+from core.companion_reflection import load_reflection
+
+root = _fresh_dir()
+chat_now = datetime(2026, 9, 22, 10, 0, 0)
+marker = "KHONG_LUU_PHAN_TRA_LOI_DAI_12345"
+secret = "AIzaSyTHISISASECRETKEY123456"
+skipped = learn_from_chat("xin chào", "Chào bạn, mình giúp được gì hôm nay?", now=chat_now, base_dir=root)
+check(skipped is None, "greeting is not a diary episode")
+skipped = learn_from_chat("wifi", "ok", now=chat_now, base_dir=root)
+check(skipped is None, "tiny answer is not a full turn")
+skipped = learn_from_chat(
+    "Wifi chậm buổi tối",
+    "Mình sẽ nói ngắn về Wi-Fi.",
+    now=chat_now,
+    base_dir=root,
+    config_manager=_Cfg(companion_enabled=False),
+)
+check(skipped is None, "companion off does not learn from chat")
+first = learn_from_chat(
+    f"Wifi chậm, key {secret} đừng lưu",
+    "Có thể do tiết kiệm điện của adapter. " + marker,
+    now=chat_now,
+    base_dir=root,
+)
+check(first and first.get("kind") == "chat_note", "wifi question becomes a chat episode")
+check(secret not in json.dumps(first, ensure_ascii=False), "episode summary redacts the API key")
+check(marker not in json.dumps(first, ensure_ascii=False), "episode does not store the assistant reply")
+check("Wi-Fi" in (first.get("summary") or ""), "episode names the topic, not a chat dump")
+again = learn_from_chat(
+    "Wifi vẫn chậm",
+    "Tắt tiết kiệm điện Wi-Fi trên thẻ ổn định rồi xem lại.",
+    now=chat_now + timedelta(minutes=5),
+    base_dir=root,
+)
+chat_rows = [row for row in read_events(base_dir=root) if row.get("kind") == "chat_note"]
+check(len(chat_rows) == 1, "same topic inside 30 minutes coalesces")
+check(event_weight(chat_rows[0]) >= 2, "coalesced chat line counts both turns")
+later = learn_from_chat(
+    "Wifi chậm lại rồi",
+    "Mình vẫn chỉ nói về Wi-Fi, không đổi DNS.",
+    now=chat_now + timedelta(hours=2),
+    base_dir=root,
+)
+check(later and later.get("ts") != first.get("ts"), "a later question is a new episode")
+asked = load_profile(root)
+ask_blob = " ".join(
+    f"{item.get('label_vi')} {item.get('detail_vi')}" for item in asked.get("habits") or []
+)
+check("hỏi" in ask_blob and "Wi-Fi" in ask_blob, "repeated questions update the habit profile")
+note_user_feedback(True, base_dir=root, now=chat_now + timedelta(minutes=10))
+feedback_rows = [
+    row for row in read_events(base_dir=root)
+    if row.get("kind") == "chat_note" and "hữu ích" in str(row.get("summary") or "")
+]
+check(feedback_rows, "explicit feedback on the last topic is remembered")
+check(secret not in open(os.path.join(root, "diary.jsonl"), encoding="utf-8").read(), "diary file has no API key")
+set_goal("ổn định Wi-Fi trước họp", base_dir=root, now=chat_now)
+goal_turn = learn_from_chat(
+    "nhắc mục tiêu của tôi",
+    "Mục tiêu hiện tại là ổn định Wi-Fi trước họp.",
+    now=chat_now + timedelta(hours=3),
+    base_dir=root,
+)
+check(goal_turn and "wifi" in (goal_turn.get("tags") or []), "active goal is a chat topic")
+ctx_chat = build_prompt_context("wifi chậm", base_dir=root, now=chat_now + timedelta(hours=4))
+check("Bạn hỏi về" in ctx_chat, "later copilot context can see yesterday's question")
+check(marker not in ctx_chat and secret not in ctx_chat, "context stays free of dumps and keys")
+check(relevant_chat_topics("máy nóng", base_dir=root) == ["thermal"], "thermal questions are in scope")
+check(relevant_chat_topics("dọn rác ổ C", base_dir=root) == ["disk"], "cleanup questions are in scope")
+check("focus" in relevant_chat_topics("bật trước thi", base_dir=root), "exam focus questions are in scope")
+check(relevant_chat_topics("có bản cập nhật không", base_dir=root) == ["update"], "update questions are in scope")
+check(relevant_chat_topics("xin chào bạn", base_dir=root) == [], "small talk is out of scope")
+wired = _fresh_dir()
+from core.ai_copilot import AICopilotEngine
+engine = AICopilotEngine(config_manager=_Cfg(ai_copilot_provider="auto", companion_enabled=True))
+engine.ask("Wifi nhà mình chậm buổi tối")
+wired_rows = [row for row in read_events(base_dir=wired) if row.get("kind") == "chat_note"]
+check(wired_rows, "Copilot ask() writes the chat episode")
+check(marker not in json.dumps(wired_rows, ensure_ascii=False), "ask() does not dump the reply into the diary")
+print(" [PASS] chat turns update diary and habit profile")
+
+blocked = {
+    "clean_disk", "clean_junk", "clean_light", "winsxs_cleanup",
+    "auto_optimize_all", "switch_dns", "registry_clean",
+}
+for key in blocked:
+    check(not is_allowed_insight_action(key), f"{key} is not an insight action")
+for topic in ("wifi", "thermal", "disk", "focus", "update", "ram", ""):
+    for stage_n in range(4):
+        for propose in (True, False):
+            action = resolve_insight_action(topic, stage=stage_n, may_propose=propose, coaching="steady")
+            if not action:
+                continue
+            check(action["key"] in INSIGHT_ACTION_ALLOWLIST, "resolved action stays on the allowlist")
+            check(action["key"] not in blocked, "resolved action is not destructive")
+            check(action["label_vi"] and "Pro" not in action["label_vi"], "action label is Vietnamese")
+shy = resolve_insight_action("wifi", stage=0, may_propose=True)
+check(shy and shy["key"] == "open_companion_memory", "stage 0 offers memory, not a system change")
+guide = resolve_insight_action("wifi", stage=1, may_propose=False)
+check(guide and guide["key"] == "open_wifi_stability", "wifi insight opens existing guidance")
+check("Wi-Fi" in guide["label_vi"], "wifi button label is Vietnamese")
+power = resolve_insight_action("wifi", stage=2, may_propose=True)
+check(power and power["key"] == "disable_wifi_power_save", "mature wifi insight uses the existing power-save flow")
+check("tiết kiệm" in power["label_vi"], "power-save button label is Vietnamese")
+power_shy = resolve_insight_action("wifi", stage=3, may_propose=True, coaching="ask_more")
+check(power_shy and power_shy["key"] == "open_wifi_stability", "ask-more coaching does not change Wi-Fi power")
+thermal = resolve_insight_action("thermal", stage=1, may_propose=False)
+check(thermal and thermal["key"] == "open_thermal_card", "thermal insight opens the thermal card")
+focus_early = resolve_insight_action("focus", stage=1, may_propose=True)
+check(focus_early and focus_early["key"] == "open_companion_memory", "exam focus waits until stage 2")
+focus_go = resolve_insight_action("focus", stage=2, may_propose=True)
+check(focus_go and focus_go["key"] == "enable_exam_focus", "stage 2 may start Trước thi / họp")
+focus_no = resolve_insight_action("focus", stage=3, may_propose=False)
+check(focus_no and focus_no["key"] != "enable_exam_focus", "exam focus respects the propose switch")
+focus_ask = resolve_insight_action("focus", stage=3, may_propose=True, coaching="ask_more")
+check(focus_ask and focus_ask["key"] == "open_companion_memory", "unhelpful coaching does not start focus")
+disk_act = resolve_insight_action("disk", stage=3, may_propose=True)
+check(disk_act and disk_act["key"] == "open_companion_memory", "cleanup insight does not one-tap delete")
+check(resolve_insight_action("nope", stage=3) is None, "unknown topic has no button")
+print(" [PASS] insight action allowlist")
+
+voice0 = stage_voice(0)
+voice3 = stage_voice(3)
+check(voice0["boldness"] == "shy" and "hỏi" in voice0["tone_vi"], "stage 0 voice stays shy")
+check(voice3["boldness"] == "specific" and "nhật ký" in voice3["tone_vi"], "stage 3 voice cites this machine")
+check(action_cap_for_stage(0) == 0 and action_cap_for_stage(2) == 1 and action_cap_for_stage(3) == 2, "suggestion cap grows with stage")
+check(action_cap_for_stage(3, coaching="ask_more") == 0, "ask-more coaching stops bold suggestions")
+fresh_voice = _fresh_dir()
+ctx_shy = build_prompt_context("xin chào", base_dir=fresh_voice)
+check("hỏi" in ctx_shy.lower() or "Chưa đề xuất" in ctx_shy, "stage 0 prompt uses the shy voice")
+dates = [(datetime(2026, 1, 1) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(21)]
+from core.companion_maturity import save_state
+save_state({"active_dates": dates, "first_seen": "2026-01-01T08:00:00"}, base_dir=fresh_voice)
+ctx_sure = build_prompt_context("wifi", base_dir=fresh_voice)
+check("nhật ký máy này" in ctx_sure or "cụ thể" in ctx_sure, "stage 3 prompt is specific")
+check(voice0["tone_vi"] != voice3["tone_vi"], "stage voices are not the same line")
+print(" [PASS] stage-aware voice")
+
+root = _fresh_dir()
+empty_week = maybe_weekly_digest(force=True, base_dir=root, now=chat_now, config_manager=_Cfg())
+check(empty_week and empty_week.get("source") == "empty", "empty week does not invent a sổ tay")
+check(not os.path.exists(os.path.join(root, "so_tay.txt")), "empty digest does not write sổ tay")
+check(weekly_digest_due(now=chat_now, base_dir=root), "empty digest does not consume the weekly slot")
+record_app_event(
+    "wifi_weak",
+    "Wi-Fi yếu buổi tối",
+    now=chat_now - timedelta(days=1),
+    base_dir=root,
+    coalesce=False,
+)
+learn_from_chat(
+    "Wifi chậm trước họp",
+    "Mình ghi nhận Wi-Fi, không đổi DNS.",
+    now=chat_now - timedelta(hours=2),
+    base_dir=root,
+)
+set_goal("ổn định Wi-Fi trước họp", base_dir=root, now=chat_now - timedelta(days=2))
+local_note = local_weekly_summary(now=chat_now, base_dir=root, stage_label="Giai đoạn 1 · Đang học")
+check("Tóm tắt tuần" in local_note and "Wi-Fi" in local_note, "local weekly note uses diary facts")
+first_week = maybe_weekly_digest(force=False, now=chat_now, base_dir=root, config_manager=_Cfg())
+check(first_week and first_week.get("source") == "template", "no Gemini key stays on the local summary")
+check("Tóm tắt tuần" in (first_week.get("note") or ""), "weekly note lands in the sổ tay")
+check(not weekly_digest_due(now=chat_now + timedelta(days=1), base_dir=root), "same ISO week is gated")
+again_week = maybe_weekly_digest(force=False, now=chat_now + timedelta(days=1), base_dir=root, config_manager=_Cfg())
+check(again_week is None, "automatic digest does not repeat this week")
+forced = maybe_weekly_digest(force=True, now=chat_now + timedelta(days=1), base_dir=root, config_manager=_Cfg())
+check(forced and forced.get("note"), "manual button can rewrite the same week")
+
+class _Polish:
+    name = "gemini"
+
+    def generate(self, prompt, timeout=8.0):
+        return f"Tuần này Wi-Fi vẫn là việc chính. {secret}"
+
+polished = maybe_weekly_digest(
+    force=True,
+    now=chat_now + timedelta(days=1, hours=1),
+    base_dir=root,
+    config_manager=_Cfg(),
+    provider=_Polish(),
+)
+check(polished and polished.get("source") == "gemini", "Gemini polish is optional when a provider is present")
+check(secret not in (polished.get("note") or ""), "weekly polish redacts API keys")
+check("Wi-Fi" in (polished.get("note") or ""), "polished note stays about this machine")
+off = maybe_weekly_digest(
+    force=True,
+    now=chat_now,
+    base_dir=root,
+    config_manager=_Cfg(companion_enabled=False),
+    provider=_Polish(),
+)
+check(off is None, "weekly digest respects companion_enabled")
+next_week = maybe_weekly_digest(
+    force=False,
+    now=chat_now + timedelta(days=7),
+    base_dir=root,
+    config_manager=_Cfg(),
+)
+check(next_week and next_week.get("source") == "template", "next ISO week can write again")
+reflected = maybe_run_reflection(
+    _Cfg(),
+    force=True,
+    provider=TemplateReflectionProvider(),
+    base_dir=root,
+    now=chat_now + timedelta(days=7, hours=2),
+)
+kept = load_reflection(root)
+check("Tóm tắt tuần" in kept, "evening sổ tay keeps the weekly section")
+check(reflected and reflected.get("note"), "evening reflection still writes")
+print(" [PASS] weekly digest gating")
+
+
+# ---------------------------------------------------------------------------
 # Qt smoke: Settings card + memory dialog
 # ---------------------------------------------------------------------------
 
@@ -909,6 +1138,8 @@ check(hasattr(card, "chk_nudges") and "thói quen" in card.chk_nudges.text(), "c
 check(hasattr(card, "txt_goal") and "Wi-Fi" in card.txt_goal.placeholderText(), "card has one optional goal field")
 check("tuỳ chọn" in card.lbl_goal.text(), "empty goal stays quiet")
 check(card.insight_bar.isHidden(), "fresh card hides the insight strip")
+check(card.insight_bar.btn_action.isHidden(), "fresh insight has no action button")
+check(hasattr(card, "btn_weekly") and "tuần" in card.btn_weekly.text().lower(), "card can write the weekly note")
 check("Ollama" not in card.chk_reflect.text(), "companion checkbox does not mention Ollama")
 check("vài ngày" in card.lbl_diary.text(), "card honest empty diary")
 check("Pro" not in card.lbl_title.text(), "no Pro on companion card")
@@ -946,6 +1177,13 @@ card._save_goal()
 check("Mục tiêu" in card.lbl_goal.text() and "Wi-Fi" in card.lbl_goal.text(), "card shows the saved goal")
 check(not card.insight_bar.isHidden(), "card shows one insight after real episodes")
 check(card.insight_bar.lbl_insight.text().startswith("Hôm nay:"), "card insight is the Hôm nay line")
+check(not card.insight_bar.btn_action.isHidden(), "insight offers one optional action")
+check("Wi-Fi" in card.insight_bar.btn_action.text() or "bộ nhớ" in card.insight_bar.btn_action.text().lower(), "insight action label is Vietnamese")
+check(card.insight_bar._action_key in INSIGHT_ACTION_ALLOWLIST, "card action is allowlisted")
+fired = []
+card.insight_action_requested.connect(lambda key: fired.append(key))
+card.insight_bar.btn_action.click()
+check(fired == [card.insight_bar._action_key], "insight button emits that one allowlisted action")
 card.insight_bar._dismiss()
 check(card.insight_bar.isHidden(), "Ẩn hides the insight on the card")
 dlg = CompanionDialog(config_manager=_Cfg())

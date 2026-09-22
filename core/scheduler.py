@@ -646,6 +646,10 @@ class BackgroundScheduler(QObject):
             )
             record_session_day(now=now, config_manager=self.config_manager)
             try:
+                self._kick_weekly_digest(now)
+            except Exception:
+                pass
+            try:
                 from core.companion import plan_companion_nudge
                 tip = plan_companion_nudge(now=now, config_manager=self.config_manager)
                 if tip:
@@ -676,3 +680,31 @@ class BackgroundScheduler(QObject):
             threading.Thread(target=_reflect, daemon=True, name="CompanionReflect").start()
         except Exception:
             pass
+
+    def _kick_weekly_digest(self, now):
+        """One quiet sổ tay note per week. No toast."""
+        skip_until = getattr(self, "_weekly_empty_until", None)
+        if skip_until is not None and now < skip_until:
+            return
+        if getattr(self, "_companion_weekly_busy", False):
+            return
+        from core.companion_moment import maybe_weekly_digest, weekly_digest_due
+        if not weekly_digest_due(now=now):
+            return
+        self._companion_weekly_busy = True
+        cfg_mgr = self.config_manager
+        stamp = now
+
+        def _run():
+            try:
+                result = maybe_weekly_digest(force=False, now=stamp, config_manager=cfg_mgr)
+                if isinstance(result, dict) and result.get("source") == "empty":
+                    from datetime import timedelta as _td
+                    self._weekly_empty_until = datetime.now() + _td(hours=3)
+            except Exception:
+                pass
+            finally:
+                self._companion_weekly_busy = False
+
+        import threading
+        threading.Thread(target=_run, daemon=True, name="CompanionWeekly").start()

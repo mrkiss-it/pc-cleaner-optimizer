@@ -495,6 +495,7 @@ class MainWindow(QMainWindow):
             config_manager=self.config_manager,
             parent=content,
         )
+        self.companion_insight.action_requested.connect(self._on_companion_insight_action)
         layout.addWidget(self.companion_insight)
         self.companion_insight.refresh()
 
@@ -704,6 +705,7 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
         scroll.setWidget(content)
+        self._dashboard_scroll = scroll
         outer.addWidget(scroll, 1)
 
     def init_tab_targets(self):
@@ -926,6 +928,7 @@ class MainWindow(QMainWindow):
             parent=scroll_content,
             compact=False,
         )
+        self.companion_card.insight_action_requested.connect(self._on_companion_insight_action)
         layout.addWidget(self.companion_card)
 
         # Card 3: Smart Auto Network Optimization
@@ -1950,6 +1953,30 @@ class MainWindow(QMainWindow):
         """Mở Trung tâm Mạng và hiện thẻ Ổn định Wi-Fi."""
         self.open_network_dialog(focus_wifi_stability=True)
 
+    def open_companion_memory(self):
+        """Xem nhật ký / hồ sơ local. Không xóa gì cho đến khi người dùng xác nhận."""
+        from ui.companion_card import CompanionDialog
+        dialog = CompanionDialog(config_manager=self.config_manager, parent=self)
+        dialog.exec_()
+        if hasattr(self, "companion_card"):
+            self.companion_card.refresh()
+        if hasattr(self, "companion_insight"):
+            self.companion_insight.refresh()
+
+    def open_thermal_card(self):
+        """Hiện thẻ nhiệt trên Bảng điều khiển."""
+        if hasattr(self, "tab_dashboard"):
+            self.tabs.setCurrentWidget(self.tab_dashboard)
+        card = getattr(self, "thermal_card", None)
+        scroll = getattr(self, "_dashboard_scroll", None)
+        if card is not None and scroll is not None:
+            try:
+                scroll.ensureWidgetVisible(card)
+                return
+            except Exception:
+                pass
+        self.open_hardware_dialog()
+
     def open_disk_registry_dialog(self):
         """Mở hộp thoại Quản Lý Sức Khỏe Ổ Đĩa, SSD TRIM & Dọn Dẹp Registry."""
         dialog = DiskRegistryDialog(self)
@@ -2039,12 +2066,22 @@ class MainWindow(QMainWindow):
         dialog = WinSxSDialog(self)
         dialog.exec_()
 
+    def _on_companion_insight_action(self, action_key: str):
+        """Insight buttons only run the allowlist — never a cleanup or registry edit."""
+        try:
+            from core.companion_moment import is_allowed_insight_action
+            if not is_allowed_insight_action(action_key):
+                return
+        except Exception:
+            return
+        self._ai_action_dispatcher(action_key)
+
     def _ai_action_dispatcher(self, action_key: str):
         """Xử lý action từ AI Advisor & AI Copilot khi user click vào nút hành động."""
         try:
             self.raise_()
             self.activateWindow()
-            if action_key != "auto_optimize_all":
+            if action_key not in ("auto_optimize_all", "open_companion_memory", "open_thermal_card"):
                 try:
                     from core.companion import observe_suggestion
                     observe_suggestion(True, action_key=action_key, config_manager=self.config_manager)
@@ -2073,6 +2110,12 @@ class MainWindow(QMainWindow):
                 self.open_network_dialog()
             elif action_key in ("open_wifi_stability", "wifi_stability"):
                 self.open_wifi_stability()
+            elif action_key == "disable_wifi_power_save":
+                self.disable_wifi_power_saving_now()
+            elif action_key == "open_companion_memory":
+                self.open_companion_memory()
+            elif action_key == "open_thermal_card":
+                self.open_thermal_card()
             elif action_key == "battery_saver":
                 self.enable_battery_saver()
             elif action_key in ("open_hardware_dialog", "view_hardware"):

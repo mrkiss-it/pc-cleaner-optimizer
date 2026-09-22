@@ -16,6 +16,7 @@ from config_manager import DEFAULT_GEMINI_MODEL, canonicalize_copilot_provider, 
 NOTE_FILENAME = "so_tay.txt"
 META_FILENAME = "so_tay.json"
 MAX_NOTE_LEN = 900
+WEEKLY_MARKER = "Tóm tắt tuần:"
 
 
 class CompanionLLMProvider(Protocol):
@@ -134,6 +135,13 @@ def clear_reflection(base_dir: Optional[str] = None) -> bool:
     return removed
 
 
+def _weekly_block(text: str) -> str:
+    raw = str(text or "")
+    if WEEKLY_MARKER not in raw:
+        return ""
+    return (WEEKLY_MARKER + raw.split(WEEKLY_MARKER, 1)[1]).strip()
+
+
 def save_reflection(
     note: str,
     *,
@@ -142,6 +150,17 @@ def save_reflection(
     now: Optional[datetime] = None,
 ) -> str:
     text = _clip_note(note)
+    if WEEKLY_MARKER not in text:
+        block = _weekly_block(load_reflection(base_dir))
+        if block:
+            room = MAX_NOTE_LEN - len(block) - 2
+            head = text
+            if room < 40:
+                text = _clip_note(block)
+            else:
+                if len(head) > room:
+                    head = head[: room - 1].rstrip() + "…"
+                text = _clip_note(head.rstrip() + "\n\n" + block)
     root = base_dir or companion_dir()
     os.makedirs(root, exist_ok=True)
     with open(note_path(base_dir), "w", encoding="utf-8") as handle:
@@ -199,6 +218,7 @@ def template_reflection(
         "session_day": "phiên dùng app",
         "update_ok": "cập nhật xong",
         "update_fail": "cập nhật lỗi",
+        "chat_note": "hỏi Copilot",
         "suggestion_accepted": "làm theo gợi ý",
         "suggestion_rejected": "từ chối gợi ý",
         "ping_repaired": "ping đã đo lại",

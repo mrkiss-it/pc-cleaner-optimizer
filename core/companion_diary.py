@@ -35,6 +35,7 @@ ALLOWED_KINDS = frozenset({
     "update_fail",
     "suggestion_accepted",
     "suggestion_rejected",
+    "chat_note",
 })
 
 ALLOWED_OUTCOMES = frozenset({
@@ -67,6 +68,7 @@ KIND_OUTCOME = {
     "update_fail": "fail",
     "suggestion_accepted": "accepted",
     "suggestion_rejected": "rejected",
+    "chat_note": "neutral",
 }
 
 KIND_TAGS = {
@@ -89,6 +91,7 @@ KIND_TAGS = {
     "update_fail": ["update"],
     "suggestion_accepted": ["suggestion"],
     "suggestion_rejected": ["suggestion"],
+    "chat_note": ["chat"],
 }
 
 # Same kind+outcome+tags inside this window updates the open episode instead of a new line.
@@ -108,6 +111,7 @@ COALESCE_SEC = {
     "suggestion_accepted": 15 * 60,
     "suggestion_rejected": 15 * 60,
     "user_feedback": 90,
+    "chat_note": 30 * 60,
 }
 
 TIME_TAGS = frozenset({"morning", "afternoon", "evening", "night"})
@@ -203,12 +207,19 @@ def event_weight(event: Optional[Dict[str, Any]]) -> int:
     return max(1, weight)
 
 
-def sanitize_summary(text: Any) -> str:
-    raw = str(text or "").strip()
+def redact_sensitive(text: Any) -> str:
+    """Strip secrets and paths. Does not clip length."""
+    raw = str(text or "")
+    raw = raw.replace("\x00", "")
     raw = _SECRET_RE.sub("[redacted]", raw)
     raw = _WIN_PATH_RE.sub("[path]", raw)
     raw = _POSIX_PATH_RE.sub("[path]", raw)
     raw = _UNC_PATH_RE.sub("[path]", raw)
+    return raw
+
+
+def sanitize_summary(text: Any) -> str:
+    raw = redact_sensitive(text).strip()
     raw = re.sub(r"\s+", " ", raw).strip()
     if len(raw) > MAX_SUMMARY_LEN:
         raw = raw[: MAX_SUMMARY_LEN - 1].rstrip() + "…"

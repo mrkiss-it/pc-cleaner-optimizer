@@ -117,11 +117,13 @@ class CompanionInsightBar(QFrame):
     """One calm, dismissible line: «Hôm nay: …». Hidden when there is nothing to say."""
 
     dismissed = pyqtSignal()
+    action_requested = pyqtSignal(str)
 
     def __init__(self, config_manager=None, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
         self._insight_id = ""
+        self._action_key = ""
         self.setObjectName("CompanionInsightBar")
         self.setStyleSheet(
             "QFrame#CompanionInsightBar { background-color: #1e1b4b; border: 1px solid #4338ca; "
@@ -136,11 +138,17 @@ class CompanionInsightBar(QFrame):
         self.lbl_insight.setStyleSheet(
             "color: #e0e7ff; font-size: 12px; background: transparent; border: none;"
         )
+        self.btn_action = QPushButton("")
+        self.btn_action.setStyleSheet(_BTN_STYLE)
+        self.btn_action.setToolTip("Một việc an toàn có sẵn trong app. Không tự dọn ổ đĩa.")
+        self.btn_action.clicked.connect(self._activate)
+        self.btn_action.hide()
         self.btn_dismiss = QPushButton("Ẩn")
         self.btn_dismiss.setStyleSheet(_BTN_STYLE)
         self.btn_dismiss.setToolTip("Ẩn insight này. AI không hiện lại cùng một dòng.")
         self.btn_dismiss.clicked.connect(self._dismiss)
         row.addWidget(self.lbl_insight, stretch=1)
+        row.addWidget(self.btn_action)
         row.addWidget(self.btn_dismiss)
         self.hide()
 
@@ -153,14 +161,41 @@ class CompanionInsightBar(QFrame):
             except Exception:
                 pass
         insight = current_insight(enabled=enabled) if enabled else None
+        if insight and enabled:
+            try:
+                from core.companion_moment import attach_insight_action
+                insight = attach_insight_action(insight, config_manager=self.config_manager)
+            except Exception:
+                pass
         if not insight:
             self._insight_id = ""
+            self._action_key = ""
             self.lbl_insight.setText("")
+            self.btn_action.hide()
             self.hide()
             return
         self._insight_id = str(insight.get("id") or "")
+        self._action_key = str(insight.get("action_key") or "")
+        label = str(insight.get("action_label_vi") or "")
+        if self._action_key and label:
+            self.btn_action.setText(label)
+            self.btn_action.show()
+        else:
+            self.btn_action.hide()
         self.lbl_insight.setText(str(insight.get("text") or ""))
         self.show()
+
+    def _activate(self):
+        key = str(self._action_key or "")
+        if not key:
+            return
+        try:
+            from core.companion_moment import is_allowed_insight_action
+            if not is_allowed_insight_action(key):
+                return
+        except Exception:
+            return
+        self.action_requested.emit(key)
 
     def _dismiss(self):
         if self._insight_id:
@@ -195,16 +230,34 @@ class CompanionReflectWorker(QThread):
         self.finished_ok.emit(result)
 
 
+class CompanionWeeklyWorker(QThread):
+    finished_ok = pyqtSignal(object)
+
+    def __init__(self, config_manager=None, parent=None):
+        super().__init__(parent)
+        self._cfg = config_manager
+
+    def run(self):
+        try:
+            from core.companion_moment import maybe_weekly_digest
+            result = maybe_weekly_digest(force=True, config_manager=self._cfg)
+        except Exception as exc:
+            result = exc
+        self.finished_ok.emit(result)
+
+
 class CompanionCard(QFrame):
     """Settings / Copilot card for companion stage, diary, skills."""
 
     stage_changed = pyqtSignal()
+    insight_action_requested = pyqtSignal(str)
 
     def __init__(self, config_manager=None, parent=None, *, compact: bool = False):
         super().__init__(parent)
         self.config_manager = config_manager
         self.compact = bool(compact)
         self._reflect_worker: Optional[CompanionReflectWorker] = None
+        self._weekly_worker: Optional[CompanionWeeklyWorker] = None
         self.setObjectName("CompanionCard")
         self.setStyleSheet(
             "QFrame#CompanionCard { background-color: #1e293b; border: 1px solid #334155; "
@@ -238,6 +291,7 @@ class CompanionCard(QFrame):
         layout.addLayout(header)
 
         self.insight_bar = CompanionInsightBar(config_manager=self.config_manager, parent=self)
+        self.insight_bar.action_requested.connect(self.insight_action_requested.emit)
         layout.addWidget(self.insight_bar)
 
         self.lbl_blurb = QLabel("")
@@ -364,6 +418,12 @@ class CompanionCard(QFrame):
         self.btn_reflect.setStyleSheet(_BTN_STYLE)
         self.btn_reflect.setToolTip("Tóm tắt nhật ký máy này thành sổ tay. Không bịa kỷ niệm.")
         self.btn_reflect.clicked.connect(self._reflect_now)
+        self.btn_weekly = QPushButton("Tóm tắt tuần")
+        self.btn_weekly.setStyleSheet(_BTN_STYLE)
+        self.btn_weekly.setToolTip(
+            "Một lần mỗi tuần, hoặc bấm để viết ngay vào sổ tay. Gemini nếu có key; không thì chỉ số liệu."
+        )
+        self.btn_weekly.clicked.connect(self._weekly_now)
         self.btn_manage = QPushButton("Xem và xóa bộ nhớ")
         self.btn_manage.setStyleSheet(_BTN_STYLE)
         self.btn_manage.setToolTip("Xem nhật ký, kỹ năng và xóa dữ liệu local (có xác nhận).")
@@ -371,6 +431,7 @@ class CompanionCard(QFrame):
         btns.addWidget(self.btn_helpful)
         btns.addWidget(self.btn_meh)
         btns.addWidget(self.btn_reflect)
+        btns.addWidget(self.btn_weekly)
         btns.addWidget(self.btn_manage)
         btns.addStretch()
         layout.addLayout(btns)
@@ -441,6 +502,7 @@ class CompanionCard(QFrame):
         preview_kinds = (
             "high_ram", "ram_optimized", "wifi_weak", "wifi_repaired", "ping_high",
             "clean_freed", "clean_light", "focus_mode", "thermal_warn", "session_day",
+            "chat_note",
         )
         interesting = [row for row in list_diary_rows(limit=20, days=14) if row.get("kind") in preview_kinds]
         if interesting:
@@ -478,6 +540,8 @@ class CompanionCard(QFrame):
                 prefix = "Sổ tay (số liệu, không LLM): "
             elif src == "gemini":
                 prefix = "Sổ tay (Gemini): "
+            elif str(src).startswith("weekly"):
+                prefix = "Sổ tay tuần: "
             elif src:
                 prefix = "Sổ tay: "
             preview = note.replace("\n", " ")
@@ -559,6 +623,34 @@ class CompanionCard(QFrame):
         self.btn_reflect.setEnabled(True)
         self.btn_reflect.setText(REFLECT_BUTTON_VI)
         feedback = format_reflection_feedback(result)
+        self._set_reflect_status(feedback["body"], feedback["status"])
+        self.refresh()
+        if feedback["status"] == "error":
+            QMessageBox.warning(self, feedback["title"], feedback["body"])
+
+    def _weekly_now(self):
+        if self._weekly_worker and self._weekly_worker.isRunning():
+            return
+        self.btn_weekly.setEnabled(False)
+        self.btn_weekly.setText("Đang tóm tắt…")
+        self._set_reflect_status("Đang viết tóm tắt tuần từ nhật ký máy này…")
+        worker = CompanionWeeklyWorker(self.config_manager, parent=self)
+        self._weekly_worker = worker
+        worker.finished_ok.connect(self._on_weekly_done)
+        worker.start()
+
+    def _on_weekly_done(self, result):
+        self.btn_weekly.setEnabled(True)
+        self.btn_weekly.setText("Tóm tắt tuần")
+        try:
+            from core.companion_moment import format_weekly_feedback
+            feedback = format_weekly_feedback(result)
+        except Exception:
+            feedback = {
+                "status": "error",
+                "title": "Chưa ghi được tóm tắt tuần",
+                "body": "Chưa ghi được tóm tắt tuần.",
+            }
         self._set_reflect_status(feedback["body"], feedback["status"])
         self.refresh()
         if feedback["status"] == "error":

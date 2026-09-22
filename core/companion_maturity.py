@@ -93,6 +93,7 @@ def default_state() -> Dict[str, Any]:
         "last_nudge_ts": 0.0,
         "last_nudge_class": "",
         "declined_skill_until": {},
+        "last_weekly_digest_week": "",
     }
 
 

@@ -1196,6 +1196,15 @@ class AICopilotEngine:
             source=source
         )
         self.chat_history.append(assistant_msg)
+        try:
+            from core.companion_moment import learn_from_chat
+            learn_from_chat(
+                user_prompt_clean,
+                reply_text,
+                config_manager=self.config_manager,
+            )
+        except Exception:
+            pass
         return assistant_msg
 
     def _attach_companion_postscript(self, reply_text: str, user_text: str) -> str:
