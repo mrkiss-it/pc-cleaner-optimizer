@@ -21,6 +21,7 @@ class BackgroundScheduler(QObject):
     security_scan_completed = pyqtSignal(dict)   # Auto Security Scanner signal
     thermal_warning = pyqtSignal(dict)
     thermal_snapshot_ready = pyqtSignal(dict)
+    companion_tip = pyqtSignal(dict)
 
     def __init__(self, config_manager: ConfigManager, parent=None):
         super().__init__(parent)
@@ -374,6 +375,15 @@ class BackgroundScheduler(QObject):
                         f"[Scheduler] Missing-ping repair chưa khôi phục Ping "
                         f"(lần {self.ping_fix_unrecovered}/{self.ping_fix_max_unrecovered})."
                     )
+                try:
+                    from core.companion import observe_ping_repaired
+                    observe_ping_repaired(
+                        recovered=recovered,
+                        config_manager=self.config_manager,
+                        source="ping_missing",
+                    )
+                except Exception:
+                    pass
                 self.network_optimized.emit({
                     "type": "ping_missing",
                     "success": result.get("success", False),
@@ -431,6 +441,15 @@ class BackgroundScheduler(QObject):
                         f"(lần {self.wifi_fix_unrecovered}/{self.wifi_fix_max_unrecovered})."
                     )
                 NetworkOptimizer.last_wifi_drop_report = result
+                try:
+                    from core.companion import observe_wifi_repaired
+                    observe_wifi_repaired(
+                        recovered=recovered,
+                        config_manager=self.config_manager,
+                        source="wifi_drop",
+                    )
+                except Exception:
+                    pass
                 self.network_optimized.emit({
                     "type": "wifi_drop",
                     "success": result.get("success", False),
@@ -626,6 +645,13 @@ class BackgroundScheduler(QObject):
                 config_manager=self.config_manager,
             )
             record_session_day(now=now, config_manager=self.config_manager)
+            try:
+                from core.companion import plan_companion_nudge
+                tip = plan_companion_nudge(now=now, config_manager=self.config_manager)
+                if tip:
+                    self.companion_tip.emit(tip)
+            except Exception:
+                pass
             if getattr(self, "_companion_reflect_busy", False):
                 return
             try:

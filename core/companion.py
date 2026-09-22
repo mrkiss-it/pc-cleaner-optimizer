@@ -14,9 +14,11 @@ from core.companion_diary import (
     clear_events,
     count_by_kind,
     delete_event,
+    event_weight,
     format_digest,
     format_event_row,
     recent_events,
+    time_band,
 )
 from core.companion_maturity import (
     EMPTY_STAGE_VI,
@@ -26,6 +28,7 @@ from core.companion_maturity import (
     add_feedback,
     build_stage_info,
     compute_stage,
+    explain_stage_vi,
     load_state,
     mark_active_day,
     save_state,
@@ -40,7 +43,9 @@ from core.companion_reflection import (
 from core.companion_skills import (
     CompanionSkill,
     clear_skills,
+    crystallize_skills,
     delete_skill,
+    fold_vi,
     format_skill_row,
     format_skills_context,
     has_skill,
@@ -50,6 +55,12 @@ from core.companion_skills import (
     pending_offer_from_counts,
     save_skill,
 )
+
+CONTEXT_CHAR_BUDGET = 1100
+NUDGE_COOLDOWN_SEC = 12 * 3600
+NUDGE_SAME_CLASS_SEC = 36 * 3600
+SKILL_DECLINE_DAYS = 7
+_LATE_BANDS = frozenset({"evening", "night"})
 
 SNAPSHOT_COOLDOWN_SEC = 3 * 3600
 DEFAULT_REFLECTION_HOUR = 20
@@ -126,6 +137,9 @@ def record_app_event(
     now: Optional[datetime] = None,
     base_dir: Optional[str] = None,
     config_manager: Optional[Any] = None,
+    outcome: str = "",
+    tags: Optional[List[str]] = None,
+    coalesce: bool = True,
 ) -> Optional[Dict[str, Any]]:
     if config_manager is not None and not is_enabled(config_manager):
         return None
@@ -137,6 +151,9 @@ def record_app_event(
             source=source,
             now=now,
             base_dir=base_dir,
+            outcome=outcome,
+            tags=tags,
+            coalesce=coalesce,
         )
         if event:
             mark_active_day(now=now, base_dir=base_dir)
@@ -149,7 +166,7 @@ def record_app_event(
 def _refresh_skill_offer(base_dir: Optional[str] = None, now: Optional[datetime] = None) -> None:
     try:
         counts = count_by_kind(days=21, base_dir=base_dir, now=now)
-        offer = pending_offer_from_counts(counts, base_dir=base_dir)
+        offer = pending_offer_from_counts(counts, base_dir=base_dir, now=now)
         state = load_state(base_dir)
         state["pending_skill_offer"] = offer
         save_state(state, base_dir=base_dir)
@@ -184,10 +201,38 @@ def accept_skill_offer(issue_class: str = "", base_dir: Optional[str] = None) ->
     return skill
 
 
-def decline_skill_offer(base_dir: Optional[str] = None) -> None:
+def decline_skill_offer(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    config_manager: Optional[Any] = None,
+) -> None:
     state = load_state(base_dir)
+    offer = state.get("pending_skill_offer") if isinstance(state.get("pending_skill_offer"), dict) else {}
+    issue = str((offer or {}).get("issue_class") or "").strip().lower()
+    action = str((offer or {}).get("action_key") or "")
+    title = str((offer or {}).get("title") or issue)
+    stamp = now or datetime.now()
+    if issue:
+        until = stamp.timestamp() + SKILL_DECLINE_DAYS * 86400
+        declined = state.get("declined_skill_until")
+        if not isinstance(declined, dict):
+            declined = {}
+        declined[issue] = datetime.fromtimestamp(until).replace(microsecond=0).isoformat(timespec="seconds")
+        state["declined_skill_until"] = declined
     state["pending_skill_offer"] = None
     save_state(state, base_dir=base_dir)
+    if issue:
+        record_app_event(
+            "suggestion_rejected",
+            f"Người dùng bỏ qua kỹ năng: {title}",
+            source="user",
+            now=stamp,
+            base_dir=base_dir,
+            config_manager=config_manager,
+            outcome="rejected",
+            tags=["suggestion", issue] + ([action] if action else []),
+            coalesce=False,
+        )
 
 
 def note_user_feedback(
@@ -209,6 +254,7 @@ def note_user_feedback(
         now=now,
         base_dir=base_dir,
         config_manager=config_manager,
+        outcome="accepted" if helpful else "rejected",
     )
     return current_stage(config_manager=config_manager, base_dir=base_dir)
 
@@ -227,8 +273,13 @@ def current_stage(
     )
 
 
-def diary_digest(limit: int = 8, days: int = 14, base_dir: Optional[str] = None) -> str:
-    return format_digest(days=days, limit=limit, base_dir=base_dir)
+def diary_digest(
+    limit: int = 8,
+    days: int = 14,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> str:
+    return format_digest(days=days, limit=limit, base_dir=base_dir, now=now)
 
 
 def latest_reflection(base_dir: Optional[str] = None) -> str:
@@ -452,18 +503,243 @@ def reset_postscript_gate() -> None:
     _last_postscript_sig = ""
 
 
+_QUERY_TAGS = (
+    (("wifi", "wi-fi", "mang", "ping", "rot", "yeu"), {"wifi", "ping"}),
+    (("ram", "bo nho", "nho", "do may", "lag"), {"ram"}),
+    (("rac", "o c", "disk", "dung", "temp", "don"), {"disk", "clean"}),
+    (("nong", "nhiet", "quat"), {"thermal"}),
+    (("thi", "hop", "tap trung", "focus"), {"focus"}),
+    (("cap nhat", "update", "ban moi"), {"update"}),
+)
+
+
+def _clip(text: str, limit: int) -> str:
+    raw = str(text or "").strip()
+    if limit <= 0 or len(raw) <= limit:
+        return raw
+    if limit == 1:
+        return "…"
+    return raw[: limit - 1].rstrip() + "…"
+
+
+def select_relevant_events(
+    user_text: str = "",
+    events: Optional[List[Dict[str, Any]]] = None,
+    limit: int = 4,
+) -> List[Dict[str, Any]]:
+    """Prefer diary rows whose tags match the question; otherwise the newest real events."""
+    rows = list(events or [])
+    if not rows:
+        return []
+    folded = fold_vi(user_text)
+    wanted: set = set()
+    for needles, tags in _QUERY_TAGS:
+        if any(token in folded for token in needles):
+            wanted |= set(tags)
+    if wanted:
+        matched = [
+            item for item in rows
+            if set(item.get("tags") or []) & wanted
+        ]
+        if matched:
+            return matched[-max(1, int(limit)):]
+    interesting = [item for item in rows if item.get("kind") != "session_day"] or rows
+    return interesting[-max(1, int(limit)):]
+
+
+def _format_context_event(event: Dict[str, Any]) -> str:
+    ts = str(event.get("ts") or "")[:10]
+    kind = str(event.get("kind") or "")
+    outcome = str(event.get("outcome") or "")
+    summary = _clip(event.get("summary") or "", 90)
+    weight = event_weight(event)
+    suffix = f" ×{weight}" if weight > 1 else ""
+    return f"- {ts} {kind}/{outcome}: {summary}{suffix}"
+
+
+def derive_machine_hints(
+    events: Optional[List[Dict[str, Any]]] = None,
+    skills: Optional[List[CompanionSkill]] = None,
+    *,
+    limit: int = 3,
+    now: Optional[datetime] = None,
+    for_nudge: bool = False,
+) -> List[Dict[str, str]]:
+    """1–3 short machine-specific hints. Not a journal dump."""
+    rows = list(events or [])
+    stamp = now or datetime.now()
+    band = time_band(stamp)
+    hints: List[Dict[str, str]] = []
+
+    def _add(issue: str, text: str, bands: Optional[set] = None, recent_kinds: Optional[set] = None) -> None:
+        if len(hints) >= max(1, int(limit)):
+            return
+        if any(item.get("issue_class") == issue for item in hints):
+            return
+        if for_nudge and bands and band not in bands:
+            return
+        if for_nudge and recent_kinds and not _has_recent(rows, recent_kinds, stamp, days=3):
+            return
+        hints.append({"issue_class": issue, "text": _clip(text, 160)})
+
+    late_wifi = _weighted_kinds(rows, {"wifi_weak", "ping_high"}, tags_any=_LATE_BANDS)
+    repaired = _weighted_kinds(rows, {"wifi_repaired", "ping_repaired"}, outcome="ok")
+    if late_wifi >= 2:
+        _add(
+            "wifi_weak",
+            "Wi-Fi hay yếu buổi tối trên máy này — có thể tắt tiết kiệm điện Wi-Fi, không tự đổi DNS.",
+            bands=_LATE_BANDS,
+            recent_kinds={"wifi_weak", "ping_high", "wifi_repaired"},
+        )
+    elif repaired >= 1 and _weighted_kinds(rows, {"wifi_weak", "ping_high"}) >= 2:
+        _add(
+            "wifi_weak",
+            "Sửa Wi-Fi an toàn đã giúp máy này — lần sau ưu tiên reconnect / tắt tiết kiệm pin.",
+            recent_kinds={"wifi_weak", "wifi_repaired", "ping_high", "ping_repaired"},
+        )
+    if _weighted_kinds(rows, {"thermal_warn"}) >= 2:
+        _add(
+            "thermal",
+            "Nhiệt vượt ngưỡng hơn một lần — xem giám sát nhiệt; có thể bật tiết kiệm pin.",
+            recent_kinds={"thermal_warn"},
+        )
+    if _weighted_kinds(rows, {"ram_optimized"}, outcome="ok") >= 1 and _weighted_kinds(rows, {"high_ram"}) >= 2:
+        _add(
+            "high_ram",
+            "RAM hay cao và thu hồi standby đã giúp — gợi ý Thu hồi RAM, không tắt app.",
+            recent_kinds={"high_ram", "ram_optimized"},
+        )
+    elif _weighted_kinds(rows, {"high_ram"}) >= 3:
+        _add(
+            "high_ram",
+            "RAM hay cao trên máy này — có thể thu hồi RAM standby, không tắt app đang dùng.",
+            recent_kinds={"high_ram"},
+        )
+    if _weighted_kinds(rows, {"clean_freed", "clean_light"}) >= 3:
+        _add(
+            "disk_low",
+            "Máy hay dọn rác — lần sau ưu tiên Dọn nhẹ, không WinSxS.",
+            recent_kinds={"clean_freed", "clean_light"},
+        )
+    if _weighted_kinds(rows, {"focus_mode"}) >= 2:
+        _add(
+            "focus",
+            "Bạn hay bật Trước thi / họp — có thể gợi ý lại trước giờ học, không tự bật.",
+            bands={"evening", "afternoon"},
+            recent_kinds={"focus_mode"},
+        )
+    if _weighted_kinds(rows, {"update_fail"}) >= 1 and _weighted_kinds(rows, {"update_ok"}) == 0:
+        _add(
+            "update",
+            "Lần cập nhật gần đây không xong — kiểm tra mạng trước khi tải lại.",
+            recent_kinds={"update_fail"},
+        )
+    if skills and not for_nudge and len(hints) < limit:
+        for skill in skills:
+            if len(hints) >= limit:
+                break
+            if any(item.get("issue_class") == skill.issue_class for item in hints):
+                continue
+            _add(skill.issue_class, skill.suggest)
+    return hints[: max(1, int(limit))]
+
+
+def _weighted_kinds(
+    events: List[Dict[str, Any]],
+    kinds: set,
+    *,
+    tags_any: Optional[set] = None,
+    outcome: str = "",
+) -> int:
+    total = 0
+    for event in events:
+        if str(event.get("kind") or "") not in kinds:
+            continue
+        if outcome and str(event.get("outcome") or "") != outcome:
+            continue
+        if tags_any and not (set(event.get("tags") or []) & tags_any):
+            continue
+        total += event_weight(event)
+    return total
+
+
+def _has_recent(events: List[Dict[str, Any]], kinds: set, now: datetime, days: int = 3) -> bool:
+    cutoff = now.timestamp() - max(1, int(days)) * 86400
+    for event in events:
+        if str(event.get("kind") or "") not in kinds:
+            continue
+        raw = str(event.get("ts") or "")
+        try:
+            ts = datetime.fromisoformat(raw.replace("Z", "")).timestamp()
+        except Exception:
+            continue
+        if ts >= cutoff:
+            return True
+    return False
+
+
+def explain_stage_progress(stage: Optional[StageInfo] = None, *, config_manager: Optional[Any] = None, base_dir: Optional[str] = None) -> str:
+    info = stage if isinstance(stage, StageInfo) else current_stage(config_manager=config_manager, base_dir=base_dir)
+    return explain_stage_vi(info.active_days, info.positive_feedback, info.skills_count)
+
+
+def recent_learning_text(
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    limit: int = 2,
+) -> str:
+    rows = [
+        item for item in recent_events(days=14, limit=30, base_dir=base_dir, now=now)
+        if item.get("kind") not in ("session_day", "reflection")
+    ]
+    if not rows:
+        return ""
+    bits = []
+    for item in reversed(rows):
+        summary = str(item.get("summary") or "").strip()
+        if not summary:
+            continue
+        weight = event_weight(item)
+        if weight > 1:
+            summary = f"{summary} (×{weight})"
+        bits.append(summary)
+        if len(bits) >= max(1, int(limit)):
+            break
+    if not bits:
+        return ""
+    return "Mới ghi nhận: " + "; ".join(bits)
+
+
+def active_guidance_text(base_dir: Optional[str] = None, limit: int = 2) -> str:
+    skills = load_skills(base_dir)
+    if not skills:
+        return ""
+    lines = [f"• {skill.suggest}" for skill in skills[: max(1, int(limit))]]
+    return "Gợi ý đã học:\n" + "\n".join(lines)
+
+
 def build_prompt_context(
     user_text: str = "",
     config_manager: Optional[Any] = None,
     base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    char_budget: int = CONTEXT_CHAR_BUDGET,
 ) -> str:
     if config_manager is not None and not is_enabled(config_manager):
         return ""
     stage = current_stage(config_manager=config_manager, base_dir=base_dir)
-    digest = diary_digest(limit=8, days=14, base_dir=base_dir)
+    events = recent_events(days=21, limit=40, base_dir=base_dir, now=now)
+    picked = select_relevant_events(user_text, events, limit=4)
+    if picked:
+        digest = "\n".join(_format_context_event(item) for item in picked)
+    else:
+        digest = "Nhật ký máy còn trống (cài mới). Không bịa kỷ niệm."
     skills = match_skills(user_text=user_text, base_dir=base_dir, limit=3)
     skills_text = format_skills_context(skills, empty_vi="Chưa có kỹ năng lưu cho máy này.")
-    note = latest_reflection(base_dir) or "Chưa có sổ tay (chưa phản tỉnh hoặc cài mới)."
+    hints = derive_machine_hints(events, skills, limit=3, now=now, for_nudge=False)
+    hint_text = "\n".join(f"- {item['text']}" for item in hints) or "Chưa đủ mẫu lặp để gợi ý riêng máy này."
+    note = _clip(latest_reflection(base_dir) or "Chưa có sổ tay (chưa phản tỉnh hoặc cài mới).", 180)
     policy = (
         "Hỏi nhiều, đề xuất ít."
         if stage.ask_more
@@ -476,7 +752,9 @@ def build_prompt_context(
         f"Giai đoạn: {stage.badge_vi()} ({stage.active_days} ngày dùng máy).",
         stage.blurb_vi,
         f"Quy tắc: {policy}",
-        "Nhật ký gần đây:",
+        "Gợi ý máy này:",
+        hint_text,
+        "Nhật ký liên quan:",
         digest,
         "Kỹ năng khớp máy này:",
         skills_text,
@@ -490,7 +768,9 @@ def build_prompt_context(
             f"Gợi ý lưu kỹ năng: {offer.get('title')} "
             f"(đã lặp {offer.get('hit_count')} lần). Chỉ lưu khi người dùng đồng ý."
         )
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    budget = max(240, int(char_budget or CONTEXT_CHAR_BUDGET))
+    return _clip(text, budget)
 
 
 def is_memory_question(user_text: str) -> bool:
@@ -577,8 +857,28 @@ def maybe_run_reflection(
         if stamp.hour < hour:
             return None
     stage = current_stage(config_manager=config_manager, base_dir=base_dir)
-    digest = diary_digest(base_dir=base_dir)
-    counts = count_by_kind(days=14, base_dir=base_dir, now=stamp)
+    events = recent_events(days=21, limit=0, base_dir=base_dir, now=stamp)
+    counts = count_by_kind(events)
+    new_skills = crystallize_skills(counts, events, base_dir=base_dir)
+    if new_skills:
+        state_now = load_state(base_dir)
+        offer = state_now.get("pending_skill_offer")
+        saved_issues = {skill.issue_class for skill in new_skills}
+        if isinstance(offer, dict) and str(offer.get("issue_class") or "") in saved_issues:
+            state_now["pending_skill_offer"] = None
+            save_state(state_now, base_dir=base_dir)
+        for skill in new_skills:
+            record_app_event(
+                "skill_saved",
+                f"Đã kết tinh kỹ năng: {skill.title}",
+                metrics={"count": skill.hit_count},
+                source="companion",
+                now=stamp,
+                base_dir=base_dir,
+                config_manager=config_manager,
+                coalesce=False,
+            )
+    digest = diary_digest(base_dir=base_dir, now=stamp)
     skills_text = format_skills_context(load_skills(base_dir))
     llm = provider if provider is not None else resolve_llm_provider(config_manager)
     result = run_reflection(
@@ -591,6 +891,13 @@ def maybe_run_reflection(
         base_dir=base_dir,
         now=stamp,
     )
+    if new_skills and result.get("source") == "template":
+        titles = ", ".join(skill.title for skill in new_skills)
+        extra = f"Đã kết tinh kỹ năng từ thói quen lặp lại: {titles}."
+        note = (str(result.get("note") or "").rstrip() + "\n" + extra).strip()
+        from core.companion_reflection import save_reflection
+        result["note"] = save_reflection(note, source="template", base_dir=base_dir, now=stamp)
+    result["skills"] = [skill.issue_class for skill in new_skills]
     state = load_state(base_dir)
     state["last_reflection_date"] = today
     save_state(state, base_dir=base_dir)
@@ -696,13 +1003,17 @@ def observe_snapshot(
 
 
 def observe_clean(junk_mb: float, ram_mb: float = 0.0, light: bool = False, **kwargs) -> Optional[Dict[str, Any]]:
+    junk = float(junk_mb or 0)
+    ram = float(ram_mb or 0)
+    if junk < 1 and ram < 1:
+        return None
     kind = "clean_light" if light else "clean_freed"
     label = "Dọn nhẹ" if light else "Dọn rác"
     return record_app_event(
         kind,
-        f"{label} giải phóng {float(junk_mb or 0):.0f} MB rác"
-        + (f", {float(ram_mb):.0f} MB RAM" if ram_mb else ""),
-        metrics={"junk_freed_mb": float(junk_mb or 0), "ram_freed_mb": float(ram_mb or 0)},
+        f"{label} giải phóng {junk:.0f} MB rác" + (f", {ram:.0f} MB RAM" if ram else ""),
+        metrics={"junk_freed_mb": junk, "ram_freed_mb": ram},
+        outcome="ok",
         **kwargs,
     )
 
@@ -725,23 +1036,162 @@ def observe_focus_enabled(result: Optional[Dict[str, Any]] = None, **kwargs) -> 
         return None
     junk = float(info.get("freed_junk_mb") or 0)
     ram = float(info.get("freed_ram_mb") or 0)
+    source = str(kwargs.pop("source", "") or "focus")
     return record_app_event(
         "focus_mode",
         "Người dùng bật Trước thi / họp"
         + (f" (dọn nhẹ {junk:.0f} MB)" if junk else ""),
         metrics={"junk_freed_mb": junk, "ram_freed_mb": ram},
-        source="focus",
+        source=source,
+        outcome="ok",
+        tags=["focus"],
         **kwargs,
     )
 
 
 def observe_wifi_repaired(recovered: bool = False, **kwargs) -> Optional[Dict[str, Any]]:
+    source = str(kwargs.pop("source", "") or "network")
     return record_app_event(
         "wifi_repaired",
-        "Wi-Fi đã ổn định lại" if recovered else "Đã thử sửa Wi-Fi trên máy này",
-        source="network",
+        "Wi-Fi đã ổn định lại" if recovered else "Đã thử sửa Wi-Fi nhưng chưa ổn định",
+        source=source,
+        outcome="ok" if recovered else "fail",
+        tags=["wifi"],
         **kwargs,
     )
+
+
+def observe_ping_repaired(recovered: bool = False, **kwargs) -> Optional[Dict[str, Any]]:
+    return record_app_event(
+        "ping_repaired",
+        "Ping đã đo được lại" if recovered else "Đã thử sửa mạng nhưng ping chưa đo được",
+        outcome="ok" if recovered else "fail",
+        tags=["ping", "wifi"],
+        source=kwargs.pop("source", None) or "network",
+        **kwargs,
+    )
+
+
+def observe_update(success: bool, summary: str = "", **kwargs) -> Optional[Dict[str, Any]]:
+    kind = "update_ok" if success else "update_fail"
+    text = str(summary or "").strip() or (
+        "Đã tải bản cập nhật và mở trình cài" if success else "Cập nhật không thành công"
+    )
+    return record_app_event(
+        kind,
+        text,
+        source=kwargs.pop("source", None) or "update",
+        outcome="ok" if success else "fail",
+        tags=["update"],
+        **kwargs,
+    )
+
+
+_ACTION_LABELS_VI = {
+    "optimize_ram": "thu hồi RAM",
+    "optimize_ram_only": "thu hồi RAM",
+    "clean_light": "dọn nhẹ",
+    "clean_junk": "dọn rác",
+    "clean_disk": "dọn ổ đĩa",
+    "enable_exam_focus": "Trước thi / họp",
+    "toggle_exam_focus": "Trước thi / họp",
+    "repair_network_now": "sửa mạng",
+    "optimize_network": "tối ưu mạng",
+    "view_hardware": "xem nhiệt",
+    "open_hardware_dialog": "xem nhiệt",
+    "battery_saver": "tiết kiệm pin",
+    "enable_game_boost": "Game Boost",
+    "auto_optimize_all": "tối ưu toàn diện",
+}
+
+
+def observe_suggestion(accepted: bool, action_key: str = "", title: str = "", **kwargs) -> Optional[Dict[str, Any]]:
+    key = str(action_key or "").strip()
+    if key.startswith("whitelist_proc:"):
+        label = "thêm tiến trình vào danh sách trắng"
+        tag = "whitelist"
+    else:
+        label = str(title or "").strip() or _ACTION_LABELS_VI.get(key) or "một gợi ý"
+        tag = key.split(":", 1)[0][:24]
+    kind = "suggestion_accepted" if accepted else "suggestion_rejected"
+    verb = "làm theo" if accepted else "từ chối"
+    tags = ["suggestion"]
+    if tag:
+        tags.append(tag)
+    return record_app_event(
+        kind,
+        f"Người dùng {verb} gợi ý: {label}",
+        source=kwargs.pop("source", None) or "user",
+        outcome="accepted" if accepted else "rejected",
+        tags=tags,
+        **kwargs,
+    )
+
+
+def _notifications_allowed(config_manager: Optional[Any]) -> bool:
+    if config_manager is None:
+        return True
+    show = _cfg_get(config_manager, "show_notifications", True)
+    instant = _cfg_get(config_manager, "instant_screen_notifications_enabled", True)
+    return bool(show) or bool(instant)
+
+
+def plan_companion_nudge(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+    commit: bool = True,
+) -> Optional[Dict[str, str]]:
+    """One calm tip when maturity or evidence is enough. None when throttled or disabled."""
+    if config_manager is not None and not is_enabled(config_manager):
+        return None
+    if not bool(_cfg_get(config_manager, "companion_nudges_enabled", True)):
+        return None
+    if not _notifications_allowed(config_manager):
+        return None
+    stamp = now or datetime.now()
+    events = recent_events(days=21, limit=0, base_dir=base_dir, now=stamp)
+    if not events:
+        return None
+    stage = current_stage(config_manager=config_manager, base_dir=base_dir)
+    watched = ("wifi_weak", "ping_high", "thermal_warn", "high_ram", "focus_mode", "clean_freed", "clean_light")
+    evidence = 0
+    distinct = 0
+    for kind in watched:
+        evidence = max(evidence, _weighted_kinds(events, {kind}))
+        distinct = max(distinct, sum(1 for item in events if item.get("kind") == kind))
+    mature = stage.stage >= 2
+    # One coalesced burst is not a habit. Stage 1 needs repeated episodes.
+    enough = stage.stage >= 1 and evidence >= 4 and distinct >= 2
+    if not mature and not enough:
+        return None
+    hints = derive_machine_hints(events, load_skills(base_dir), limit=3, now=stamp, for_nudge=True)
+    if not hints:
+        return None
+    chosen = hints[0]
+    state = load_state(base_dir)
+    now_ts = stamp.timestamp()
+    try:
+        last_ts = float(state.get("last_nudge_ts") or 0.0)
+    except (TypeError, ValueError):
+        last_ts = 0.0
+    last_class = str(state.get("last_nudge_class") or "")
+    if last_ts > 0 and (now_ts - last_ts) < NUDGE_COOLDOWN_SEC:
+        return None
+    if last_class and last_class == chosen["issue_class"] and last_ts > 0 and (now_ts - last_ts) < NUDGE_SAME_CLASS_SEC:
+        return None
+    payload = {
+        "title": "AI đồng hành",
+        "message": chosen["text"],
+        "issue_class": chosen["issue_class"],
+        "level": "info",
+    }
+    if commit:
+        state["last_nudge_ts"] = now_ts
+        state["last_nudge_class"] = chosen["issue_class"]
+        save_state(state, base_dir=base_dir)
+    return payload
 
 
 def empty_states_vi() -> Dict[str, str]:
@@ -799,11 +1249,20 @@ __all__ = [
     "maybe_run_reflection",
     "memory_answer",
     "note_user_feedback",
+    "CONTEXT_CHAR_BUDGET",
+    "active_guidance_text",
+    "derive_machine_hints",
+    "explain_stage_progress",
     "observe_clean",
     "observe_focus_enabled",
+    "observe_ping_repaired",
     "observe_ram_optimized",
     "observe_snapshot",
+    "observe_suggestion",
+    "observe_update",
     "observe_wifi_repaired",
+    "plan_companion_nudge",
+    "recent_learning_text",
     "pending_skill_offer",
     "record_app_event",
     "record_session_day",

@@ -36,7 +36,9 @@ from core.companion import (
     delete_diary_entry,
     delete_saved_skill,
     diary_digest,
+    active_guidance_text,
     empty_states_vi,
+    explain_stage_progress,
     format_event_row,
     format_reflection_feedback,
     format_skill_row,
@@ -48,6 +50,7 @@ from core.companion import (
     maybe_run_reflection,
     note_user_feedback,
     pending_skill_offer,
+    recent_learning_text,
     stage_legend_vi,
 )
 
@@ -180,8 +183,19 @@ class CompanionCard(QFrame):
         layout.addWidget(self.lbl_legend)
 
         self.lbl_progress = QLabel("")
+        self.lbl_progress.setWordWrap(True)
         self.lbl_progress.setStyleSheet("color: #cbd5e1; font-size: 11px; background: transparent; border: none;")
         layout.addWidget(self.lbl_progress)
+
+        self.lbl_reason = QLabel("")
+        self.lbl_reason.setWordWrap(True)
+        self.lbl_reason.setStyleSheet("color: #a5b4fc; font-size: 11px; background: transparent; border: none;")
+        layout.addWidget(self.lbl_reason)
+
+        self.lbl_learning = QLabel("")
+        self.lbl_learning.setWordWrap(True)
+        self.lbl_learning.setStyleSheet("color: #e2e8f0; font-size: 11px; background: transparent; border: none;")
+        layout.addWidget(self.lbl_learning)
 
         self.lbl_diary = QLabel("")
         self.lbl_diary.setWordWrap(True)
@@ -211,16 +225,23 @@ class CompanionCard(QFrame):
                 "Cho phép đề xuất Dọn nhẹ / Trước thi khi đã lớn dần (không tự chạy, không WinSxS)"
             )
             self.chk_propose.setStyleSheet("font-size: 12px; color: #cbd5e1;")
+            self.chk_nudges = QCheckBox(
+                "Gợi ý nhẹ khi đã học thói quen máy (không liên tục)"
+            )
+            self.chk_nudges.setStyleSheet("font-size: 12px; color: #cbd5e1;")
             layout.addWidget(self.chk_enabled)
             layout.addWidget(self.chk_reflect)
             layout.addWidget(self.chk_propose)
+            layout.addWidget(self.chk_nudges)
             if self.config_manager:
                 self.chk_enabled.setChecked(bool(self.config_manager.get("companion_enabled", True)))
                 self.chk_reflect.setChecked(bool(self.config_manager.get("companion_reflection_enabled", True)))
                 self.chk_propose.setChecked(bool(self.config_manager.get("companion_may_propose_actions", True)))
+                self.chk_nudges.setChecked(bool(self.config_manager.get("companion_nudges_enabled", True)))
             self.chk_enabled.toggled.connect(self._persist_toggles)
             self.chk_reflect.toggled.connect(self._persist_toggles)
             self.chk_propose.toggled.connect(self._persist_toggles)
+            self.chk_nudges.toggled.connect(self._persist_toggles)
 
         offer_row = QHBoxLayout()
         self.lbl_offer = QLabel("")
@@ -281,6 +302,8 @@ class CompanionCard(QFrame):
         self.config_manager.set("companion_enabled", self.chk_enabled.isChecked())
         self.config_manager.set("companion_reflection_enabled", self.chk_reflect.isChecked())
         self.config_manager.set("companion_may_propose_actions", self.chk_propose.isChecked())
+        if hasattr(self, "chk_nudges"):
+            self.config_manager.set("companion_nudges_enabled", self.chk_nudges.isChecked())
         self.refresh()
 
     def _set_reflect_status(self, text: str, status: str = ""):
@@ -315,6 +338,11 @@ class CompanionCard(QFrame):
                 f"{stage.positive_feedback} phản hồi hữu ích · "
                 f"{stage.skills_count} kỹ năng"
             )
+        self.lbl_reason.setText(explain_stage_progress(stage) if enabled else "")
+        learned = recent_learning_text() if enabled else ""
+        guidance = active_guidance_text() if enabled else ""
+        learning_bits = [bit for bit in (learned, guidance) if bit]
+        self.lbl_learning.setText("\n".join(learning_bits))
         digest = diary_digest(limit=3, days=14)
         preview_kinds = (
             "high_ram", "ram_optimized", "wifi_weak", "wifi_repaired", "ping_high",
@@ -342,7 +370,9 @@ class CompanionCard(QFrame):
             if stage.skills_count <= 0:
                 self.lbl_skills.setText(empty["skills"])
             else:
-                self.lbl_skills.setText(f"Đã lưu {stage.skills_count} kỹ năng (mẹo máy này, không phải mã chạy).")
+                self.lbl_skills.setText(
+                    f"Đã lưu {stage.skills_count} kỹ năng (mẹo máy này, không phải mã chạy)."
+                )
         note = latest_reflection()
         meta = load_reflection_meta()
         if not note:
@@ -533,7 +563,10 @@ class CompanionDialog(QDialog):
         self.lbl_badge.setText(stage.badge_vi())
         self.lbl_badge.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: 800;")
         self.lbl_blurb.setText(stage.blurb_vi)
-        self.lbl_legend.setText(stage_legend_vi())
+        self.lbl_legend.setText(stage_legend_vi() + "\n" + explain_stage_progress(stage))
+        learned = recent_learning_text()
+        if learned:
+            self.lbl_legend.setText(self.lbl_legend.text() + "\n" + learned)
 
         diary_rows = list_diary_rows(limit=20, days=30)
         self.list_diary.clear()

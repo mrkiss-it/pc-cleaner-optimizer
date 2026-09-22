@@ -99,7 +99,7 @@ Một nút trên **Bảng Điều Khiển** (và khay hệ thống) để chuẩ
 
 - **Copilot** dùng **Google Gemini** khi có mạng và API key (Cấu Hình AI).
 - Nếu Gemini không dùng được (mất mạng / chưa có key), app **nói thật** — cần mạng / API key — rồi dùng Offline Expert Brain. Không bịa câu trả lời LLM.
-- **AI đồng hành**: nhật ký / giai đoạn / kỹ năng / sổ tay **local trên máy này**, tiêm vào prompt Gemini qua `extra_context`. Copilot hiện giai đoạn 0→3 tiếng Việt. Settings có **Phản tỉnh / Viết sổ tay** và xem/xóa bộ nhớ (có xác nhận). Cài mới hiện empty-state — không bịa kỷ niệm, không phải AGI, không tự huấn luyện mô hình.
+- **AI đồng hành**: nhật ký / giai đoạn / kỹ năng / sổ tay **local trên máy này**, tiêm vào prompt Gemini qua `extra_context` (ngắn, có gợi ý riêng máy). Copilot hiện giai đoạn 0→3 tiếng Việt và vì sao giai đoạn đó. App tự ghi nhật ký khi dọn rác, Wi-Fi yếu/ổn định lại, nhiệt, Trước thi, cập nhật, và khi bạn làm theo hoặc từ chối gợi ý — gom sự kiện ồn ào, không spam. Phản tỉnh kết tinh thói quen lặp thành kỹ năng (vẫn xem/xóa được). Gợi ý nhẹ chỉ khi đã lớn dần hoặc đủ bằng chứng, có công tắc tắt. Cài mới hiện empty-state — không bịa kỷ niệm, không phải AGI, không tự huấn luyện mô hình, không Ollama.
 
 ---
 

@@ -677,10 +677,23 @@ class AICopilotWidget(QWidget):
         if not hasattr(self, "lbl_companion_badge"):
             return
         try:
-            from core.companion import current_stage, stage_legend_vi
+            from core.companion import (
+                active_guidance_text,
+                current_stage,
+                explain_stage_progress,
+                recent_learning_text,
+                stage_legend_vi,
+            )
             stage = current_stage(config_manager=self.config_manager)
             self.lbl_companion_badge.setText(f"🌱 {stage.badge_vi()}")
-            self.lbl_companion_badge.setToolTip(f"{stage.blurb_vi}\n{stage_legend_vi()}")
+            tip_bits = [
+                stage.blurb_vi,
+                explain_stage_progress(stage),
+                recent_learning_text(),
+                active_guidance_text(),
+                stage_legend_vi(),
+            ]
+            self.lbl_companion_badge.setToolTip("\n".join(bit for bit in tip_bits if bit))
         except Exception:
             self.lbl_companion_badge.setText("🌱 Giai đoạn 0 · Mới gặp")
 

@@ -195,6 +195,11 @@ def template_reflection(
         "clean_light": "dọn nhẹ",
         "thermal_warn": "cảnh báo nhiệt",
         "session_day": "phiên dùng app",
+        "update_ok": "cập nhật xong",
+        "update_fail": "cập nhật lỗi",
+        "suggestion_accepted": "làm theo gợi ý",
+        "suggestion_rejected": "từ chối gợi ý",
+        "ping_repaired": "ping đã đo lại",
     }
     bits = []
     for kind, label in labels.items():
