@@ -90,6 +90,9 @@ def default_state() -> Dict[str, Any]:
         "last_reflection_date": "",
         "last_session_date": "",
         "pending_skill_offer": None,
+        "last_nudge_ts": 0.0,
+        "last_nudge_class": "",
+        "declined_skill_until": {},
     }
 
 
@@ -181,6 +184,45 @@ def add_feedback(
         state["negative_feedback"] = int(state.get("negative_feedback") or 0) + 1
     save_state(state, base_dir=base_dir)
     return state
+
+
+def explain_stage_vi(
+    active_days: int,
+    positive_feedback: int = 0,
+    skills_count: int = 0,
+) -> str:
+    """Why the companion is at this stage, and what moves it forward."""
+    days = max(0, int(active_days or 0))
+    fb = max(0, int(positive_feedback or 0))
+    skills = max(0, int(skills_count or 0))
+    stage = compute_stage(days, fb, skills)
+    if stage <= 0:
+        return "Chưa có ngày dùng trên máy này — giai đoạn giữ Mới gặp cho đến khi bạn mở app."
+    if stage == 1:
+        return (
+            f"Đang học vì đã có {days} ngày dùng. "
+            "Sang Lớn dần khi đủ 7 ngày, hoặc 5 ngày kèm phản hồi hữu ích hoặc 1 kỹ năng."
+        )
+    if stage == 2:
+        if days >= 7:
+            why = f"{days} ngày dùng"
+        elif fb >= 1:
+            why = f"{days} ngày dùng và phản hồi hữu ích"
+        elif skills >= 1:
+            why = f"{days} ngày dùng và đã có kỹ năng"
+        else:
+            why = f"{days} ngày dùng"
+        return (
+            f"Lớn dần vì {why}. "
+            "Sang Đồng hành khi đủ 21 ngày, hoặc 14 ngày kèm 2 phản hồi hữu ích hoặc 1 kỹ năng."
+        )
+    if days >= 21:
+        reason = f"{days} ngày dùng"
+    elif fb >= 2:
+        reason = f"{days} ngày dùng và {fb} phản hồi hữu ích"
+    else:
+        reason = f"{days} ngày dùng và {skills} kỹ năng"
+    return f"Đồng hành vì {reason}. Vẫn không tự chạy việc phá hủy."
 
 
 def build_stage_info(

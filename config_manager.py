@@ -125,6 +125,7 @@ DEFAULT_CONFIG = {
     "companion_enabled": True,
     "companion_reflection_enabled": True,
     "companion_may_propose_actions": True,
+    "companion_nudges_enabled": True,
     "companion_reflection_hour": 20,
     "check_for_updates_enabled": True,
     "github_owner": "mrkiss-it",

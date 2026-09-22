@@ -442,6 +442,32 @@ def main():
     scheduler.thermal_snapshot_ready.connect(on_thermal_snapshot)
     scheduler.thermal_warning.connect(on_thermal_warning)
 
+    def on_companion_tip(info):
+        if not isinstance(info, dict):
+            return
+        if not config_mgr.get("companion_enabled", True):
+            return
+        if not config_mgr.get("companion_nudges_enabled", True):
+            return
+        if not (
+            config_mgr.get("show_notifications", True)
+            or config_mgr.get("instant_screen_notifications_enabled", True)
+        ):
+            return
+        title = str(info.get("title") or "AI đồng hành")
+        message = str(info.get("message") or "").strip()
+        if not message:
+            return
+        tray_mgr.notify(
+            title,
+            message,
+            level=str(info.get("level") or "info"),
+            icon="🌱",
+            duration_ms=6500,
+        )
+
+    scheduler.companion_tip.connect(on_companion_tip)
+
     # Kiểm tra GitHub Releases (trễ vài giây, không chặn khởi động)
     try:
         main_win.start_update_checker(delay_ms=4500)

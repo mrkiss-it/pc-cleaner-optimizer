@@ -25,6 +25,7 @@ KIND_TO_CLASS = {
     "wifi_weak": "wifi_weak",
     "wifi_repaired": "wifi_weak",
     "ping_high": "wifi_weak",
+    "ping_repaired": "wifi_weak",
     "clean_freed": "disk_low",
     "clean_light": "disk_low",
     "focus_mode": "focus",
@@ -181,6 +182,8 @@ def save_skill(
     issue_class: str,
     hit_count: int = 0,
     base_dir: Optional[str] = None,
+    suggest: str = "",
+    if_condition: str = "",
 ) -> Optional[CompanionSkill]:
     issue = str(issue_class or "").strip().lower()
     template = PLAYBOOKS.get(issue)
@@ -192,12 +195,14 @@ def save_skill(
             existing.hit_count = max(existing.hit_count, int(hit_count or 0))
             save_skills(skills, base_dir=base_dir)
             return existing
+    custom_suggest = str(suggest or "").strip() or template["suggest"]
+    custom_if = str(if_condition or "").strip() or template["if_condition"]
     skill = CompanionSkill(
         id=_safe_id(issue),
         issue_class=issue,
         title=template["title"],
-        if_condition=template["if_condition"],
-        suggest=template["suggest"],
+        if_condition=custom_if[:120],
+        suggest=custom_suggest[:160],
         action_key=template["action_key"],
         created_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
         hit_count=max(0, int(hit_count or 0)),
@@ -229,15 +234,38 @@ def count_issue_classes(kind_counts: Dict[str, int]) -> Dict[str, int]:
     return totals
 
 
+def _declined_issues(base_dir: Optional[str] = None, now=None) -> set:
+    """Issue classes the user skipped recently — don't nag the same offer."""
+    try:
+        from datetime import datetime
+        from core.companion_maturity import load_state
+        raw = load_state(base_dir).get("declined_skill_until") or {}
+    except Exception:
+        return set()
+    if not isinstance(raw, dict):
+        return set()
+    stamp = now or datetime.now()
+    active = set()
+    for issue, until in raw.items():
+        try:
+            if datetime.fromisoformat(str(until)) > stamp:
+                active.add(str(issue or "").strip().lower())
+        except Exception:
+            continue
+    return active
+
+
 def pending_offer_from_counts(
     kind_counts: Dict[str, int],
     base_dir: Optional[str] = None,
     threshold: int = REPEAT_THRESHOLD,
+    now=None,
 ) -> Optional[Dict[str, Any]]:
     """If a class repeated enough and is not saved yet, return an offer dict."""
     have = {s.issue_class for s in load_skills(base_dir)}
+    declined = _declined_issues(base_dir, now=now)
     for issue, count in count_issue_classes(kind_counts).items():
-        if count < int(threshold) or issue in have:
+        if count < int(threshold) or issue in have or issue in declined:
             continue
         template = PLAYBOOKS.get(issue) or {}
         if not template:
@@ -346,3 +374,137 @@ def clear_skills(base_dir: Optional[str] = None) -> int:
     skills = load_skills(base_dir)
     save_skills([], base_dir=base_dir)
     return len(skills)
+
+
+def fold_vi(text: str) -> str:
+    return _fold(text)
+
+
+def _event_weight(event: Dict[str, Any]) -> int:
+    metrics = event.get("metrics") if isinstance(event.get("metrics"), dict) else {}
+    try:
+        weight = int(metrics.get("count") or 1)
+    except (TypeError, ValueError):
+        weight = 1
+    return max(1, weight)
+
+
+def _weighted(events: Optional[List[Dict[str, Any]]], kinds: set, *, tags_any: Optional[set] = None, outcome: str = "") -> int:
+    total = 0
+    for event in events or []:
+        if str(event.get("kind") or "") not in kinds:
+            continue
+        if outcome and str(event.get("outcome") or "") != outcome:
+            continue
+        if tags_any and not (set(event.get("tags") or []) & tags_any):
+            continue
+        total += _event_weight(event)
+    return total
+
+
+def action_to_issue() -> Dict[str, str]:
+    return {str(meta.get("action_key") or ""): issue for issue, meta in PLAYBOOKS.items()}
+
+
+def rejected_issue_classes(events: Optional[List[Dict[str, Any]]]) -> set:
+    """User turned down a suggestion — don't auto-save that playbook."""
+    mapping = action_to_issue()
+    blocked = set()
+    for event in events or []:
+        if str(event.get("kind") or "") != "suggestion_rejected":
+            continue
+        for tag in event.get("tags") or []:
+            issue = mapping.get(str(tag)) or (str(tag) if str(tag) in PLAYBOOKS else "")
+            if issue:
+                blocked.add(issue)
+    return blocked
+
+
+def should_crystallize(
+    issue_class: str,
+    kind_counts: Optional[Dict[str, int]] = None,
+    events: Optional[List[Dict[str, Any]]] = None,
+    threshold: int = REPEAT_THRESHOLD,
+) -> bool:
+    """Quality bar: repeats alone are not enough unless the pattern is specific."""
+    issue = str(issue_class or "").strip().lower()
+    if issue not in PLAYBOOKS:
+        return False
+    hits = int(count_issue_classes(kind_counts or {}).get(issue) or 0)
+    if hits < int(threshold):
+        return False
+    rows = events or []
+    if issue == "wifi_weak":
+        late = _weighted(rows, {"wifi_weak", "ping_high"}, tags_any={"evening", "night"})
+        repaired = _weighted(rows, {"wifi_repaired", "ping_repaired"}, outcome="ok")
+        return late >= 2 or repaired >= 1 or hits >= 5
+    if issue == "high_ram":
+        optimized = _weighted(rows, {"ram_optimized"}, outcome="ok")
+        return optimized >= 1 or hits >= 5
+    if issue == "disk_low":
+        return hits >= 4
+    if issue == "thermal":
+        return hits >= 3
+    if issue == "focus":
+        return hits >= 3
+    return False
+
+
+def evidence_suggest(issue_class: str, events: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Short, safe playbook line grounded in what this machine actually did."""
+    issue = str(issue_class or "").strip().lower()
+    template = (PLAYBOOKS.get(issue) or {}).get("suggest") or ""
+    rows = events or []
+    if issue == "wifi_weak":
+        late = _weighted(rows, {"wifi_weak", "ping_high"}, tags_any={"evening", "night"})
+        repaired = _weighted(rows, {"wifi_repaired", "ping_repaired"}, outcome="ok")
+        if late >= 2:
+            return "Wi-Fi hay yếu buổi tối trên máy này — tắt tiết kiệm điện Wi-Fi, không tự đổi DNS."
+        if repaired >= 1:
+            return "Sửa Wi-Fi an toàn (reconnect / tắt tiết kiệm pin) đã giúp máy này."
+    if issue == "high_ram":
+        if _weighted(rows, {"ram_optimized"}, outcome="ok") >= 1:
+            return "RAM hay cao — thu hồi RAM standby, không tắt app đang dùng."
+    if issue == "disk_low":
+        return "Ổ này hay đầy rác — ưu tiên Dọn nhẹ, không WinSxS, không thùng rác."
+    if issue == "thermal":
+        return "Laptop hay nóng — xem giám sát nhiệt; có thể bật tiết kiệm pin, không bịa °C."
+    if issue == "focus":
+        return "Bạn hay bật Trước thi / họp — có thể gợi ý lại, không tự bật."
+    return template
+
+
+def crystallize_skills(
+    kind_counts: Optional[Dict[str, int]] = None,
+    events: Optional[List[Dict[str, Any]]] = None,
+    base_dir: Optional[str] = None,
+    max_new: int = 2,
+) -> List[CompanionSkill]:
+    """Save at most a couple of high-quality skills. Never duplicates or destructive actions."""
+    counts = kind_counts or {}
+    rows = events or []
+    rejected = rejected_issue_classes(rows)
+    have = {s.issue_class for s in load_skills(base_dir)}
+    ranked = sorted(
+        count_issue_classes(counts).items(),
+        key=lambda item: (-int(item[1]), item[0]),
+    )
+    saved: List[CompanionSkill] = []
+    for issue, hits in ranked:
+        if len(saved) >= max(1, int(max_new)):
+            break
+        if issue in have or issue in rejected:
+            continue
+        if not should_crystallize(issue, counts, rows):
+            continue
+        skill = save_skill(
+            issue,
+            hit_count=int(hits),
+            base_dir=base_dir,
+            suggest=evidence_suggest(issue, rows),
+        )
+        if skill is None or skill.action_key in BLOCKED_ACTION_KEYS:
+            continue
+        saved.append(skill)
+        have.add(issue)
+    return saved

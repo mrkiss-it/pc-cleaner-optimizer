@@ -2036,6 +2036,12 @@ class MainWindow(QMainWindow):
         try:
             self.raise_()
             self.activateWindow()
+            if action_key != "auto_optimize_all":
+                try:
+                    from core.companion import observe_suggestion
+                    observe_suggestion(True, action_key=action_key, config_manager=self.config_manager)
+                except Exception:
+                    pass
             if action_key in ("optimize_ram", "optimize_ram_only"):
                 self.tabs.setCurrentWidget(self.tab_dashboard)
                 self.optimize_ram_only()
@@ -2086,7 +2092,25 @@ class MainWindow(QMainWindow):
                     QMessageBox.No,
                 )
                 if confirm != QMessageBox.Yes:
+                    try:
+                        from core.companion import observe_suggestion
+                        observe_suggestion(
+                            False,
+                            action_key="auto_optimize_all",
+                            config_manager=self.config_manager,
+                        )
+                    except Exception:
+                        pass
                     return
+                try:
+                    from core.companion import observe_suggestion
+                    observe_suggestion(
+                        True,
+                        action_key="auto_optimize_all",
+                        config_manager=self.config_manager,
+                    )
+                except Exception:
+                    pass
                 self.tabs.setCurrentWidget(self.tab_dashboard)
                 self.optimize_ram_only()
                 self.start_full_clean()
@@ -4060,6 +4084,11 @@ class MainWindow(QMainWindow):
                 else "Không tải được bản cập nhật. Thử lại sau."
             ) or "Không tải được bản cập nhật. Thử lại sau."
             self._notify_update("Không tải được bản cập nhật", message, level="danger", icon="⚠")
+            try:
+                from core.companion import observe_update
+                observe_update(False, "Không tải được bản cập nhật", config_manager=self.config_manager)
+            except Exception:
+                pass
             if hasattr(self, "lbl_update_status"):
                 self.lbl_update_status.setText(f"● {message}")
                 self.lbl_update_status.setStyleSheet("color: #f87171; font-size: 11px;")
@@ -4088,6 +4117,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "lbl_update_status"):
             self.lbl_update_status.setText(f"● Đã tải xong {name} ({size_txt}). Đang mở trình cài đặt…")
             self.lbl_update_status.setStyleSheet("color: #34d399; font-size: 11px;")
+        try:
+            from core.companion import observe_update
+            observe_update(True, "Đã tải bản cập nhật và mở trình cài", config_manager=self.config_manager)
+        except Exception:
+            pass
         self._launch_downloaded_installer(path, info)
 
     def _launch_downloaded_installer(self, path: str, info=None):
@@ -4098,6 +4132,11 @@ class MainWindow(QMainWindow):
         if launch is None or not launch.ok:
             msg = getattr(launch, "message", None) or "Không mở được trình cài đặt. Hãy chạy file đã tải thủ công."
             self._notify_update("Không mở được trình cài đặt", msg, level="danger", icon="⚠")
+            try:
+                from core.companion import observe_update
+                observe_update(False, "Không mở được trình cài đặt", config_manager=self.config_manager)
+            except Exception:
+                pass
             if hasattr(self, "lbl_update_status"):
                 self.lbl_update_status.setText(f"● {msg}")
                 self.lbl_update_status.setStyleSheet("color: #f87171; font-size: 11px;")
