@@ -208,7 +208,9 @@ class BackgroundScheduler(QObject):
         if getattr(self, "_email_report_busy", False):
             return
         try:
-            from core.email_report import scheduled_report_due
+            from core.email_report import note_schedule_credential_gap, scheduled_report_due
+            if note_schedule_credential_gap(self.config_manager, now=now):
+                return
             if not scheduled_report_due(self.config_manager, now=now):
                 return
         except Exception:

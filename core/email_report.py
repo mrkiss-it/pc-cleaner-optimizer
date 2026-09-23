@@ -105,6 +105,103 @@ def clean_host(value: Any) -> str:
     return host
 
 
+# Known mailbox domains → SMTP defaults. Anything else is left alone:
+# guessing smtp.<domain> often points at a host that does not exist.
+_SMTP_PRESET_BY_DOMAIN = {
+    "gmail.com": "smtp.gmail.com",
+    "googlemail.com": "smtp.gmail.com",
+    "outlook.com": "smtp.office365.com",
+    "hotmail.com": "smtp.office365.com",
+    "live.com": "smtp.office365.com",
+}
+_PRESET_PORT = 587
+KNOWN_PRESET_HOSTS = frozenset(_SMTP_PRESET_BY_DOMAIN.values())
+
+
+def mailbox_domain(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if "@" not in text:
+        return ""
+    return text.rsplit("@", 1)[-1].strip().rstrip(".")
+
+
+def is_github_mailbox(value: Any) -> bool:
+    domain = mailbox_domain(value)
+    return domain == "github.com" or domain.endswith(".github.com")
+
+
+def smtp_preset_for_address(value: Any) -> Optional[Dict[str, Any]]:
+    """Gmail/Outlook defaults for a mailbox, or None when the domain is unknown."""
+    host = _SMTP_PRESET_BY_DOMAIN.get(mailbox_domain(value))
+    if not host:
+        return None
+    return {"host": host, "port": _PRESET_PORT, "use_tls": True, "use_ssl": False}
+
+
+def is_known_preset_host(host: Any) -> bool:
+    return clean_host(host).lower() in KNOWN_PRESET_HOSTS
+
+
+def should_expand_smtp_advanced(host: Any) -> bool:
+    """Custom hosts stay visible. Empty and Gmail/Outlook presets stay collapsed."""
+    cleaned = clean_host(host)
+    return bool(cleaned) and not is_known_preset_host(cleaned)
+
+
+def autofill_smtp(
+    *,
+    to: str,
+    username: str = "",
+    host: str = "",
+    port: Any = 587,
+    use_tls: bool = True,
+    use_ssl: bool = False,
+) -> Dict[str, Any]:
+    """Fill SMTP fields from the recipient (or username) without inventing a host.
+
+    A known provider on the recipient wins. If the recipient domain is unknown,
+    a known provider on the username is used instead. A saved host that is not
+    one of those presets is kept. Unknown domains with no saved host stay empty
+    so the UI can ask for Nâng cao. Username defaults to the recipient when blank.
+    """
+    recipient = str(to or "").strip()
+    user = str(username or "").strip()
+    current = clean_host(host)
+    current_port = _as_port(port) or _PRESET_PORT
+    tls = bool(use_tls)
+    ssl = bool(use_ssl)
+    if not user and looks_like_email(recipient):
+        user = recipient
+
+    preset = smtp_preset_for_address(recipient) or smtp_preset_for_address(user)
+    if preset and (not current or is_known_preset_host(current)):
+        if not current or current.lower() != preset["host"]:
+            current = preset["host"]
+            current_port = int(preset["port"])
+            tls = True
+            ssl = False
+
+    hint = ""
+    if is_github_mailbox(user) or (not current and is_github_mailbox(recipient)):
+        hint = (
+            "Không dùng được hộp thư GitHub để gửi SMTP. "
+            "Hãy nhập Gmail, Outlook, hoặc mở «Nâng cao» để nhập máy chủ khác."
+        )
+    elif not current and (looks_like_email(recipient) or looks_like_email(user)):
+        hint = (
+            "Chưa có máy chủ SMTP cho tên miền này. "
+            "Mở «Nâng cao» để nhập máy chủ của nhà cung cấp."
+        )
+    return {
+        "host": current,
+        "port": current_port,
+        "username": user,
+        "use_tls": tls and not ssl,
+        "use_ssl": ssl,
+        "hint_vi": hint,
+    }
+
+
 def _as_port(value: Any) -> int:
     try:
         port = int(value)
@@ -146,21 +243,40 @@ def read_settings(config_manager: Any) -> Dict[str, Any]:
     }
 
 
-def credentials_ready(settings: Dict[str, Any]) -> bool:
-    if not looks_like_email(settings.get("to")):
-        return False
-    if not str(settings.get("host") or "").strip():
-        return False
+def credentials_problem(settings: Dict[str, Any]) -> str:
+    """Vietnamese reason SMTP is not ready to send. Empty means the fields are enough."""
+    recipient = str(settings.get("to") or "").strip()
+    username = str(settings.get("username") or "").strip()
+    host = clean_host(settings.get("host"))
+    if not looks_like_email(recipient):
+        return "Địa chỉ email nhận chưa hợp lệ."
+    if is_github_mailbox(username) or (not username and is_github_mailbox(recipient)):
+        return (
+            "Không dùng được hộp thư GitHub để gửi SMTP. "
+            "Hãy nhập Gmail, Outlook hoặc máy chủ SMTP khác trong Nâng cao."
+        )
+    if not host:
+        return (
+            "Chưa có máy chủ SMTP. Với Gmail hoặc Outlook, nhập email nhận để tự điền; "
+            "nhà cung cấp khác hãy mở Nâng cao."
+        )
     if _as_port(settings.get("port")) <= 0:
-        return False
-    if not str(settings.get("username") or "").strip():
-        return False
+        return "Cổng SMTP không hợp lệ. Mở Nâng cao để kiểm tra cổng."
+    if not username:
+        return "Chưa có tên đăng nhập SMTP. Nhập email nhận hoặc mở Nâng cao để nhập tên đăng nhập."
     if not str(settings.get("password") or "").strip():
-        return False
+        return (
+            "Chưa có mật khẩu ứng dụng. Gmail và Outlook cần mật khẩu ứng dụng "
+            "(không dùng mật khẩu GitHub)."
+        )
     from_addr = str(settings.get("from_address") or "").strip()
     if from_addr and not looks_like_email(from_addr):
-        return False
-    return True
+        return "Địa chỉ người gửi chưa hợp lệ."
+    return ""
+
+
+def credentials_ready(settings: Dict[str, Any]) -> bool:
+    return credentials_problem(settings) == ""
 
 
 def frequency_window_already_sent(
@@ -236,20 +352,44 @@ def validate_for_test(settings: Dict[str, Any]) -> str:
     """Vietnamese reason a manual test must not be sent. Empty means OK."""
     if not settings.get("enabled"):
         return "Báo cáo email đang tắt. Hãy bật rồi thử lại."
-    if not looks_like_email(settings.get("to")):
-        return "Địa chỉ email nhận chưa hợp lệ."
-    if not str(settings.get("host") or "").strip():
-        return "Chưa nhập máy chủ SMTP."
-    if _as_port(settings.get("port")) <= 0:
-        return "Cổng SMTP không hợp lệ."
-    if not str(settings.get("username") or "").strip():
-        return "Chưa nhập tên đăng nhập SMTP."
-    if not str(settings.get("password") or "").strip():
-        return "Chưa có mật khẩu SMTP. Nhập mật khẩu ứng dụng rồi thử lại."
-    from_addr = str(settings.get("from_address") or "").strip()
-    if from_addr and not looks_like_email(from_addr):
-        return "Địa chỉ người gửi chưa hợp lệ."
-    return ""
+    return credentials_problem(settings)
+
+
+def schedule_credential_gap(settings: Dict[str, Any], now: Optional[datetime] = None) -> str:
+    """Vietnamese explanation when the clock is due but SMTP is incomplete.
+
+    Empty when the report is off, not yet time, already sent this window,
+    cooling down after a failure, or actually ready to send.
+    """
+    if not settings.get("enabled"):
+        return ""
+    freq = normalize_frequency(settings.get("frequency"))
+    if freq == "off":
+        return ""
+    problem = credentials_problem(settings)
+    if not problem:
+        return ""
+    stamp = now or datetime.now()
+    last = parse_local_dt(settings.get("last_sent_at"))
+    if frequency_window_already_sent(last, stamp, freq):
+        return ""
+    if not send_clock_reached(stamp, preferred_clock(settings.get("hour"), settings.get("minute")), last, freq):
+        return ""
+    attempt = parse_local_dt(settings.get("last_attempt_at"))
+    if attempt is not None:
+        elapsed = (stamp - attempt).total_seconds()
+        if 0 <= elapsed < RETRY_COOLDOWN_SEC:
+            return ""
+    return problem
+
+
+def note_schedule_credential_gap(config_manager: Any, now: Optional[datetime] = None) -> str:
+    """Remember a clear Vietnamese reason when a scheduled send cannot start."""
+    settings = read_settings(config_manager)
+    gap = schedule_credential_gap(settings, now=now or datetime.now())
+    if gap and str(settings.get("last_error") or "") != gap:
+        _persist(config_manager, "email_report_last_error", gap)
+    return gap
 
 
 def classify_smtp_error(exc: BaseException) -> str:
