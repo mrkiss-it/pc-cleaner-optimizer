@@ -74,6 +74,7 @@ def build():
         "--hidden-import=core.companion_reflection",
         "--hidden-import=core.companion_profile",
         "--hidden-import=core.companion_moment",
+        "--hidden-import=core.companion_learning",
         "--hidden-import=core.update_checker",
         "--hidden-import=core.update_installer",
         "--hidden-import=app_meta",

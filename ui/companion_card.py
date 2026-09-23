@@ -349,6 +349,14 @@ class CompanionInsightBar(QFrame):
         root.addWidget(self.row_eod)
         root.addWidget(self.row_conflict)
         root.addWidget(self.row_insight)
+
+        self.lbl_learned_today = QLabel("")
+        self.lbl_learned_today.setWordWrap(True)
+        self.lbl_learned_today.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; background: transparent; border: none;"
+        )
+        self.lbl_learned_today.hide()
+        root.addWidget(self.lbl_learned_today)
         self.hide()
 
     def insight_topic(self) -> str:
@@ -377,6 +385,7 @@ class CompanionInsightBar(QFrame):
         self._show_eod(enabled)
         self._show_conflict(enabled)
         self._show_insight(enabled)
+        self._show_learned_today(enabled)
         # isVisible() is false while this frame is hidden, so decide from the text.
         labels = (
             self.lbl_stage,
@@ -388,6 +397,7 @@ class CompanionInsightBar(QFrame):
             self.lbl_eod,
             self.lbl_conflict,
             self.lbl_insight,
+            self.lbl_learned_today,
         )
         if any(label.text().strip() for label in labels):
             self.show()
@@ -543,6 +553,23 @@ class CompanionInsightBar(QFrame):
         except Exception:
             pass
         self.refresh()
+
+    def _show_learned_today(self, enabled: bool):
+        self.lbl_learned_today.setText("")
+        self.lbl_learned_today.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_learning import ensure_daily_model, learn_status_vi
+            model = ensure_daily_model(config_manager=self.config_manager)
+            summary = str((model or {}).get("summary_vi") or "")
+            text = "" if "chưa có gì mới" in summary else learn_status_vi(model)
+        except Exception:
+            text = ""
+        if not text:
+            return
+        self.lbl_learned_today.setText(text)
+        self.lbl_learned_today.show()
 
     def _show_insight(self, enabled: bool):
         self._insight_id = ""
@@ -1202,7 +1229,14 @@ class CompanionCard(QFrame):
         self.lbl_reason.setText(explain_stage_progress(stage) if enabled else "")
         learned = recent_learning_text() if enabled else ""
         guidance = active_guidance_text() if enabled else ""
-        learning_bits = [bit for bit in (learned, guidance) if bit]
+        daily = ""
+        if enabled:
+            try:
+                from core.companion_learning import ensure_daily_model, learn_status_vi
+                daily = learn_status_vi(ensure_daily_model(config_manager=self.config_manager))
+            except Exception:
+                daily = ""
+        learning_bits = [bit for bit in (learned, guidance, daily) if bit]
         self.lbl_learning.setText("\n".join(learning_bits))
         digest = diary_digest(limit=3, days=14)
         preview_kinds = (
@@ -1704,6 +1738,13 @@ class CompanionDialog(QDialog):
         learned = recent_learning_text()
         if learned:
             self.lbl_legend.setText(self.lbl_legend.text() + "\n" + learned)
+        try:
+            from core.companion_learning import ensure_daily_model, learn_status_vi
+            daily = learn_status_vi(ensure_daily_model(config_manager=self.config_manager))
+        except Exception:
+            daily = ""
+        if daily:
+            self.lbl_legend.setText(self.lbl_legend.text() + "\n" + daily)
         self.lbl_profile.setText(format_profile_browse() or empty["profile"])
         self._fill_corrections()
         self._fill_growth()

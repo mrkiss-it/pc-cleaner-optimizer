@@ -2985,4 +2985,164 @@ check(ExamMeetingFocus.is_active() is False, "the card click does not enable foc
 qt_bar.deleteLater()
 print(" [PASS] pin / weekly / exam card")
 
+# ---------------------------------------------------------------------------
+# Mô hình học mỗi ngày — JSON snapshot, not an LLM weight file
+# ---------------------------------------------------------------------------
+
+from core.companion_learning import (
+    learn_status_vi,
+    load_daily_model,
+    merge_learning_models,
+    model_path,
+    morning_learn_clause,
+    prefer_learned_topics,
+    prompt_learn_line,
+    update_daily_model,
+    weekly_learn_line,
+)
+from core.companion_skills import BLOCKED_ACTION_KEYS as _LEARN_BLOCKED
+
+learn_root = _fresh_dir()
+learn_day = datetime(2026, 9, 23, 8, 0, 0)
+record_app_event(
+    "wifi_weak",
+    "Wi-Fi yếu buổi tối",
+    now=datetime(2026, 9, 22, 21, 0, 0),
+    base_dir=learn_root,
+    coalesce=False,
+)
+for offset in range(3):
+    note_user_feedback(
+        True,
+        base_dir=learn_root,
+        now=learn_day - timedelta(days=1, minutes=30 - offset),
+        topic="wifi",
+    )
+note_user_feedback(False, base_dir=learn_root, now=learn_day - timedelta(days=1, minutes=10), topic="ram")
+note_user_feedback(False, base_dir=learn_root, now=learn_day - timedelta(days=1, minutes=8), topic="ram")
+record_app_event(
+    "focus_mode",
+    "Người dùng bật Trước thi / họp",
+    now=learn_day - timedelta(days=2),
+    base_dir=learn_root,
+    coalesce=False,
+)
+record_app_event(
+    "focus_mode",
+    "Người dùng bật Trước thi / họp",
+    now=learn_day - timedelta(days=3),
+    base_dir=learn_root,
+    coalesce=False,
+)
+ExamMeetingFocus.reset_for_tests()
+first_model = update_daily_model(now=learn_day, base_dir=learn_root)
+check(os.path.isfile(model_path(learn_root)), "daily model is a JSON file on this PC")
+check(first_model.get("date") == "2026-09-23", "the snapshot is stamped with the local day")
+check(first_model.get("source") == "local", "the model is local memory, not a downloaded LLM")
+check("trọng số" in first_model.get("note_vi", "") or "AGI" in first_model.get("note_vi", ""), "the file says it is not an LLM weight file")
+check("Hôm nay học được" in first_model.get("summary_vi", ""), "the snapshot has a Vietnamese lesson")
+check("Ollama" not in json.dumps(first_model, ensure_ascii=False), "the snapshot does not call Ollama")
+wifi_score = (first_model.get("topic_scores") or {}).get("wifi") or {}
+check(int(wifi_score.get("helpful") or 0) >= 3, "Có ích counts land in the topic score")
+ram_score = (first_model.get("topic_scores") or {}).get("ram") or {}
+check(int(ram_score.get("unhelpful") or 0) >= 2, "Chưa counts land in the topic score")
+check(int(first_model.get("focus_sessions") or 0) >= 2, "focus sessions are a stat, not a switch")
+check(ExamMeetingFocus.is_active() is False, "learning does not turn on Trước thi / họp")
+check("Hôm qua mình học" in (morning_learn_clause(now=learn_day, base_dir=learn_root) or ""), "the morning line can say what was learned yesterday")
+check("Hôm nay học được" in (weekly_learn_line(now=learn_day, base_dir=learn_root, muted=set()) or ""), "the weekly digest can use the daily lesson")
+mute_topic("wifi", days=7, base_dir=learn_root, now=learn_day)
+check(morning_learn_clause(now=learn_day, base_dir=learn_root, hidden={"wifi"}) == "", "a muted topic stays out of the morning lesson")
+check(weekly_learn_line(now=learn_day, base_dir=learn_root, muted={"wifi"}) == "", "a muted topic stays out of the weekly lesson")
+unmute_topic("wifi", base_dir=learn_root)
+check(any(item.get("issue_class") == "wifi_weak" for item in first_model.get("skill_candidates") or []), "skill candidates come from the diary")
+check(
+    all(item.get("action_key") not in _LEARN_BLOCKED for item in first_model.get("skill_candidates") or []),
+    "skill candidates do not carry blocked actions",
+)
+note_user_feedback(True, base_dir=learn_root, now=learn_day.replace(hour=9), topic="wifi")
+second_model = update_daily_model(now=learn_day.replace(hour=21), base_dir=learn_root)
+check(second_model.get("topic_scores") == first_model.get("topic_scores"), "a second run the same day does not add the new Có ích")
+check(second_model.get("summary_vi") == first_model.get("summary_vi"), "the same day keeps the same lesson")
+check(second_model.get("trust_deltas") == first_model.get("trust_deltas"), "trust deltas are not stacked the same day")
+next_model = update_daily_model(now=learn_day + timedelta(days=1), base_dir=learn_root)
+next_wifi = (next_model.get("topic_scores") or {}).get("wifi") or {}
+check(next_model.get("date") == "2026-09-24", "the next morning writes a new day")
+check(int(next_wifi.get("helpful") or 0) == int(wifi_score.get("helpful") or 0) + 1, "the next day counts the Có ích once")
+wifi_delta = ((next_model.get("trust_deltas") or {}).get("wifi") or {}).get("delta")
+check(wifi_delta == 1, "the trust delta is the change since yesterday, not the full total")
+check("Ollama" not in prompt_learn_line(now=learn_day, base_dir=learn_root), "prompt context does not fetch a base model")
+status = learn_status_vi(first_model, now=learn_day)
+check("Hôm nay đã học từ máy này" in status and "không phải AGI" in status, "the status line is honest and local")
+empty_status = learn_status_vi(update_daily_model(now=learn_day, base_dir=_fresh_dir()), now=learn_day)
+check("chưa có gì mới" in empty_status and "không phải AGI" in empty_status, "an empty day does not pretend to have learned")
+ordered = prefer_learned_topics(
+    [
+        {"id": "tip:wifi", "topic": "wifi", "text": "Wi-Fi"},
+        {"id": "tip:ram", "topic": "ram", "text": "RAM"},
+        {"id": "window:wifi", "topic": "wifi", "text": "Buổi tối"},
+    ],
+    base_dir=learn_root,
+)
+check(str(ordered[0].get("id")).startswith("window:"), "a time window still comes before the learned topic")
+check(ordered[1].get("topic") == "wifi", "a topic with more Có ích is preferred after the window")
+quiet_root = _fresh_dir()
+record_app_event("wifi_weak", "Wi-Fi yếu", now=learn_day - timedelta(hours=12), base_dir=quiet_root, coalesce=False)
+set_quiet_hours(True, base_dir=quiet_root)
+check(sync_daily_checkin(now=learn_day.replace(hour=23, minute=30), base_dir=quiet_root, config_manager=_Cfg()) is None, "quiet hours still hide the morning line")
+check(load_daily_model(quiet_root).get("date") == "2026-09-23", "the daily job still learns during quiet hours")
+set_quiet_hours(False, base_dir=quiet_root)
+spoken = sync_daily_checkin(now=learn_day.replace(hour=8), base_dir=quiet_root, config_manager=_Cfg())
+check(spoken and "Hôm qua mình học" in spoken.get("text", ""), "the morning line shows yesterday's lesson")
+check("Gemini" not in spoken.get("text", "") and "Ollama" not in spoken.get("text", ""), "the morning lesson is not an online model")
+again_spoken = sync_daily_checkin(now=learn_day.replace(hour=11), base_dir=quiet_root, config_manager=_Cfg())
+check(again_spoken and again_spoken.get("text") == spoken.get("text"), "the learned morning line is still once per day")
+learn_path = os.path.join(learn_root, "hoc.json")
+check(export_companion_memory(learn_path, base_dir=learn_root).get("ok") is True, "the daily model exports with memory")
+with open(learn_path, "r", encoding="utf-8") as handle:
+    exported_model = json.load(handle).get("learning_model") or {}
+check(exported_model.get("date") == "2026-09-24", "export keeps the latest learning day")
+other_learn = _fresh_dir()
+update_daily_model(now=learn_day, base_dir=other_learn)
+check(import_companion_memory(learn_path, mode="merge", base_dir=other_learn).get("ok") is True, "the daily model imports")
+check(load_daily_model(other_learn).get("date") == "2026-09-24", "merge keeps the newer snapshot")
+check(load_daily_model(other_learn).get("summary_vi") == next_model.get("summary_vi"), "merge does not add the two snapshots together")
+older = dict(exported_model)
+older["date"] = "2026-09-20"
+older["summary_vi"] = "Hôm nay học được: bản cũ."
+check(merge_learning_models(exported_model, older).get("date") == "2026-09-24", "an older file does not replace today's model")
+kept_local = _fresh_dir()
+update_daily_model(now=learn_day, base_dir=kept_local)
+legacy_learn = {
+    "kind": "pc_cleaner_companion_memory",
+    "version": 1,
+    "profile": {},
+    "diary": [],
+}
+legacy_learn_path = os.path.join(kept_local, "legacy.json")
+with open(legacy_learn_path, "w", encoding="utf-8") as handle:
+    json.dump(legacy_learn, handle)
+check(import_companion_memory(legacy_learn_path, mode="replace", base_dir=kept_local).get("ok") is True, "an older backup without the model still imports")
+check(load_daily_model(kept_local).get("date") == "2026-09-23", "a missing model key leaves the local snapshot")
+poison = dict(exported_model)
+poison["skill_candidates"] = [{"issue_class": "winsxs", "action_key": "winsxs_cleanup", "weight": 9, "title_vi": "no"}]
+poison_path = os.path.join(learn_root, "poison.json")
+with open(poison_path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "kind": "pc_cleaner_companion_memory",
+        "version": 1,
+        "learning_model": poison,
+    }, handle)
+poison_root = _fresh_dir()
+check(import_companion_memory(poison_path, mode="replace", base_dir=poison_root).get("ok") is True, "a model file with a blocked key still imports")
+imported_candidates = load_daily_model(poison_root).get("skill_candidates") or []
+check(all("winsxs" not in json.dumps(item) for item in imported_candidates), "import drops a blocked skill candidate")
+check(ExamMeetingFocus.is_active() is False, "importing the model does not enable Trước thi / họp")
+learn_bar = CompanionInsightBar(config_manager=_Cfg())
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = learn_root
+learn_bar.refresh()
+check("không phải AGI" in learn_bar.lbl_learned_today.text(), "the companion card shows the local learning line")
+check("Ollama" not in learn_bar.lbl_learned_today.text(), "the learning line does not mention Ollama")
+learn_bar.deleteLater()
+print(" [PASS] mô hình học mỗi ngày")
+
 print(" [PASS] companion AI suite")

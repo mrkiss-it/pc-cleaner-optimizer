@@ -671,6 +671,7 @@ def stage_voice(
     trust: str = "steady",
     focus_active: bool = False,
     stressed: bool = False,
+    learned_vi: str = "",
 ) -> Dict[str, str]:
     """Short tone cue. Stage 0 stays shy; stage 3 may cite this machine.
 
@@ -720,7 +721,16 @@ def stage_voice(
         aside = "Mình nói nhẹ hơn hôm nay."
     elif stage_n >= 3 and boldness == "specific":
         aside = "Theo nhật ký máy này."
-    return {"boldness": boldness, "tone_vi": tone, "policy_vi": tone, "aside_vi": aside}
+    learned = " ".join(str(learned_vi or "").split())[:140]
+    if learned and not calm and stage_n >= 1 and learned not in tone:
+        tone = (tone.rstrip() + " " + learned).strip()
+    return {
+        "boldness": boldness,
+        "tone_vi": tone,
+        "policy_vi": tone,
+        "aside_vi": aside,
+        "learned_vi": learned,
+    }
 
 
 def action_cap_for_stage(
@@ -1143,6 +1153,13 @@ def local_weekly_bullets(
         bucket = by_topic.setdefault(topic, {})
         bucket[kind] = bucket.get(kind, 0) + max(1, weight)
     items: List[Dict[str, str]] = []
+    try:
+        from core.companion_learning import weekly_learn_line
+        learned = weekly_learn_line(base_dir=base_dir, now=stamp, muted=muted)
+    except Exception:
+        learned = ""
+    if learned:
+        items.append({"text": learned, "topic": ""})
     for topic, kinds in by_topic.items():
         if topic == "focus":
             continue
@@ -1241,6 +1258,18 @@ def local_weekly_summary(
             if name not in names:
                 names.append(name)
         lines.append("Bạn đã hỏi về " + ", ".join(names[:3]) + ".")
+    try:
+        from core.companion_learning import weekly_learn_line
+        from core.companion_profile import active_muted_topics
+        learned = weekly_learn_line(
+            base_dir=base_dir,
+            now=stamp,
+            muted=set(active_muted_topics(now=stamp, base_dir=base_dir)),
+        )
+    except Exception:
+        learned = ""
+    if learned and learned not in lines:
+        lines.append(learned)
     lines.append("Không phải AGI; không tự chạy việc phá hủy.")
     try:
         extra = local_weekly_bullets(now=stamp, base_dir=base_dir)
@@ -1284,6 +1313,11 @@ def maybe_weekly_digest(
         return None
     if not _has_weekly_material(stamp, base_dir):
         return {"note": "", "source": "empty"}
+    try:
+        from core.companion_learning import ensure_daily_model
+        ensure_daily_model(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    except Exception:
+        pass
     try:
         from core.companion import current_stage, record_app_event
         stage = current_stage(config_manager=config_manager, base_dir=base_dir)
@@ -1366,12 +1400,23 @@ def _filter_weekly_items(
         from core.companion_profile import topic_is_muted
     except Exception:
         topic_is_muted = None  # type: ignore
+    try:
+        from core.companion_profile import active_muted_topics
+        muted_names = set(active_muted_topics(now=now, base_dir=base_dir))
+    except Exception:
+        muted_names = set()
+    try:
+        from core.companion_learning import _mentions_muted
+    except Exception:
+        _mentions_muted = None  # type: ignore
     kept: List[Dict[str, str]] = []
     for item in items:
         topic = str(item.get("topic") or "")
         if topic and topic_is_muted is not None and topic_is_muted(topic, base_dir=base_dir, now=now):
             continue
         text = str(item.get("text") or "").strip()
+        if text and _mentions_muted is not None and _mentions_muted(text, muted_names):
+            continue
         if text:
             kept.append({"text": text, "topic": topic})
         if len(kept) >= 3:
@@ -1392,6 +1437,11 @@ def sync_weekly_strip(
     if not _cfg_enabled(config_manager):
         return None
     stamp = now or datetime.now()
+    try:
+        from core.companion_learning import ensure_daily_model
+        ensure_daily_model(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    except Exception:
+        pass
     week = week_key(stamp)
     try:
         from core.companion_profile import in_quiet_hours
@@ -1668,6 +1718,11 @@ def compose_daily_checkin(
     coaching = effective_coaching(profile, base_dir=base_dir, now=stamp)
     focus_on = exam_focus_is_live()
     stressed = machine_stress_active(events, stamp)
+    try:
+        from core.companion_learning import morning_learn_clause
+        learned_clause = morning_learn_clause(base_dir=base_dir, now=stamp, hidden=hidden)
+    except Exception:
+        learned_clause = ""
     voice = stage_voice(
         stage.stage,
         coaching=coaching,
@@ -1675,6 +1730,7 @@ def compose_daily_checkin(
         trust=str(trust.get("level") or "steady"),
         focus_active=focus_on,
         stressed=stressed,
+        learned_vi=learned_clause,
     )
     shy = voice.get("boldness") in ("shy", "ask")
     parts: List[str] = []
@@ -1776,6 +1832,9 @@ def compose_daily_checkin(
             skill_id = str(getattr(skill, "id", "") or "")
         if action:
             parts.append("Có một việc an toàn nếu bạn muốn — mình không tự chạy.")
+    learned = str(voice.get("learned_vi") or learned_clause or "").strip()
+    if learned and learned not in " ".join(parts):
+        parts.append(learned)
     text = annotate_learned_line(" ".join(parts), lead, profile)
     text = _clip_checkin(redact_sensitive(text))
     if not text:
@@ -1803,6 +1862,11 @@ def sync_daily_checkin(
     if not _cfg_enabled(config_manager):
         return None
     stamp = now or datetime.now()
+    try:
+        from core.companion_learning import ensure_daily_model
+        ensure_daily_model(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    except Exception:
+        pass
     try:
         from core.companion_profile import in_quiet_hours
         if in_quiet_hours(stamp, base_dir=base_dir):
@@ -2645,6 +2709,12 @@ def sync_eod_wrap(
     except Exception:
         quiet = False
     state = load_state(base_dir)
+    if stamp.hour >= EOD_HOUR:
+        try:
+            from core.companion_learning import ensure_daily_model
+            ensure_daily_model(now=stamp, base_dir=base_dir, config_manager=config_manager)
+        except Exception:
+            pass
     if str(state.get("last_eod_date") or "") == today:
         if quiet:
             return None

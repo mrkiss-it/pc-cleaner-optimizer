@@ -1044,6 +1044,13 @@ def build_prompt_context(
         f"Quy tắc: {policy}",
     ]
     try:
+        from core.companion_learning import prompt_learn_line
+        learned_line = prompt_learn_line(base_dir=base_dir, now=now)
+    except Exception:
+        learned_line = ""
+    if learned_line:
+        lines.append(learned_line)
+    try:
         from core.companion_profile import format_muted_policy
         muted_line = format_muted_policy(base_dir=base_dir, now=now)
     except Exception:
@@ -1261,6 +1268,11 @@ def maybe_run_reflection(
     state = load_state(base_dir)
     today = stamp.strftime("%Y-%m-%d")
     if not force and state.get("last_reflection_date") == today:
+        try:
+            from core.companion_learning import ensure_daily_model
+            ensure_daily_model(now=stamp, base_dir=base_dir, config_manager=config_manager)
+        except Exception:
+            pass
         return None
     if not force:
         try:
@@ -1340,6 +1352,11 @@ def maybe_run_reflection(
     state = load_state(base_dir)
     state["last_reflection_date"] = today
     save_state(state, base_dir=base_dir)
+    try:
+        from core.companion_learning import ensure_daily_model
+        ensure_daily_model(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    except Exception:
+        pass
     record_app_event(
         "reflection",
         "Đã ghi sổ tay buổi tối" if result.get("source") != "template" else "Đã ghi sổ tay từ số liệu (không LLM)",
@@ -1856,6 +1873,7 @@ def export_companion_memory(
             "diary": _redact_tree(read_events(base_dir=base_dir, limit=0)),
             "reflection": redact_sensitive(load_reflection(base_dir)),
             "reflection_meta": _redact_tree(load_reflection_meta(base_dir)),
+            "learning_model": _redact_tree(_load_learning_model(base_dir)),
         }
         temporary = target + ".tmp"
         with open(temporary, "w", encoding="utf-8") as handle:
@@ -1892,7 +1910,7 @@ def _read_memory_file(path: str) -> Tuple[Optional[Dict[str, Any]], str]:
         version = 0
     if version != MEMORY_EXPORT_VERSION:
         return None, "Mình chưa đọc được phiên bản file này."
-    if not any(key in data for key in ("profile", "maturity", "skills", "diary", "reflection")):
+    if not any(key in data for key in ("profile", "maturity", "skills", "diary", "reflection", "learning_model")):
         return None, "File không có bộ nhớ để nhập."
     if "profile" in data and data.get("profile") is not None and not isinstance(data.get("profile"), dict):
         return None, "Hồ sơ trong file không đúng định dạng."
@@ -1904,6 +1922,8 @@ def _read_memory_file(path: str) -> Tuple[Optional[Dict[str, Any]], str]:
         return None, "Nhật ký trong file không đúng định dạng."
     if "reflection" in data and data.get("reflection") is not None and not isinstance(data.get("reflection"), str):
         return None, "Sổ tay trong file không đúng định dạng."
+    if "learning_model" in data and data.get("learning_model") is not None and not isinstance(data.get("learning_model"), dict):
+        return None, "Mô hình học trong file không đúng định dạng."
     return data, ""
 
 
@@ -2155,6 +2175,24 @@ def _store_diary(raw: Any, base_dir: Optional[str], mode: str) -> None:
     write_events(merged[-MAX_DIARY_EVENTS:], base_dir=base_dir)
 
 
+def _load_learning_model(base_dir: Optional[str]) -> Dict[str, Any]:
+    try:
+        from core.companion_learning import load_daily_model
+        return load_daily_model(base_dir)
+    except Exception:
+        return {}
+
+
+def _store_learning_model(raw: Any, base_dir: Optional[str], mode: str) -> None:
+    from core.companion_learning import load_daily_model, merge_learning_models, save_daily_model
+    if not isinstance(raw, dict):
+        return
+    if mode == "replace":
+        save_daily_model(raw, base_dir=base_dir)
+        return
+    save_daily_model(merge_learning_models(load_daily_model(base_dir), raw), base_dir=base_dir)
+
+
 def _store_reflection(raw: Any, base_dir: Optional[str], mode: str) -> None:
     from core.companion_diary import redact_sensitive
     from core.companion_reflection import load_reflection, save_reflection
@@ -2196,6 +2234,8 @@ def import_companion_memory(
             _store_diary(data.get("diary"), base_dir, chosen)
         if "reflection" in data:
             _store_reflection(data.get("reflection"), base_dir, chosen)
+        if "learning_model" in data:
+            _store_learning_model(data.get("learning_model"), base_dir, chosen)
     except Exception:
         return _memory_error("Chưa nhập được bộ nhớ. File có thể chưa đúng hoặc máy không ghi được.")
     verb = "Đã thay bộ nhớ trên máy này." if chosen == "replace" else "Đã gộp bộ nhớ vào máy này."

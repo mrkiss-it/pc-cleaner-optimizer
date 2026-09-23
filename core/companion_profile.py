@@ -2084,6 +2084,11 @@ def current_insight(
     visible = order_insights_for_topic_trust(visible, now=stamp, profile=data)
     if not visible:
         return None
+    try:
+        from core.companion_learning import prefer_learned_topics
+        visible = prefer_learned_topics(visible, base_dir=base_dir)
+    except Exception:
+        pass
     windows = [item for item in visible if str(item.get("id") or "").startswith("window:")]
     if windows:
         chosen = dict(windows[0])
