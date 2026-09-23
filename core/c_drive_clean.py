@@ -25,6 +25,9 @@ LOCKED_REASON_VI = "Một số tệp đang bị khóa (ứng dụng đang mở) 
 DOWNLOADS_DISABLED_REASON_VI = (
     "Mục Downloads đang tắt. Không xóa tệp tải về nếu bạn chưa bật mục này."
 )
+SYNC_ROOT_REASON_VI = (
+    "Thư mục đồng bộ OneDrive — không xóa và không tính dung lượng."
+)
 
 DEFAULT_LOW_DISK_FREE_GB = 10.0
 DEFAULT_LOW_DISK_FREE_PERCENT = 10.0
@@ -44,24 +47,131 @@ _BLOCKED_DIR_NAMES = frozenset({
 
 _CHROMIUM_ROOTS = (
     os.path.join("Google", "Chrome", "User Data"),
+    os.path.join("Google", "Chrome Beta", "User Data"),
+    os.path.join("Google", "Chrome Dev", "User Data"),
+    os.path.join("Google", "Chrome SxS", "User Data"),
     os.path.join("Microsoft", "Edge", "User Data"),
+    os.path.join("Microsoft", "Edge Beta", "User Data"),
+    os.path.join("Microsoft", "Edge Dev", "User Data"),
+    os.path.join("Microsoft", "Edge SxS", "User Data"),
+    os.path.join("Microsoft", "EdgeWebView", "User Data"),
     os.path.join("BraveSoftware", "Brave-Browser", "User Data"),
+    os.path.join("BraveSoftware", "Brave-Browser-Beta", "User Data"),
+    os.path.join("BraveSoftware", "Brave-Browser-Nightly", "User Data"),
     os.path.join("Vivaldi", "User Data"),
     os.path.join("Chromium", "User Data"),
+    os.path.join("CocCoc", "Browser", "User Data"),
 )
-_CHROMIUM_CACHE_SUBS = ("Cache", "Code Cache", "GPUCache")
+# Chỉ cache tạo lại được. Không gồm IndexedDB, cookie, Login Data, Service Worker\\Database.
+_CHROMIUM_CACHE_SUBS = (
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    os.path.join("Service Worker", "CacheStorage"),
+)
 _OPERA_CACHE_RELS = (
     os.path.join("Opera Software", "Opera Stable", "Cache"),
     os.path.join("Opera Software", "Opera GX Stable", "Cache"),
+    os.path.join("Opera Software", "Opera Stable", "Code Cache"),
+    os.path.join("Opera Software", "Opera GX Stable", "Code Cache"),
+    os.path.join("Opera Software", "Opera Stable", "GPUCache"),
+    os.path.join("Opera Software", "Opera GX Stable", "GPUCache"),
+    os.path.join("Opera Software", "Opera Stable", "Service Worker", "CacheStorage"),
+    os.path.join("Opera Software", "Opera GX Stable", "Service Worker", "CacheStorage"),
 )
 _SHADER_RELS = (
     "D3DSCache",
     os.path.join("NVIDIA", "DXCache"),
     os.path.join("NVIDIA", "GLCache"),
+    os.path.join("NVIDIA Corporation", "NV_Cache"),
     os.path.join("AMD", "DxCache"),
     os.path.join("AMD", "GLCache"),
+    os.path.join("Steam", "shadercache"),
 )
 _THUMB_GLOBS = ("thumbcache_*.db", "iconcache_*.db")
+_ELECTRON_CACHE_SUBS = (
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "logs",
+    os.path.join("Service Worker", "CacheStorage"),
+)
+_CAPCUT_CACHE_RELS = (
+    os.path.join("CapCut", "User Data", "Cache"),
+    os.path.join("CapCut", "User Data", "Log"),
+    os.path.join("CapCut", "User Data", "Logs"),
+    os.path.join("CapCut", "User Data", "PerformanceLog"),
+    os.path.join("CapCut", "User Data", "CEF", "Cache"),
+    os.path.join("CapCut", "User Data", "CEF", "Code Cache"),
+    os.path.join("CapCut", "User Data", "CEF", "GPUCache"),
+    os.path.join("CapCut", "User Data", "CEF", "Service Worker", "CacheStorage"),
+)
+_OFFICE_SAFE_RELS = (
+    os.path.join("Microsoft", "Office", "16.0", "WebServiceCache"),
+    os.path.join("Microsoft", "Office", "16.0", "SmartLookupCache"),
+    os.path.join("Microsoft", "Office", "16.0", "ResourceInfoCache"),
+    os.path.join("Microsoft", "Office", "16.0", "MruServiceCache"),
+)
+_OFFICE_FILE_CACHE_REL = os.path.join("Microsoft", "Office", "16.0", "OfficeFileCache")
+_ONEDRIVE_LOG_RELS = (
+    os.path.join("Microsoft", "OneDrive", "logs"),
+    os.path.join("Microsoft", "OneDrive", "setup", "logs"),
+    os.path.join("Microsoft", "OneDrive", "StandaloneUpdater", "logs"),
+)
+_IDE_CACHE_SUBS = ("caches", "log", "logs", "tmp")
+_SHELL_PACKAGE_PREFIXES = (
+    "Microsoft.Windows.ShellExperienceHost_",
+    "Microsoft.Windows.StartMenuExperienceHost_",
+)
+_STORE_PACKAGE_PREFIXES = (
+    "Microsoft.WindowsStore_",
+    "Microsoft.GamingApp_",
+    "Microsoft.XboxGamingOverlay_",
+    "Microsoft.XboxApp_",
+    "Microsoft.XboxIdentityProvider_",
+    "Microsoft.GamingServices_",
+)
+_STORE_CACHE_RELS = (
+    "TempState",
+    os.path.join("LocalCache", "Local", "Microsoft", "Windows", "INetCache"),
+)
+# Tên thư mục chứa dữ liệu người dùng — không bao giờ đưa vào danh sách dọn.
+_SENSITIVE_DIR_NAMES = frozenset({
+    "indexeddb",
+    "cookies",
+    "login data",
+    "local storage",
+    "session storage",
+    "web data",
+    "history",
+    "database",
+    "databases",
+    "extensions",
+    "local extension settings",
+    "unsavedfiles",
+})
+_EBWEBVIEW_SKIP = frozenset({
+    "temp",
+    "tmp",
+    "node_modules",
+    ".git",
+    "steamapps",
+    "packages",
+    "user data",
+    "cache",
+    "code cache",
+    "gpucache",
+    "crashdumps",
+    "pip",
+    "npm-cache",
+    "android",
+    "sdk",
+    "google",
+    "programs",
+})
 
 
 def _meta(
@@ -89,11 +199,15 @@ def _meta(
 TARGET_ORDER: Sequence[str] = (
     "user_temp",
     "thumbnail_cache",
+    "shell_font_cache",
     "browser_cache",
     "inet_cache",
     "shader_cache",
     "crash_dumps",
     "app_caches",
+    "office_cache",
+    "office_file_cache",
+    "store_cache",
     "delivery_cache",
     "recycle_bin",
     "downloads_old",
@@ -127,8 +241,9 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
     "browser_cache": _meta(
         label_vi="Bộ nhớ đệm trình duyệt",
         description_vi=(
-            "Cache, Code Cache, GPUCache của Chrome, Edge, Firefox, Brave, Opera, Vivaldi "
-            "trong hồ sơ của bạn. Không xóa mật khẩu, cookie hay hồ sơ."
+            "Cache, Code Cache, GPUCache và Service Worker\\CacheStorage của Chrome, Edge, "
+            "Cốc Cốc, Firefox, Brave, Opera, Vivaldi và WebView2 trong hồ sơ của bạn. "
+            "Không xóa mật khẩu, cookie, IndexedDB hay đăng nhập."
         ),
         needs_admin=False,
         scope="user",
@@ -147,7 +262,10 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
     ),
     "shader_cache": _meta(
         label_vi="Bộ nhớ đệm shader (DirectX / NVIDIA / AMD)",
-        description_vi="Cache đồ họa có thể tạo lại. Không xóa driver hay thư mục hệ thống.",
+        description_vi=(
+            "Cache đồ họa DirectX, NVIDIA, AMD và shadercache của Steam. "
+            "Có thể tạo lại. Không xóa driver hay thư mục hệ thống."
+        ),
         needs_admin=False,
         scope="user",
         risk="safe",
@@ -164,10 +282,61 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
         clean_mode="contents",
     ),
     "app_caches": _meta(
-        label_vi="Bộ nhớ đệm ứng dụng (Zalo, VS Code, Discord, Teams, Steam, Pip, Npm)",
+        label_vi=(
+            "Bộ nhớ đệm ứng dụng (Zalo, VS Code, Discord, Teams, Steam, Spotify, "
+            "Slack, Zoom, Notion, CapCut, JetBrains)"
+        ),
         description_vi=(
-            "Chỉ các thư mục cache hoặc log đã biết. Không xóa database Zalo, tin nhắn "
-            "hay thư mục AppData lạ."
+            "Chỉ cache hoặc log đã biết. Không xóa tin nhắn, dự án CapCut, nhạc Spotify "
+            "đã tải, cấu hình IDE hay thư mục AppData lạ."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "shell_font_cache": _meta(
+        label_vi="Font cache và bộ nhớ đệm Explorer",
+        description_vi=(
+            "FontCache của tài khoản này, cache Explorer (Windows\\Caches) và TempState "
+            "của Shell Experience Host. Windows tạo lại. Không xóa font đã cài và không đụng System32."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "office_cache": _meta(
+        label_vi="Cache Office và nhật ký OneDrive",
+        description_vi=(
+            "WebServiceCache và cache tra cứu của Office, cùng thư mục logs của OneDrive. "
+            "Không xóa thư mục đồng bộ OneDrive hay tài liệu."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "office_file_cache": _meta(
+        label_vi="Bản sao tạm Office (tắt mặc định)",
+        description_vi=(
+            "Chỉ OfficeFileCache. Có thể còn tệp chưa đồng bộ lên OneDrive hoặc SharePoint. "
+            "Tắt mặc định — không chạy nếu bạn không bật. Không đụng thư mục đồng bộ."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+    ),
+    "store_cache": _meta(
+        label_vi="Cache tạm Microsoft Store và Xbox",
+        description_vi=(
+            "Chỉ TempState và INetCache của Store, Xbox và Gaming App. "
+            "Không xóa dữ liệu game, bản cài hay LocalState."
         ),
         needs_admin=False,
         scope="user",
@@ -361,13 +530,55 @@ def _chromium_caches(user_data_root: str) -> List[str]:
     for profile in profiles:
         for sub in _CHROMIUM_CACHE_SUBS:
             cache_dir = os.path.join(profile, sub)
-            if _exists(cache_dir) and not path_is_forbidden(cache_dir):
+            if (
+                _exists(cache_dir)
+                and os.path.isdir(cache_dir)
+                and not os.path.islink(cache_dir)
+                and not path_is_forbidden(cache_dir)
+                and not path_has_sensitive_data(cache_dir)
+            ):
                 found.append(cache_dir)
     return found
 
 
+def _path_parts(path: str) -> List[str]:
+    return [part.lower() for part in os.path.normpath(path).split(os.sep) if part]
+
+
+def path_has_sensitive_data(path: str) -> bool:
+    """True nếu path đi qua IndexedDB, cookie, Login Data hoặc dữ liệu hồ sơ tương tự."""
+    if not path:
+        return False
+    return any(part in _SENSITIVE_DIR_NAMES for part in _path_parts(path))
+
+
+def _is_onedrive_sync_path(path: str, user_profile: str = "") -> bool:
+    """True nếu path là thư mục đồng bộ OneDrive hoặc nằm bên trong nó."""
+    if not path or not user_profile:
+        return False
+    try:
+        profile = os.path.normcase(os.path.abspath(user_profile))
+        target = os.path.normcase(os.path.abspath(path))
+    except (OSError, ValueError):
+        return False
+    if target == profile:
+        return False
+    prefix = profile if profile.endswith(os.sep) else profile + os.sep
+    if not target.startswith(prefix):
+        return False
+    rel = target[len(prefix):]
+    first = rel.split(os.sep)[0].lower() if rel else ""
+    return first == "onedrive" or first.startswith("onedrive ")
+
+
 def _append_if_dir(bucket: List[str], path: str) -> None:
-    if _exists(path) and os.path.isdir(path) and not path_is_forbidden(path):
+    if (
+        _exists(path)
+        and os.path.isdir(path)
+        and not os.path.islink(path)
+        and not path_is_forbidden(path)
+        and not path_has_sensitive_data(path)
+    ):
         bucket.append(path)
 
 
@@ -384,6 +595,92 @@ def _thumbnail_files(local_app_data: str) -> List[str]:
                 found.append(path)
     thumb_delete = os.path.join(explorer, "ThumbCacheToDelete")
     _append_if_dir(found, thumb_delete)
+    return found
+
+
+def _append_electron_caches(bucket: List[str], root: str, subs: Sequence[str] = _ELECTRON_CACHE_SUBS) -> None:
+    if not root or not _exists(root) or os.path.islink(root):
+        return
+    for sub in subs:
+        _append_if_dir(bucket, os.path.join(root, sub))
+
+
+def _find_ebwebview_roots(base: str, max_listdir_depth: int = 3) -> List[str]:
+    """Tìm thư mục EBWebView ở độ sâu giới hạn. Không đi theo symlink."""
+    found: List[str] = []
+    if not base or not _exists(base) or not os.path.isdir(base) or os.path.islink(base):
+        return found
+    if path_is_forbidden(base):
+        return found
+    stack = [(os.path.abspath(base), 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > max_listdir_depth:
+            continue
+        try:
+            names = list(os.listdir(current))
+        except OSError:
+            continue
+        for name in names:
+            child = os.path.join(current, name)
+            if os.path.islink(child) or not os.path.isdir(child):
+                continue
+            lowered = name.lower()
+            if lowered in _BLOCKED_DIR_NAMES or path_is_forbidden(child):
+                continue
+            if lowered == "ebwebview":
+                found.append(child)
+                continue
+            if lowered in _EBWEBVIEW_SKIP or path_has_sensitive_data(child):
+                continue
+            if depth < max_listdir_depth:
+                stack.append((child, depth + 1))
+    return found
+
+
+def _append_versioned_ide_caches(
+    bucket: List[str],
+    parent: str,
+    prefixes: Optional[Sequence[str]] = None,
+) -> None:
+    if not parent or not _exists(parent) or os.path.islink(parent):
+        return
+    try:
+        names = list(os.listdir(parent))
+    except OSError:
+        return
+    allowed = tuple(prefix.lower() for prefix in prefixes) if prefixes else None
+    for name in names:
+        if allowed and not name.lower().startswith(allowed):
+            continue
+        version_dir = os.path.join(parent, name)
+        if os.path.islink(version_dir) or not os.path.isdir(version_dir) or path_is_forbidden(version_dir):
+            continue
+        for sub in _IDE_CACHE_SUBS:
+            _append_if_dir(bucket, os.path.join(version_dir, sub))
+
+
+def _package_scoped_dirs(
+    local_app_data: str,
+    prefixes: Sequence[str],
+    rels: Sequence[str],
+) -> List[str]:
+    packages = os.path.join(local_app_data, "Packages")
+    found: List[str] = []
+    if not _exists(packages) or os.path.islink(packages):
+        return found
+    try:
+        names = list(os.listdir(packages))
+    except OSError:
+        return found
+    for name in names:
+        if not any(name.startswith(prefix) for prefix in prefixes):
+            continue
+        base = os.path.join(packages, name)
+        if os.path.islink(base) or not os.path.isdir(base) or path_is_forbidden(base):
+            continue
+        for rel in rels:
+            _append_if_dir(found, os.path.join(base, rel))
     return found
 
 
@@ -428,6 +725,36 @@ def _app_cache_paths(local_app_data: str, app_data: str) -> List[str]:
         _append_if_dir(found, os.path.join(local_app_data, "npm-cache"))
         _append_if_dir(found, os.path.join(local_app_data, "Programs", "Zalo", "logs"))
         _append_if_dir(found, os.path.join(local_app_data, "Steam", "htmlcache"))
+        _append_electron_caches(
+            found,
+            os.path.join(local_app_data, "Spotify", "Browser"),
+            subs=("Cache", "Code Cache", "GPUCache", os.path.join("Service Worker", "CacheStorage")),
+        )
+        _append_if_dir(found, os.path.join(local_app_data, "Spotify", "logs"))
+        for name in ("slack", "Slack", "Notion"):
+            _append_electron_caches(found, os.path.join(local_app_data, name))
+        _append_if_dir(found, os.path.join(local_app_data, "Zoom", "logs"))
+        for rel in _CAPCUT_CACHE_RELS:
+            _append_if_dir(found, os.path.join(local_app_data, rel))
+        capcut_cef = os.path.join(local_app_data, "CapCut", "User Data", "CEF")
+        found.extend(_chromium_caches(capcut_cef))
+        jetbrains = os.path.join(local_app_data, "JetBrains")
+        _append_versioned_ide_caches(found, jetbrains)
+        _append_if_dir(found, os.path.join(jetbrains, "Toolbox", "cache"))
+        _append_if_dir(found, os.path.join(jetbrains, "Toolbox", "logs"))
+        _append_versioned_ide_caches(
+            found,
+            os.path.join(local_app_data, "Google"),
+            prefixes=("AndroidStudio",),
+        )
+        teams_local = os.path.join(local_app_data, "Microsoft", "Teams")
+        if _exists(teams_local):
+            for sub in ("Cache", "Code Cache", "GPUCache", "tmp", "logs"):
+                _append_if_dir(found, os.path.join(teams_local, sub))
+    if app_data:
+        for name in ("Slack", "slack", "Notion"):
+            _append_electron_caches(found, os.path.join(app_data, name))
+        _append_if_dir(found, os.path.join(app_data, "Zoom", "logs"))
     return found
 
 
@@ -474,12 +801,36 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
                     profile = os.path.join(firefox_root, name)
                     if not os.path.isdir(profile):
                         continue
-                    for sub in ("cache2", "startupCache"):
+                    for sub in ("cache2", "startupCache", "shader-cache"):
                         _append_if_dir(targets["browser_cache"], os.path.join(profile, sub))
             except OSError:
                 pass
         for rel in _OPERA_CACHE_RELS:
             _append_if_dir(targets["browser_cache"], os.path.join(local_app_data, rel))
+        for root in _find_ebwebview_roots(local_app_data, max_listdir_depth=3):
+            targets["browser_cache"].extend(_chromium_caches(root))
+        _append_if_dir(
+            targets["shell_font_cache"],
+            os.path.join(local_app_data, "Microsoft", "FontCache"),
+        )
+        _append_if_dir(
+            targets["shell_font_cache"],
+            os.path.join(local_app_data, "Microsoft", "Windows", "Caches"),
+        )
+        targets["shell_font_cache"].extend(
+            _package_scoped_dirs(local_app_data, _SHELL_PACKAGE_PREFIXES, ("TempState",))
+        )
+        for rel in _OFFICE_SAFE_RELS:
+            _append_if_dir(targets["office_cache"], os.path.join(local_app_data, rel))
+        for rel in _ONEDRIVE_LOG_RELS:
+            _append_if_dir(targets["office_cache"], os.path.join(local_app_data, rel))
+        _append_if_dir(
+            targets["office_file_cache"],
+            os.path.join(local_app_data, _OFFICE_FILE_CACHE_REL),
+        )
+        targets["store_cache"].extend(
+            _package_scoped_dirs(local_app_data, _STORE_PACKAGE_PREFIXES, _STORE_CACHE_RELS)
+        )
         _append_if_dir(
             targets["inet_cache"],
             os.path.join(local_app_data, "Microsoft", "Windows", "INetCache"),
@@ -507,6 +858,8 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
     if app_data and not path_is_forbidden(app_data):
         for rel in _OPERA_CACHE_RELS:
             _append_if_dir(targets["browser_cache"], os.path.join(app_data, rel))
+        for root in _find_ebwebview_roots(app_data, max_listdir_depth=4):
+            targets["browser_cache"].extend(_chromium_caches(root))
 
     targets["app_caches"].extend(_app_cache_paths(local_app_data, app_data))
 
@@ -533,7 +886,16 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
             targets["system_dumps"].append(memory_dmp)
 
     for key in list(targets.keys()):
-        targets[key] = _dedupe(targets[key])
+        kept = []
+        for path in _dedupe(targets[key]):
+            if path_is_forbidden(path) or path_has_sensitive_data(path):
+                continue
+            if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
+                continue
+            if _is_onedrive_sync_path(path, user_profile):
+                continue
+            kept.append(path)
+        targets[key] = kept
     return targets
 
 
@@ -716,7 +1078,15 @@ def _merge_counts(total: Dict[str, int], part: Dict[str, int]) -> None:
 
 def clean_children(path: str, *, user_profile: str = "", system_root: str = "") -> Dict[str, int]:
     """Xóa nội dung bên trong thư mục, giữ lại chính thư mục đó."""
-    result = {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 0, "protected": 0, "too_broad": 0}
+    result = {
+        "freed_bytes": 0,
+        "deleted_files": 0,
+        "skipped_locked": 0,
+        "errors": 0,
+        "protected": 0,
+        "too_broad": 0,
+        "sync_root": 0,
+    }
     if path_is_forbidden(path):
         result["errors"] = 1
         result["protected"] = 1
@@ -724,6 +1094,10 @@ def clean_children(path: str, *, user_profile: str = "", system_root: str = "") 
     if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
         result["errors"] = 1
         result["too_broad"] = 1
+        return result
+    if _is_onedrive_sync_path(path, user_profile):
+        result["errors"] = 1
+        result["sync_root"] = 1
         return result
     if not _exists(path) or not os.path.isdir(path) or os.path.islink(path):
         return result
@@ -782,13 +1156,28 @@ def clean_old_files(
     system_root: str = "",
 ) -> Dict[str, int]:
     """Chỉ xóa tệp cũ hơn N ngày. Không xóa thư mục, không đụng symlink."""
-    result = {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 0, "skipped_recent": 0}
-    if (
-        path_is_forbidden(root)
-        or path_is_too_broad(root, user_profile=user_profile, system_root=system_root)
-        or int(min_age_days or 0) <= 0
-    ):
+    result = {
+        "freed_bytes": 0,
+        "deleted_files": 0,
+        "skipped_locked": 0,
+        "errors": 0,
+        "skipped_recent": 0,
+        "too_broad": 0,
+        "sync_root": 0,
+        "protected": 0,
+    }
+    if path_is_forbidden(root):
         result["errors"] = 1
+        result["protected"] = 1
+        return result
+    if path_is_too_broad(root, user_profile=user_profile, system_root=system_root):
+        result["errors"] = 1
+        result["too_broad"] = 1
+        return result
+    if _is_onedrive_sync_path(root, user_profile) or int(min_age_days or 0) <= 0:
+        result["errors"] = 1
+        if _is_onedrive_sync_path(root, user_profile):
+            result["sync_root"] = 1
         return result
     if not _exists(root) or not os.path.isdir(root):
         return result
@@ -827,6 +1216,8 @@ def clean_one_path(
         return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 1, "protected": 1}
     if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
         return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 1, "too_broad": 1}
+    if _is_onedrive_sync_path(path, user_profile):
+        return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 1, "sync_root": 1}
     if clean_mode == "old_files":
         return clean_old_files(
             path,
@@ -995,6 +1386,195 @@ class LowDiskToastGate:
         return self.allow(now_ts, cooldown_sec=cooldown)
 
 
+def read_c_drive_free_bytes() -> Optional[int]:
+    """Byte trống trên ổ hệ thống. Ngoài Windows trả None — không đoán ổ khác."""
+    if os.name != "nt":
+        return None
+    drive = str(os.environ.get("SystemDrive") or "C:")
+    if not drive.endswith("\\"):
+        drive = drive + "\\"
+    try:
+        import shutil
+        return max(0, int(shutil.disk_usage(drive).free))
+    except (OSError, ValueError):
+        return None
+
+
+def _estimate_target_size(
+    key: str,
+    meta: Dict[str, Any],
+    target_paths: Dict[str, List[str]],
+    *,
+    min_age_days: int,
+    now_ts: float,
+    recycle_info: Optional[Dict[str, Any]],
+) -> Dict[str, int]:
+    if key == "recycle_bin":
+        info = recycle_info or {}
+        return {
+            "size_bytes": max(0, int(info.get("size_bytes") or 0)),
+            "file_count": max(0, int(info.get("items") or info.get("file_count") or 0)),
+        }
+    total = 0
+    count = 0
+    for path in target_paths.get(key, []):
+        if meta.get("clean_mode") == "old_files":
+            stat_info = scan_old_files(path, min_age_days, now_ts)
+        else:
+            stat_info = scan_tree(path)
+        total += int(stat_info.get("size_bytes") or 0)
+        count += int(stat_info.get("file_count") or 0)
+    return {"size_bytes": total, "file_count": count}
+
+
+def estimate_reclaimable(
+    enabled_targets: Optional[Dict[str, bool]],
+    *,
+    is_admin: bool,
+    deep_user_safe: bool = True,
+    environ: Optional[Dict[str, str]] = None,
+    downloads_min_age_days: Optional[int] = None,
+    now_ts: Optional[float] = None,
+    recycle_info: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Ước lượng byte và số tệp của đúng tập resolve_clean_plan sẽ dọn.
+    Không xóa. Mục bỏ qua (Admin khi chưa elevated) có kích thước riêng
+    nhưng reclaimable_bytes = 0 và không cộng vào tổng.
+    """
+    plan = resolve_clean_plan(
+        enabled_targets,
+        is_admin=bool(is_admin),
+        deep_user_safe=bool(deep_user_safe),
+    )
+    target_paths = build_target_paths(environ)
+    days = normalize_downloads_min_age_days(
+        DEFAULT_DOWNLOADS_MIN_AGE_DAYS if downloads_min_age_days is None else downloads_min_age_days
+    )
+    moment = time.time() if now_ts is None else float(now_ts)
+    skipped_by_key = {item["key"]: item for item in plan["skipped"]}
+    rows: List[Dict[str, Any]] = []
+    total_bytes = 0
+    total_files = 0
+
+    for key in TARGET_ORDER:
+        will_run = bool(plan["to_run"].get(key))
+        skipped = skipped_by_key.get(key)
+        if not will_run and not skipped:
+            continue
+        meta = TARGET_CATALOG[key]
+        measured = _estimate_target_size(
+            key,
+            meta,
+            target_paths,
+            min_age_days=days,
+            now_ts=moment,
+            recycle_info=recycle_info,
+        )
+        if will_run:
+            reclaim_bytes = measured["size_bytes"]
+            reclaim_files = measured["file_count"]
+            status = "ready"
+            reason = ""
+        else:
+            reclaim_bytes = 0
+            reclaim_files = 0
+            status = "skipped"
+            reason = str((skipped or {}).get("reason") or ADMIN_SKIP_REASON_VI)
+        rows.append({
+            "key": key,
+            "name": meta["label_vi"],
+            "status": status,
+            "reason": reason,
+            "needs_admin": bool(meta["needs_admin"]),
+            "size_bytes": measured["size_bytes"],
+            "file_count": measured["file_count"],
+            "reclaimable_bytes": reclaim_bytes,
+            "reclaimable_files": reclaim_files,
+            "size_label_vi": format_freed_vi(reclaim_bytes if will_run else measured["size_bytes"]),
+        })
+        total_bytes += reclaim_bytes
+        total_files += reclaim_files
+
+    result = {
+        "targets": rows,
+        "total_bytes": total_bytes,
+        "total_files": total_files,
+        "total_label_vi": format_freed_vi(total_bytes),
+        "is_admin": bool(is_admin),
+        "deep_user_safe": bool(deep_user_safe),
+        "skipped": plan["skipped"],
+    }
+    result["preview_vi"] = format_scan_preview_vi(result)
+    return result
+
+
+def format_scan_preview_vi(result: Dict[str, Any]) -> str:
+    total = int(result.get("total_bytes") or 0)
+    files = int(result.get("total_files") or 0)
+    lines = [
+        "Xem trước — chưa xóa tệp nào.",
+        f"Có thể giải phóng (ước lượng): {format_freed_vi(total)} ({files} tệp).",
+        "Chỉ cộng mục sẽ dọn. Mục cần Admin không nằm trong tổng.",
+        "",
+    ]
+    shown = 0
+    for row in result.get("targets") or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or row.get("key") or "Mục")
+        if row.get("status") == "skipped":
+            estimated = int(row.get("size_bytes") or 0)
+            if estimated <= 0 and int(row.get("file_count") or 0) <= 0:
+                continue
+            extra = f" Ước lượng {format_freed_vi(estimated)} không được tính." if estimated else ""
+            reason = str(row.get("reason") or ADMIN_SKIP_REASON_VI).rstrip(".")
+            lines.append(f"• {name}: đã bỏ qua — {reason}.{extra}")
+            shown += 1
+            continue
+        size = int(row.get("reclaimable_bytes") or 0)
+        count = int(row.get("reclaimable_files") or 0)
+        if size <= 0 and count <= 0:
+            continue
+        lines.append(f"• {name}: khoảng {format_freed_vi(size)} ({count} tệp)")
+        shown += 1
+    if shown == 0:
+        lines.append("• Không có gì để xóa (0 B)")
+    lines.append("")
+    lines.append(
+        "Bấm «Dọn ngay» để xóa các mục sẵn sàng. "
+        "Thùng rác và tệp cũ trong Downloads chỉ có trong danh sách khi bạn đang bật."
+    )
+    return "\n".join(lines).strip()
+
+
+def format_free_space_line_vi(result: Dict[str, Any]) -> str:
+    """So dung lượng trống ổ C: trước/sau với số byte đã xóa thật."""
+    claimed = int(result.get("total_freed_bytes") or 0)
+    claimed_label = format_freed_vi(claimed)
+    before = result.get("free_bytes_before")
+    after = result.get("free_bytes_after")
+    if before is None or after is None:
+        return (
+            "Không đọc được dung lượng trống ổ C: trước hoặc sau khi dọn. "
+            f"Số byte đã xóa vẫn là {claimed_label}."
+        )
+    before_i = max(0, int(before))
+    after_i = max(0, int(after))
+    delta = after_i - before_i
+    if delta > 0:
+        delta_label = "+" + format_freed_vi(delta)
+    elif delta < 0:
+        delta_label = "-" + format_freed_vi(-delta)
+    else:
+        delta_label = "0 B"
+    return (
+        f"Ổ C: trống trước {format_freed_vi(before_i)} → sau {format_freed_vi(after_i)} "
+        f"(thay đổi thực tế {delta_label}). "
+        f"Byte đã xóa: {claimed_label}."
+    )
+
+
 def format_freed_vi(num_bytes: int) -> str:
     """Nhãn dung lượng không làm tròn mất phần đã xóa (tránh 0.0 MB khi vẫn xóa được KB)."""
     n = max(0, int(num_bytes or 0))
@@ -1037,6 +1617,8 @@ def format_clean_report_vi(result: Dict[str, Any]) -> str:
     ]
     if not result.get("is_admin"):
         lines.append("Mục cần Admin đã được bỏ qua và không cộng vào số MB ở trên.")
+    if deep:
+        lines.append(format_free_space_line_vi(result))
     lines.append("")
     details = result.get("details") or {}
     order = result.get("detail_order") or [key for key in TARGET_ORDER if key in details]
