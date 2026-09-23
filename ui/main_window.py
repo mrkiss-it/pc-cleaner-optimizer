@@ -1538,10 +1538,9 @@ class MainWindow(QMainWindow):
         self.chk_email_report = QCheckBox("Gửi báo cáo tổng hợp qua email")
         self.chk_email_report.setStyleSheet("font-weight: bold; font-size: 13px;")
         lbl_email_desc = QLabel(
-            "Ứng dụng tự tổng hợp tình trạng máy (ổ đĩa, RAM, mạng, nhiệt, Wi-Fi nếu đo được) "
-            "và phần tóm tắt đã có trên máy này, rồi gửi vào email bạn chỉ định theo tần suất đã chọn. "
-            "Mật khẩu SMTP chỉ lưu trên máy này. Ứng dụng không có máy chủ mail trung gian "
-            "và không gửi khi bạn chưa bật tùy chọn này."
+            "Nhập email nhận và mật khẩu ứng dụng. Báo cáo chỉ gửi khi bạn bật tùy chọn này. "
+            "Mật khẩu ứng dụng chỉ lưu trên máy này. Gmail cần bật xác minh 2 bước rồi tạo mật khẩu ứng dụng. "
+            "Không dùng được hộp thư GitHub để gửi SMTP. Ứng dụng không có máy chủ mail riêng."
         )
         lbl_email_desc.setWordWrap(True)
         lbl_email_desc.setStyleSheet("color: #64748b; font-size: 11px;")
@@ -1550,7 +1549,7 @@ class MainWindow(QMainWindow):
         lbl_email_to = QLabel("Email nhận:")
         lbl_email_to.setStyleSheet("color: #94a3b8;")
         self.edit_email_to = QLineEdit()
-        self.edit_email_to.setPlaceholderText("ban@example.com")
+        self.edit_email_to.setPlaceholderText("ban@gmail.com")
         row_email_to.addWidget(lbl_email_to)
         row_email_to.addWidget(self.edit_email_to, 1)
 
@@ -1596,20 +1595,22 @@ class MainWindow(QMainWindow):
         row_smtp_host.addWidget(lbl_smtp_port)
         row_smtp_host.addWidget(self.spin_smtp_port)
 
-        row_smtp_user = QHBoxLayout()
-        lbl_smtp_user = QLabel("Tên đăng nhập:")
-        lbl_smtp_user.setStyleSheet("color: #94a3b8;")
-        self.edit_smtp_user = QLineEdit()
-        self.edit_smtp_user.setPlaceholderText("ban@gmail.com")
+        row_email_pass = QHBoxLayout()
         lbl_smtp_pass = QLabel("Mật khẩu ứng dụng:")
         lbl_smtp_pass.setStyleSheet("color: #94a3b8;")
         self.edit_smtp_password = QLineEdit()
         self.edit_smtp_password.setEchoMode(QLineEdit.Password)
-        self.edit_smtp_password.setPlaceholderText("Mật khẩu ứng dụng (app password)")
+        self.edit_smtp_password.setPlaceholderText("Mật khẩu ứng dụng Gmail hoặc Outlook")
+        row_email_pass.addWidget(lbl_smtp_pass)
+        row_email_pass.addWidget(self.edit_smtp_password, 1)
+
+        row_smtp_user = QHBoxLayout()
+        lbl_smtp_user = QLabel("Tên đăng nhập:")
+        lbl_smtp_user.setStyleSheet("color: #94a3b8;")
+        self.edit_smtp_user = QLineEdit()
+        self.edit_smtp_user.setPlaceholderText("Trống = dùng email nhận")
         row_smtp_user.addWidget(lbl_smtp_user)
         row_smtp_user.addWidget(self.edit_smtp_user, 1)
-        row_smtp_user.addWidget(lbl_smtp_pass)
-        row_smtp_user.addWidget(self.edit_smtp_password, 1)
 
         self.chk_email_tls = QCheckBox("Dùng TLS (STARTTLS, thường cổng 587)")
         self.chk_email_ssl = QCheckBox("Dùng SSL (thường cổng 465)")
@@ -1645,19 +1646,45 @@ class MainWindow(QMainWindow):
         self.lbl_email_report_status.setWordWrap(True)
         self.lbl_email_report_status.setStyleSheet("color: #64748b; font-size: 11px;")
 
+        self.btn_email_advanced = QPushButton("▸ Nâng cao")
+        self.btn_email_advanced.setCheckable(True)
+        self.btn_email_advanced.setChecked(False)
+        self.btn_email_advanced.setCursor(Qt.PointingHandCursor)
+        self.btn_email_advanced.setStyleSheet(
+            "QPushButton { color: #94a3b8; background: transparent; border: none; "
+            "text-align: left; font-weight: 600; padding: 4px 0; }"
+            "QPushButton:hover { color: #e2e8f0; }"
+        )
+        self.btn_email_advanced.toggled.connect(self._on_email_advanced_toggled)
+
+        self.email_advanced_box = QWidget()
+        adv_layout = QVBoxLayout(self.email_advanced_box)
+        adv_layout.setContentsMargins(0, 4, 0, 0)
+        adv_layout.setSpacing(8)
+        adv_layout.addLayout(row_smtp_host)
+        adv_layout.addLayout(row_smtp_user)
+        adv_layout.addWidget(self.chk_email_tls)
+        adv_layout.addWidget(self.chk_email_ssl)
+        adv_layout.addLayout(row_from)
+        self.email_advanced_box.setVisible(False)
+
+        self.lbl_email_smtp_hint = QLabel("")
+        self.lbl_email_smtp_hint.setWordWrap(True)
+        self.lbl_email_smtp_hint.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        self.lbl_email_smtp_hint.setVisible(False)
+
         layout_email.addWidget(lbl_email_title)
         layout_email.addWidget(self.chk_email_report)
         layout_email.addWidget(lbl_email_desc)
         layout_email.addLayout(row_email_to)
         layout_email.addLayout(row_email_freq)
         layout_email.addWidget(lbl_email_when)
-        layout_email.addLayout(row_smtp_host)
-        layout_email.addLayout(row_smtp_user)
-        layout_email.addWidget(self.chk_email_tls)
-        layout_email.addWidget(self.chk_email_ssl)
-        layout_email.addLayout(row_from)
+        layout_email.addLayout(row_email_pass)
         layout_email.addLayout(row_email_btns)
         layout_email.addWidget(self.lbl_email_report_status)
+        layout_email.addWidget(self.lbl_email_smtp_hint)
+        layout_email.addWidget(self.btn_email_advanced)
+        layout_email.addWidget(self.email_advanced_box)
         layout.addWidget(card_email)
         layout.addWidget(card_self_uninst)
 
@@ -1849,6 +1876,8 @@ class MainWindow(QMainWindow):
             self._load_email_report_settings(cfg)
         finally:
             self._loading_settings = False
+        if self._email_smtp_autofill_dirty():
+            self._save_email_report_settings()
 
     def save_targets_config(self):
         self._auto_save_targets()
@@ -1946,7 +1975,7 @@ class MainWindow(QMainWindow):
     def _load_email_report_settings(self, cfg):
         if not hasattr(self, "chk_email_report"):
             return
-        from core.email_report import PASSWORD_KEY, normalize_frequency
+        from core.email_report import normalize_frequency, should_expand_smtp_advanced
         self.chk_email_report.setChecked(bool(cfg.get("email_report_enabled", False)))
         self.edit_email_to.setText(str(cfg.get("email_report_to") or ""))
         freq = normalize_frequency(cfg.get("email_report_frequency", "weekly"))
@@ -1960,7 +1989,8 @@ class MainWindow(QMainWindow):
             self.spin_email_minute.setValue(int(cfg.get("email_report_send_minute", 0)))
         except (TypeError, ValueError):
             self.spin_email_minute.setValue(0)
-        self.edit_smtp_host.setText(str(cfg.get("email_report_smtp_host") or ""))
+        saved_host = str(cfg.get("email_report_smtp_host") or "")
+        self.edit_smtp_host.setText(saved_host)
         try:
             port = int(cfg.get("email_report_smtp_port", 587))
         except (TypeError, ValueError):
@@ -1968,20 +1998,79 @@ class MainWindow(QMainWindow):
         self.spin_smtp_port.setValue(min(65535, max(1, port)))
         self.edit_smtp_user.setText(str(cfg.get("email_report_smtp_username") or ""))
         self.edit_smtp_password.clear()
-        saved_pw = str(self.config_manager.get(PASSWORD_KEY, "") or "").strip()
-        if saved_pw:
-            self.edit_smtp_password.setPlaceholderText("Đã lưu trên máy này — nhập mới nếu muốn đổi")
-        else:
-            self.edit_smtp_password.setPlaceholderText("Mật khẩu ứng dụng (app password)")
         use_ssl = bool(cfg.get("email_report_smtp_use_ssl", False))
         use_tls = bool(cfg.get("email_report_smtp_use_tls", True)) and not use_ssl
         self.chk_email_ssl.setChecked(use_ssl)
         self.chk_email_tls.setChecked(use_tls)
         self.edit_email_from_name.setText(str(cfg.get("email_report_from_name") or ""))
         self.edit_email_from.setText(str(cfg.get("email_report_from_address") or ""))
+        if hasattr(self, "btn_email_advanced"):
+            self.btn_email_advanced.setChecked(should_expand_smtp_advanced(saved_host))
+        self._apply_email_smtp_autofill()
         last_error = str(cfg.get("email_report_last_error") or "").strip()
         if last_error and not self.lbl_email_report_status.text().strip():
             self.lbl_email_report_status.setText("Lần gửi trước: " + last_error)
+
+    def _email_password_placeholder(self, host: str = "") -> str:
+        from core.email_report import PASSWORD_KEY
+        saved_pw = str(self.config_manager.get(PASSWORD_KEY, "") or "").strip()
+        if saved_pw and not self.edit_smtp_password.text().strip():
+            return "Đã lưu trên máy này — nhập mới nếu muốn đổi"
+        lowered = str(host or "").lower()
+        if "gmail" in lowered:
+            return "Mật khẩu ứng dụng Gmail"
+        if "office365" in lowered or "outlook" in lowered:
+            return "Mật khẩu ứng dụng Outlook"
+        return "Mật khẩu ứng dụng Gmail hoặc Outlook"
+
+    def _apply_email_smtp_autofill(self):
+        from core.email_report import autofill_smtp
+        filled = autofill_smtp(
+            to=self.edit_email_to.text(),
+            username=self.edit_smtp_user.text(),
+            host=self.edit_smtp_host.text(),
+            port=self.spin_smtp_port.value(),
+            use_tls=self.chk_email_tls.isChecked(),
+            use_ssl=self.chk_email_ssl.isChecked(),
+        )
+        guarded = (
+            self.edit_smtp_host,
+            self.spin_smtp_port,
+            self.edit_smtp_user,
+            self.chk_email_tls,
+            self.chk_email_ssl,
+        )
+        for widget in guarded:
+            widget.blockSignals(True)
+        self.edit_smtp_host.setText(filled["host"])
+        self.spin_smtp_port.setValue(min(65535, max(1, int(filled["port"] or 587))))
+        self.edit_smtp_user.setText(filled["username"])
+        self.chk_email_ssl.setChecked(bool(filled["use_ssl"]))
+        self.chk_email_tls.setChecked(bool(filled["use_tls"]) and not bool(filled["use_ssl"]))
+        for widget in guarded:
+            widget.blockSignals(False)
+        self.edit_smtp_password.setPlaceholderText(self._email_password_placeholder(filled["host"]))
+        hint = str(filled.get("hint_vi") or "")
+        if hasattr(self, "lbl_email_smtp_hint"):
+            self.lbl_email_smtp_hint.setText(hint)
+            self.lbl_email_smtp_hint.setVisible(bool(hint))
+
+    def _email_smtp_autofill_dirty(self) -> bool:
+        if not hasattr(self, "edit_smtp_host"):
+            return False
+        try:
+            saved_port = int(self.config_manager.get("email_report_smtp_port", 587))
+        except (TypeError, ValueError):
+            saved_port = 587
+        saved_ssl = bool(self.config_manager.get("email_report_smtp_use_ssl", False))
+        saved_tls = bool(self.config_manager.get("email_report_smtp_use_tls", True)) and not saved_ssl
+        return (
+            self.edit_smtp_host.text().strip() != str(self.config_manager.get("email_report_smtp_host") or "").strip()
+            or self.edit_smtp_user.text().strip() != str(self.config_manager.get("email_report_smtp_username") or "").strip()
+            or int(self.spin_smtp_port.value()) != min(65535, max(1, saved_port))
+            or bool(self.chk_email_tls.isChecked()) != saved_tls
+            or bool(self.chk_email_ssl.isChecked()) != saved_ssl
+        )
 
     def _save_email_report_settings(self):
         if not hasattr(self, "chk_email_report"):
@@ -1989,6 +2078,7 @@ class MainWindow(QMainWindow):
         if getattr(self, "_loading_settings", False):
             return
         from core.email_report import PASSWORD_KEY, normalize_frequency
+        self._apply_email_smtp_autofill()
         freq_idx = self.combo_email_freq.currentIndex()
         freq = self._email_freq_values[freq_idx] if 0 <= freq_idx < len(self._email_freq_values) else "weekly"
         self.config_manager.set("email_report_enabled", self.chk_email_report.isChecked())
@@ -2021,12 +2111,21 @@ class MainWindow(QMainWindow):
             self.chk_email_tls.blockSignals(False)
         self._auto_save_automation_settings()
 
+    def _on_email_advanced_toggled(self, expanded):
+        shown = bool(expanded)
+        if hasattr(self, "email_advanced_box"):
+            self.email_advanced_box.setVisible(shown)
+        if hasattr(self, "btn_email_advanced"):
+            self.btn_email_advanced.setText("▾ Nâng cao" if shown else "▸ Nâng cao")
+
     def _clear_email_smtp_password(self):
         from core.email_report import PASSWORD_KEY
         self.config_manager.set(PASSWORD_KEY, "")
         self.edit_smtp_password.clear()
-        self.edit_smtp_password.setPlaceholderText("Mật khẩu ứng dụng (app password)")
-        self.lbl_email_report_status.setText("Đã xóa mật khẩu SMTP khỏi máy này.")
+        self.edit_smtp_password.setPlaceholderText(
+            self._email_password_placeholder(self.edit_smtp_host.text())
+        )
+        self.lbl_email_report_status.setText("Đã xóa mật khẩu ứng dụng khỏi máy này.")
         self.lbl_email_report_status.setStyleSheet("color: #94a3b8; font-size: 11px;")
 
     def _on_email_test_clicked(self):

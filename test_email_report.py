@@ -50,11 +50,16 @@ from core.companion_reflection import save_reflection
 from core.companion_skills import save_skill
 from core.email_report import (
     PASSWORD_KEY,
+    autofill_smtp,
     frequency_window_already_sent,
     build_report,
+    note_schedule_credential_gap,
     report_is_due,
+    schedule_credential_gap,
     send_scheduled_report,
     send_test_email,
+    should_expand_smtp_advanced,
+    smtp_preset_for_address,
 )
 
 NOW = datetime(2026, 9, 23, 9, 0, 0)
@@ -457,6 +462,36 @@ def test_smtp_errors_are_vietnamese_and_hide_the_password():
 
         bad = send_test_email(MemCfg(email_report_to="khong-phai-email"), now=NOW, smtp_factory=FakeSMTP)
         assert "chưa hợp lệ" in bad["message_vi"]
+
+        missing_pw = send_test_email(
+            MemCfg(email_report_smtp_password="", email_report_to="ban@gmail.com",
+                   email_report_smtp_host="smtp.gmail.com", email_report_smtp_username="ban@gmail.com"),
+            now=NOW,
+            smtp_factory=FakeSMTP,
+        )
+        assert missing_pw["ok"] is False
+        assert "mật khẩu ứng dụng" in missing_pw["message_vi"]
+        assert "GitHub" in missing_pw["message_vi"]
+
+        missing_host = send_test_email(
+            MemCfg(email_report_to="ban@congty.example", email_report_smtp_host="",
+                   email_report_smtp_username="ban@congty.example"),
+            now=NOW,
+            smtp_factory=FakeSMTP,
+        )
+        assert missing_host["ok"] is False
+        assert "máy chủ SMTP" in missing_host["message_vi"]
+        assert "Nâng cao" in missing_host["message_vi"]
+
+        github = send_test_email(
+            MemCfg(email_report_to="dev@github.com", email_report_smtp_username="dev@github.com",
+                   email_report_smtp_host="smtp.github.com"),
+            now=NOW,
+            smtp_factory=FakeSMTP,
+        )
+        assert github["ok"] is False
+        assert "GitHub" in github["message_vi"]
+        assert SECRET not in github["message_vi"]
     finally:
         logger.removeHandler(handler)
 
@@ -567,12 +602,135 @@ def test_password_stays_out_of_config_and_companion_export():
                 pass
 
 
+def test_smtp_presets_autofill_known_providers_only():
+    gmail = smtp_preset_for_address("Ban@Gmail.com")
+    assert gmail["host"] == "smtp.gmail.com"
+    assert gmail["port"] == 587
+    assert gmail["use_tls"] is True
+    assert gmail["use_ssl"] is False
+    assert smtp_preset_for_address("a@googlemail.com")["host"] == "smtp.gmail.com"
+    for domain in ("outlook.com", "hotmail.com", "live.com"):
+        preset = smtp_preset_for_address(f"a@{domain}")
+        assert preset["host"] == "smtp.office365.com"
+        assert preset["port"] == 587
+        assert preset["use_tls"] is True
+    assert smtp_preset_for_address("a@congty.example") is None
+    assert smtp_preset_for_address("khong-phai-email") is None
+
+    filled = autofill_smtp(to="Ban@Gmail.com", username="", host="", port=25, use_tls=False, use_ssl=True)
+    assert filled["host"] == "smtp.gmail.com"
+    assert filled["port"] == 587
+    assert filled["username"] == "Ban@Gmail.com"
+    assert filled["use_tls"] is True
+    assert filled["use_ssl"] is False
+    assert filled["hint_vi"] == ""
+
+    switched = autofill_smtp(
+        to="a@hotmail.com",
+        username="old@gmail.com",
+        host="smtp.gmail.com",
+        port=465,
+        use_tls=False,
+        use_ssl=True,
+    )
+    assert switched["host"] == "smtp.office365.com"
+    assert switched["port"] == 587
+    assert switched["use_tls"] is True
+    assert switched["use_ssl"] is False
+    assert switched["username"] == "old@gmail.com"
+
+    kept_port = autofill_smtp(
+        to="me@gmail.com",
+        username="me@gmail.com",
+        host="smtp.gmail.com",
+        port=465,
+        use_tls=False,
+        use_ssl=True,
+    )
+    assert kept_port["host"] == "smtp.gmail.com"
+    assert kept_port["port"] == 465
+    assert kept_port["use_ssl"] is True
+    assert kept_port["use_tls"] is False
+
+    via_user = autofill_smtp(to="boss@congty.example", username="me@gmail.com", host="")
+    assert via_user["host"] == "smtp.gmail.com"
+    assert via_user["username"] == "me@gmail.com"
+
+    custom = autofill_smtp(
+        to="a@gmail.com",
+        username="sender@corp.example",
+        host="mail.corp.example",
+        port=2525,
+        use_tls=False,
+        use_ssl=False,
+    )
+    assert custom["host"] == "mail.corp.example"
+    assert custom["port"] == 2525
+    assert custom["username"] == "sender@corp.example"
+    assert custom["use_tls"] is False
+    assert should_expand_smtp_advanced("mail.corp.example") is True
+    assert should_expand_smtp_advanced("smtp.gmail.com") is False
+    assert should_expand_smtp_advanced("") is False
+
+    unknown = autofill_smtp(to="a@congty.example", username="", host="", port=587, use_tls=True, use_ssl=False)
+    assert unknown["host"] == ""
+    assert unknown["username"] == "a@congty.example"
+    assert "Nâng cao" in unknown["hint_vi"]
+    assert "smtp.congty.example" not in unknown["host"]
+
+    kept = autofill_smtp(
+        to="a@congty.example",
+        username="a@congty.example",
+        host="smtp.example.com",
+        port=587,
+        use_tls=True,
+        use_ssl=False,
+    )
+    assert kept["host"] == "smtp.example.com"
+    assert kept["hint_vi"] == ""
+
+    github = autofill_smtp(to="dev@github.com", username="", host="")
+    assert github["host"] == ""
+    assert "GitHub" in github["hint_vi"]
+    blank = autofill_smtp(to="", username="", host="")
+    assert blank["hint_vi"] == ""
+    assert blank["host"] == ""
+
+
+def test_schedule_says_when_password_or_smtp_is_missing():
+    ready_host = _ready(password="", host="smtp.gmail.com", to="a@gmail.com", username="a@gmail.com")
+    assert report_is_due(ready_host, now=NOW) is False
+    gap = schedule_credential_gap(ready_host, now=NOW)
+    assert "mật khẩu ứng dụng" in gap
+    assert schedule_credential_gap(ready_host, now=datetime(2026, 9, 23, 7, 0, 0)) == ""
+    assert schedule_credential_gap(_ready(), now=NOW) == ""
+
+    no_host = _ready(host="", to="a@congty.example", username="a@congty.example")
+    assert "máy chủ SMTP" in schedule_credential_gap(no_host, now=NOW)
+    assert "Nâng cao" in schedule_credential_gap(no_host, now=NOW)
+
+    cfg = MemCfg(
+        email_report_smtp_password="",
+        email_report_smtp_host="smtp.gmail.com",
+        email_report_to="a@gmail.com",
+        email_report_smtp_username="a@gmail.com",
+    )
+    noted = note_schedule_credential_gap(cfg, now=NOW)
+    assert noted == cfg.get("email_report_last_error")
+    assert "mật khẩu ứng dụng" in noted
+    note_schedule_credential_gap(cfg, now=NOW)
+    assert cfg.get("email_report_last_error") == noted
+    assert report_is_due(_ready(password="", host=""), now=NOW) is False
+
+
 def test_scheduler_hooks_the_report_and_settings_ui_exists():
     from core.scheduler import BackgroundScheduler
     source = inspect.getsource(BackgroundScheduler._tick)
     assert "_maybe_send_email_report" in source
-    assert inspect.getsource(BackgroundScheduler._maybe_send_email_report)
+    method = inspect.getsource(BackgroundScheduler._maybe_send_email_report)
+    assert "note_schedule_credential_gap" in method
 
+    from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication, QLabel, QLineEdit
     previous_secrets = os.environ.get("PCAUTOCLEANER_SECRETS_PATH")
     previous_companion = os.environ.get("PCAUTOCLEANER_COMPANION_DIR")
@@ -597,10 +755,36 @@ def test_scheduler_hooks_the_report_and_settings_ui_exists():
         assert win.spin_email_hour.value() == 8
         assert win.spin_email_minute.value() == 0
         assert win.edit_smtp_password.echoMode() == QLineEdit.Password
+        assert win.btn_email_advanced.isChecked() is False
+        assert "Nâng cao" in win.btn_email_advanced.text()
+        assert win.email_advanced_box.testAttribute(Qt.WA_WState_Hidden)
+        assert win.email_advanced_box.isAncestorOf(win.edit_smtp_host)
+        assert win.email_advanced_box.isAncestorOf(win.edit_smtp_user)
+        assert win.email_advanced_box.isAncestorOf(win.chk_email_tls)
+        assert win.email_advanced_box.isAncestorOf(win.edit_email_from)
+        assert not win.email_advanced_box.isAncestorOf(win.edit_smtp_password)
+        assert not win.email_advanced_box.isAncestorOf(win.edit_email_to)
         labels = "\n".join(label.text() for label in win.findChildren(QLabel))
         assert "máy này" in labels
         assert "máy chủ mail" in labels
+        assert "mật khẩu ứng dụng" in labels.lower()
+        assert "GitHub" in labels
         win.chk_email_report.setChecked(True)
+        win.edit_email_to.setText("ban@gmail.com")
+        win.edit_smtp_host.clear()
+        win.edit_smtp_user.clear()
+        win.edit_smtp_password.setText(SECRET)
+        win._save_email_report_settings()
+        assert cfg.get("email_report_smtp_host") == "smtp.gmail.com"
+        assert cfg.get("email_report_smtp_port") == 587
+        assert cfg.get("email_report_smtp_use_tls") is True
+        assert cfg.get("email_report_smtp_use_ssl") is False
+        assert cfg.get("email_report_smtp_username") == "ban@gmail.com"
+        assert win.btn_email_advanced.isChecked() is False
+        win.btn_email_advanced.setChecked(True)
+        assert win.edit_smtp_host.text() == "smtp.gmail.com"
+        assert not win.email_advanced_box.testAttribute(Qt.WA_WState_Hidden)
+        win.btn_email_advanced.setChecked(False)
         win.edit_email_to.setText("ban@example.com")
         win.edit_smtp_host.setText("smtp.example.com")
         win.edit_smtp_user.setText("ban@example.com")
@@ -613,6 +797,23 @@ def test_scheduler_hooks_the_report_and_settings_ui_exists():
         assert cfg.get(PASSWORD_KEY) == SECRET
         assert cfg.get("email_report_enabled") is True
         assert cfg.get("email_report_frequency") == "weekly"
+        assert cfg.get("email_report_smtp_host") == "smtp.example.com"
+        win._loading_settings = True
+        try:
+            win._load_email_report_settings(cfg.config)
+        finally:
+            win._loading_settings = False
+        assert win.btn_email_advanced.isChecked() is True
+        assert win.edit_smtp_host.text() == "smtp.example.com"
+        assert not win.email_advanced_box.testAttribute(Qt.WA_WState_Hidden)
+        win.edit_email_to.setText("ban@congty.example")
+        win.edit_smtp_host.clear()
+        win.edit_smtp_user.clear()
+        win._save_email_report_settings()
+        assert cfg.get("email_report_smtp_host") == ""
+        assert cfg.get("email_report_smtp_username") == "ban@congty.example"
+        assert "Nâng cao" in win.lbl_email_smtp_hint.text()
+        assert not win.lbl_email_smtp_hint.testAttribute(Qt.WA_WState_Hidden)
         app.processEvents()
     finally:
         if win is not None:
