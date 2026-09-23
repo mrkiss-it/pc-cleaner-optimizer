@@ -26,6 +26,8 @@ MAX_NOTE_LEN = 120
 PROFILE_VERSION = 1
 MUTE_DAYS = 7
 SOFT_MUTE_DAYS = 2
+QUIET_HOURS_START = "23:00"
+QUIET_HOURS_END = "07:00"
 # Trust is computed, not trained. Fewer than this many accept/reject rows stays "steady".
 TRUST_MIN_SAMPLE = 3
 WINDOW_PHRASE = "Thường vào khung giờ này trên máy này"
@@ -142,6 +144,49 @@ def profile_path(base_dir: Optional[str] = None) -> str:
     return os.path.join(base_dir or companion_dir(), PROFILE_FILENAME)
 
 
+def _default_quiet_hours() -> Dict[str, Any]:
+    return {
+        "enabled": False,
+        "start": QUIET_HOURS_START,
+        "end": QUIET_HOURS_END,
+        "allow_actions": False,
+    }
+
+
+def _clean_hhmm(value: Any, fallback: str) -> str:
+    raw = str(value or "").strip()
+    parts = raw.split(":")
+    if len(parts) != 2:
+        return fallback
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except (TypeError, ValueError):
+        return fallback
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return fallback
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _hhmm_minutes(value: str) -> Optional[int]:
+    cleaned = _clean_hhmm(value, "")
+    if not cleaned:
+        return None
+    hour, minute = cleaned.split(":")
+    return int(hour) * 60 + int(minute)
+
+
+def _clean_quiet_hours(raw: Any) -> Dict[str, Any]:
+    base = _default_quiet_hours()
+    if not isinstance(raw, dict):
+        return base
+    base["enabled"] = bool(raw.get("enabled"))
+    base["start"] = _clean_hhmm(raw.get("start"), QUIET_HOURS_START)
+    base["end"] = _clean_hhmm(raw.get("end"), QUIET_HOURS_END)
+    base["allow_actions"] = bool(raw.get("allow_actions"))
+    return base
+
+
 def default_profile() -> Dict[str, Any]:
     return {
         "version": PROFILE_VERSION,
@@ -158,6 +203,7 @@ def default_profile() -> Dict[str, Any]:
         "topic_coaching": {},
         "corrections": [],
         "preferences": [],
+        "quiet_hours": _default_quiet_hours(),
     }
 
 
@@ -211,6 +257,7 @@ def load_profile(base_dir: Optional[str] = None) -> Dict[str, Any]:
     corrections, preferences = _split_notes(merged.get("corrections"), merged.get("preferences"))
     merged["corrections"] = corrections
     merged["preferences"] = preferences
+    merged["quiet_hours"] = _clean_quiet_hours(merged.get("quiet_hours"))
     return merged
 
 
@@ -227,8 +274,76 @@ def save_profile(profile: Dict[str, Any], base_dir: Optional[str] = None) -> Dic
     corrections, preferences = _split_notes(payload.get("corrections"), payload.get("preferences"))
     payload["corrections"] = corrections
     payload["preferences"] = preferences
+    payload["quiet_hours"] = _clean_quiet_hours(payload.get("quiet_hours"))
     _atomic_write_json(profile_path(base_dir), payload)
     return payload
+
+
+def quiet_hours_settings(
+    profile: Optional[Dict[str, Any]] = None,
+    base_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Saved quiet-hours window. Off until the user enables the suggested 23:00–07:00."""
+    data = profile if isinstance(profile, dict) else load_profile(base_dir)
+    return _clean_quiet_hours(data.get("quiet_hours"))
+
+
+def set_quiet_hours(
+    enabled: bool,
+    *,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    allow_actions: Optional[bool] = None,
+    base_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist the optional quiet window on the companion profile."""
+    profile = load_profile(base_dir)
+    current = _clean_quiet_hours(profile.get("quiet_hours"))
+    current["enabled"] = bool(enabled)
+    if start is not None:
+        current["start"] = _clean_hhmm(start, current["start"])
+    if end is not None:
+        current["end"] = _clean_hhmm(end, current["end"])
+    if allow_actions is not None:
+        current["allow_actions"] = bool(allow_actions)
+    profile["quiet_hours"] = current
+    save_profile(profile, base_dir=base_dir)
+    return current
+
+
+def in_quiet_hours(
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True when quiet hours are on and ``now`` falls inside the window.
+
+    A window that crosses midnight (23:00–07:00) counts the late evening and
+    the early morning. The end minute is exclusive, so 07:00 is morning again.
+    """
+    settings = quiet_hours_settings(profile, base_dir)
+    if not settings.get("enabled"):
+        return False
+    start = _hhmm_minutes(str(settings.get("start") or ""))
+    end = _hhmm_minutes(str(settings.get("end") or ""))
+    if start is None or end is None or start == end:
+        return False
+    stamp = now or datetime.now()
+    current = stamp.hour * 60 + stamp.minute
+    if start < end:
+        return start <= current < end
+    return current >= start or current < end
+
+
+def quiet_hours_allow_actions(
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Propose buttons during quiet hours only when the user opted in."""
+    if not in_quiet_hours(now, base_dir=base_dir, profile=profile):
+        return True
+    return bool(quiet_hours_settings(profile, base_dir).get("allow_actions"))
 
 
 def _parse_ts(value: str) -> Optional[float]:
@@ -1232,6 +1347,9 @@ def format_profile_browse(profile: Optional[Dict[str, Any]] = None, base_dir: Op
     goal_line = format_goal_status(data, base_dir=base_dir)
     if goal_line:
         lines.append(goal_line)
+    quiet = quiet_hours_settings(data)
+    if quiet.get("enabled"):
+        lines.append(f"Giờ yên lặng: {quiet.get('start')}–{quiet.get('end')}.")
     return "\n".join(lines)
 
 

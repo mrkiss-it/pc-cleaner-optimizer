@@ -1572,6 +1572,269 @@ print(" [PASS] growth timeline")
 
 
 # ---------------------------------------------------------------------------
+# Quiet hours, follow-up, outcome learning, end-of-day wrap
+# ---------------------------------------------------------------------------
+
+from core.companion_moment import (
+    answer_action_followup,
+    attach_insight_action,
+    compose_eod_wrap,
+    dismiss_action_followup,
+    dismiss_eod_wrap,
+    due_action_followup,
+    note_mute_after_action,
+    schedule_action_followup,
+    sync_eod_wrap,
+)
+from core.companion import observe_ram_optimized
+from core.companion_profile import (
+    add_user_note,
+    effective_coaching,
+    in_quiet_hours,
+    quiet_hours_settings,
+    score_trust,
+    set_quiet_hours,
+    topic_asks_more,
+    topic_is_muted,
+)
+from core.companion_skills import bump_skill_hit as _bump_skill_hit
+
+root = _fresh_dir()
+check(quiet_hours_settings(base_dir=root)["enabled"] is False, "quiet hours default off")
+check(quiet_hours_settings(base_dir=root)["start"] == "23:00", "suggested quiet start is 23:00")
+check(quiet_hours_settings(base_dir=root)["end"] == "07:00", "suggested quiet end is 07:00")
+check(not in_quiet_hours(datetime(2026, 9, 23, 2, 0), base_dir=root), "off window is not quiet")
+set_quiet_hours(True, base_dir=root)
+check(in_quiet_hours(datetime(2026, 9, 23, 23, 0), base_dir=root), "23:00 starts quiet hours")
+check(in_quiet_hours(datetime(2026, 9, 23, 2, 15), base_dir=root), "after midnight is still quiet")
+check(in_quiet_hours(datetime(2026, 9, 23, 6, 59), base_dir=root), "06:59 is still quiet")
+check(not in_quiet_hours(datetime(2026, 9, 23, 7, 0), base_dir=root), "07:00 leaves quiet hours")
+check(not in_quiet_hours(datetime(2026, 9, 23, 22, 59), base_dir=root), "22:59 is before the window")
+check(not in_quiet_hours(datetime(2026, 9, 23, 12, 0), base_dir=root), "midday is not quiet")
+set_quiet_hours(False, base_dir=root)
+check(not in_quiet_hours(datetime(2026, 9, 23, 2, 0), base_dir=root), "turning quiet hours off restores the day")
+
+quiet_nudge = _fresh_dir()
+for i in range(4):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=datetime(2026, 9, 20, 21, 10, 0) + timedelta(days=i),
+        base_dir=quiet_nudge,
+        coalesce=False,
+    )
+night = datetime(2026, 9, 23, 23, 30, 0)
+daytime = datetime(2026, 9, 23, 21, 10, 0)
+set_quiet_hours(True, base_dir=quiet_nudge)
+check(
+    plan_companion_nudge(now=night, base_dir=quiet_nudge, config_manager=_Cfg(), commit=False) is None,
+    "quiet hours suppress the calm companion toast",
+)
+still = plan_companion_nudge(now=daytime, base_dir=quiet_nudge, config_manager=_Cfg(), commit=False)
+check(still and still.get("issue_class") == "wifi_weak", "the same tip still exists outside quiet hours")
+
+night_root = _fresh_dir()
+record_app_event(
+    "wifi_weak",
+    "Wi-Fi yếu buổi tối",
+    now=datetime(2026, 9, 22, 21, 0, 0),
+    base_dir=night_root,
+    coalesce=False,
+)
+set_quiet_hours(True, base_dir=night_root)
+night_open = datetime(2026, 9, 23, 1, 30, 0)
+check(
+    sync_daily_checkin(now=night_open, base_dir=night_root, config_manager=_Cfg()) is None,
+    "quiet hours do not compose a morning check-in",
+)
+check(load_state(night_root).get("last_checkin_date") != "2026-09-23", "a night open does not consume the check-in")
+morning_after = sync_daily_checkin(
+    now=datetime(2026, 9, 23, 8, 0, 0),
+    base_dir=night_root,
+    config_manager=_Cfg(),
+)
+check(morning_after and "Hôm qua" in morning_after.get("text", ""), "morning check-in still runs after quiet hours")
+
+soft = {"id": "habit:wifi", "text": "Hôm nay: Wi-Fi yếu buổi tối trên máy này.", "topic": "wifi"}
+quiet_insight = _fresh_dir()
+set_quiet_hours(True, base_dir=quiet_insight)
+stripped = attach_insight_action(
+    soft,
+    config_manager=_Cfg(),
+    base_dir=quiet_insight,
+    now=datetime(2026, 9, 23, 23, 40, 0),
+)
+check(stripped and stripped.get("text"), "quiet hours still keep the insight line")
+check("action_key" not in (stripped or {}), "quiet hours drop propose buttons")
+check((stripped or {}).get("quiet") is True, "the insight is marked softer")
+set_quiet_hours(True, allow_actions=True, base_dir=quiet_insight)
+kept = attach_insight_action(
+    soft,
+    config_manager=_Cfg(),
+    base_dir=quiet_insight,
+    now=datetime(2026, 9, 23, 23, 40, 0),
+)
+check(kept and kept.get("action_key"), "opt-in keeps the propose button during quiet hours")
+check(kept.get("action_key") not in BLOCKED_ACTION_KEYS, "quiet-hours opt-in stays on the allowlist")
+
+follow = _fresh_dir()
+save_skill("wifi_weak", hit_count=4, base_dir=follow)
+skill_id = load_skills(follow)[0].id
+asked_at = datetime(2026, 9, 23, 15, 0, 0)
+for blocked_key in ("winsxs_cleanup", "clean_junk", "switch_dns", "auto_optimize_all", "open_companion_memory"):
+    check(
+        schedule_action_followup(blocked_key, now=asked_at, base_dir=follow, config_manager=_Cfg()) is None,
+        f"{blocked_key} does not schedule a follow-up",
+    )
+first_ask = schedule_action_followup(
+    "repair_network_now",
+    skill_id=skill_id,
+    now=asked_at,
+    base_dir=follow,
+    config_manager=_Cfg(),
+)
+check(first_ask and "Wi-Fi" in first_ask.get("question_vi", ""), "follow-up asks about Wi-Fi in Vietnamese")
+check("Gemini" not in first_ask["question_vi"] and "Ollama" not in first_ask["question_vi"], "follow-up needs no model")
+check(
+    schedule_action_followup("optimize_ram", now=asked_at, base_dir=follow, config_manager=_Cfg()) is None,
+    "only one follow-up can be pending",
+)
+check(
+    due_action_followup(now=asked_at + timedelta(minutes=20), base_dir=follow, config_manager=_Cfg()) is None,
+    "follow-up waits out its delay",
+)
+set_quiet_hours(True, base_dir=follow)
+check(
+    due_action_followup(now=datetime(2026, 9, 23, 23, 30), base_dir=follow, config_manager=_Cfg()) is None,
+    "quiet hours hide the follow-up without deleting it",
+)
+check(load_state(follow).get("pending_followup"), "the hidden follow-up is still pending")
+set_quiet_hours(False, base_dir=follow)
+due = due_action_followup(now=datetime(2026, 9, 23, 23, 40), base_dir=follow, config_manager=_Cfg())
+check(due and due.get("question_vi") == first_ask.get("question_vi"), "the follow-up returns on the next open")
+dismiss_action_followup(base_dir=follow)
+check(due_action_followup(now=asked_at + timedelta(hours=3), base_dir=follow, config_manager=_Cfg()) is None, "dismiss clears the question")
+check(
+    not any(row.get("kind") == "user_feedback" for row in read_events(base_dir=follow)),
+    "dismiss does not write a diary verdict",
+)
+
+again = schedule_action_followup(
+    "repair_network_now",
+    skill_id=skill_id,
+    now=asked_at,
+    base_dir=follow,
+    config_manager=_Cfg(),
+)
+check(again, "a new follow-up can be scheduled after dismiss")
+before_trust = score_trust(base_dir=follow, now=asked_at)
+answer_action_followup(True, now=asked_at + timedelta(hours=2), base_dir=follow, config_manager=_Cfg())
+after_yes = score_trust(base_dir=follow, now=asked_at + timedelta(hours=2))
+check(after_yes["accepted"] == before_trust["accepted"] + 1, "Có ích feeds trust")
+check(load_skills(follow)[0].hit_count == 5, "Có ích bumps skill quality")
+check(
+    any(row.get("kind") == "user_feedback" and row.get("outcome") == "accepted" for row in read_events(base_dir=follow)),
+    "Có ích is a diary line",
+)
+
+no_help = _fresh_dir()
+save_skill("high_ram", hit_count=3, base_dir=no_help)
+ram_id = load_skills(no_help)[0].id
+schedule_action_followup("optimize_ram", skill_id=ram_id, now=asked_at, base_dir=no_help, config_manager=_Cfg())
+answer_action_followup(False, now=asked_at + timedelta(hours=1), base_dir=no_help, config_manager=_Cfg())
+check(load_skills(no_help)[0].hit_count == 2, "Chưa lowers skill quality")
+check(topic_is_muted("ram", now=asked_at + timedelta(hours=1), base_dir=no_help), "Chưa soft-mutes that topic")
+check(
+    effective_coaching(topic="ram", base_dir=no_help, now=asked_at + timedelta(hours=1)) == "ask_more",
+    "Chưa weakens propose boldness for that topic",
+)
+check(score_trust(base_dir=no_help, now=asked_at + timedelta(hours=1))["rejected"] >= 1, "Chưa feeds a trust reject")
+check(_bump_skill_hit(skill_id=ram_id, delta=-5, base_dir=no_help).hit_count == 0, "skill quality does not go negative")
+
+learned = _fresh_dir()
+save_skill("wifi_weak", hit_count=3, base_dir=learned)
+learned_id = load_skills(learned)[0].id
+when = datetime(2026, 9, 23, 16, 0, 0)
+schedule_action_followup("repair_network_now", skill_id=learned_id, now=when, base_dir=learned, config_manager=_Cfg())
+observe_wifi_repaired(False, base_dir=learned, now=when + timedelta(minutes=2))
+check(load_skills(learned)[0].hit_count == 3, "a failed repair does not strengthen the skill")
+observe_wifi_repaired(True, base_dir=learned, now=when - timedelta(minutes=5))
+check(load_skills(learned)[0].hit_count == 3, "an older repair is not credited to this action")
+observe_wifi_repaired(True, base_dir=learned, now=when + timedelta(minutes=8))
+check(load_skills(learned)[0].hit_count == 4, "wifi_repaired after the action strengthens the skill")
+check(
+    score_trust(base_dir=learned, now=when + timedelta(minutes=8))["accepted"] >= 1,
+    "a real recovery strengthens trust slightly",
+)
+observe_wifi_repaired(True, base_dir=learned, now=when + timedelta(minutes=12), coalesce=False)
+check(load_skills(learned)[0].hit_count == 4, "the same recovery is credited once")
+
+ram_learn = _fresh_dir()
+save_skill("high_ram", hit_count=2, base_dir=ram_learn)
+schedule_action_followup(
+    "optimize_ram",
+    skill_id=load_skills(ram_learn)[0].id,
+    now=when,
+    base_dir=ram_learn,
+    config_manager=_Cfg(),
+)
+observe_ram_optimized(120, base_dir=ram_learn, now=when + timedelta(minutes=3))
+check(load_skills(ram_learn)[0].hit_count == 3, "ram_optimized after optimize_ram strengthens that skill")
+
+muted_after = _fresh_dir()
+save_skill("wifi_weak", hit_count=4, base_dir=muted_after)
+schedule_action_followup(
+    "repair_network_now",
+    skill_id=load_skills(muted_after)[0].id,
+    now=when,
+    base_dir=muted_after,
+    config_manager=_Cfg(),
+)
+mute_topic("wifi", days=7, base_dir=muted_after, now=when + timedelta(minutes=1))
+check(note_mute_after_action("wifi", base_dir=muted_after, now=when + timedelta(minutes=1)), "mute after an action is noticed")
+check(load_skills(muted_after)[0].hit_count == 3, "muting the topic after an action lowers skill quality")
+check(load_state(muted_after).get("pending_followup") is None, "mute retires the open follow-up")
+check(
+    effective_coaching(topic="wifi", base_dir=muted_after, now=when + timedelta(minutes=2)) == "ask_more",
+    "mute keeps propose boldness down",
+)
+check(not note_mute_after_action("thermal", base_dir=muted_after), "an unrelated mute does not penalize the wifi skill")
+
+bare = _fresh_dir()
+observe_wifi_repaired(True, base_dir=bare, now=when)
+check(
+    not any(row.get("tags") and "outcome" in row.get("tags") for row in read_events(base_dir=bare)),
+    "recovery without a companion action does not invent trust",
+)
+
+eod = _fresh_dir()
+afternoon = datetime(2026, 9, 23, 17, 0, 0)
+evening_open = datetime(2026, 9, 23, 19, 10, 0)
+check(sync_eod_wrap(now=evening_open, base_dir=eod, config_manager=_Cfg()) is None, "an empty evening stays quiet")
+check(not load_state(eod).get("last_eod_date"), "an empty day does not consume the wrap")
+record_app_event("wifi_weak", "Wi-Fi yếu", now=datetime(2026, 9, 23, 11, 0, 0), base_dir=eod, coalesce=False)
+record_app_event("wifi_repaired", "Wi-Fi đã ổn định lại", now=datetime(2026, 9, 23, 11, 20, 0), base_dir=eod, coalesce=False, outcome="ok")
+check(compose_eod_wrap(now=afternoon, base_dir=eod, config_manager=_Cfg()) is None, "before 18:00 there is no wrap")
+set_goal("ổn định Wi-Fi trước họp", base_dir=eod, now=datetime(2026, 9, 23, 9, 0, 0))
+add_user_note("Wi-Fi yếu vì kênh DFS", base_dir=eod, now=datetime(2026, 9, 23, 9, 5, 0))
+set_quiet_hours(True, start="18:00", end="23:00", base_dir=eod)
+check(sync_eod_wrap(now=evening_open, base_dir=eod, config_manager=_Cfg()) is None, "quiet hours skip the evening wrap")
+check(not load_state(eod).get("last_eod_date"), "skipping for quiet hours does not consume the day")
+set_quiet_hours(False, base_dir=eod)
+wrap = sync_eod_wrap(now=evening_open, base_dir=eod, config_manager=_Cfg())
+check(wrap and wrap.get("text", "").startswith("Cuối ngày:"), "evening wrap is a short local line")
+check("Wi-Fi" in wrap["text"], "the wrap uses today's diary")
+check("Mục tiêu" in wrap["text"], "the wrap keeps the goal")
+check("DFS" in wrap["text"], "the wrap includes one matching correction")
+check("Gemini" not in wrap["text"] and "Ollama" not in wrap["text"], "the wrap does not call a model")
+again_wrap = sync_eod_wrap(now=evening_open.replace(hour=21), base_dir=eod, config_manager=_Cfg())
+check(again_wrap and again_wrap.get("text") == wrap.get("text"), "one wrap per evening")
+dismiss_eod_wrap(base_dir=eod, now=evening_open.replace(hour=21, minute=30))
+check(sync_eod_wrap(now=evening_open.replace(hour=22), base_dir=eod, config_manager=_Cfg()) is None, "dismiss hides the wrap")
+print(" [PASS] quiet hours, follow-up, outcomes, end-of-day wrap")
+
+
+# ---------------------------------------------------------------------------
 # Qt smoke: Settings card + memory dialog
 # ---------------------------------------------------------------------------
 
@@ -1587,6 +1850,12 @@ check("&" not in card.btn_manage.text(), "manage button has no Qt mnemonic amper
 check(hasattr(card, "lbl_legend") and "Mới gặp" in card.lbl_legend.text(), "card shows stage legend")
 check(hasattr(card, "lbl_reason") and "ngày dùng" in card.lbl_reason.text(), "card explains why the stage is what it is")
 check(hasattr(card, "chk_nudges") and "thói quen" in card.chk_nudges.text(), "card can turn calm nudges off")
+check(hasattr(card, "chk_quiet") and "23:00" in card.chk_quiet.text() and "07:00" in card.chk_quiet.text(), "card offers quiet hours")
+check("toast" not in card.chk_quiet.text().lower(), "quiet-hours label stays in Vietnamese")
+check(not card.chk_quiet.isChecked(), "quiet hours start off")
+check(card.insight_bar.btn_follow_yes.text() == "Có ích", "follow-up can be marked helpful")
+check(card.insight_bar.btn_follow_no.text() == "Chưa", "follow-up can be marked not yet")
+check(hasattr(card.insight_bar, "lbl_eod") and hasattr(card.insight_bar, "btn_eod_hide"), "card has an end-of-day line")
 check(hasattr(card, "txt_goal") and "Wi-Fi" in card.txt_goal.placeholderText(), "card has one optional goal field")
 check(hasattr(card, "txt_correction") and "Sửa cho mình" in card.txt_correction.placeholderText(), "card can teach a short correction")
 check("Chưa có lời sửa" in card.lbl_correction.text(), "empty correction stays quiet")
@@ -1652,6 +1921,28 @@ dlg = CompanionDialog(config_manager=_Cfg())
 check(dlg.list_diary.count() >= 1, "dialog lists the new wifi episode")
 check("Đang học" in dlg.lbl_legend.text() or "ngày dùng" in dlg.lbl_legend.text(), "dialog explains the stage")
 dlg.close()
+
+ui_root = _fresh_dir()
+card.chk_quiet.setChecked(True)
+saved_quiet = quiet_hours_settings(base_dir=ui_root)
+check(saved_quiet["enabled"] is True and saved_quiet["start"] == "23:00", "the card persists quiet hours")
+card.chk_quiet.setChecked(False)
+check(quiet_hours_settings(base_dir=ui_root)["enabled"] is False, "the card can turn quiet hours off")
+schedule_action_followup("optimize_ram", now=datetime.now() - timedelta(hours=2), base_dir=ui_root, config_manager=_Cfg())
+card.insight_bar.refresh()
+check("RAM" in card.insight_bar.lbl_follow.text(), "a due follow-up shows on the insight bar")
+check(not card.insight_bar.btn_follow_yes.isHidden(), "Có ích is one tap")
+card.insight_bar.btn_follow_yes.click()
+check(card.insight_bar.lbl_follow.text() == "", "answering clears the follow-up")
+today_key = datetime.now().strftime("%Y-%m-%d")
+state = load_state(ui_root)
+state["last_eod_date"] = today_key
+state["pending_eod"] = {"date": today_key, "text": "Cuối ngày: hôm nay Wi-Fi chưa ổn.", "topic": "wifi"}
+save_state(state, base_dir=ui_root)
+card.insight_bar.refresh()
+check(card.insight_bar.lbl_eod.text().startswith("Cuối ngày:"), "the evening wrap uses the insight bar")
+card.insight_bar.btn_eod_hide.click()
+check(card.insight_bar.lbl_eod.text() == "", "Ẩn clears the evening wrap")
 card.deleteLater()
 print(" [PASS] companion card/dialog Qt smoke")
 
