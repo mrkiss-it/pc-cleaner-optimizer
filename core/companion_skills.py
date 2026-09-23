@@ -173,6 +173,37 @@ def save_skills(skills: List[CompanionSkill], base_dir: Optional[str] = None) ->
     _atomic_write_json(skills_path(base_dir), payload)
 
 
+def bump_skill_hit(
+    skill_id: str = "",
+    issue_class: str = "",
+    base_dir: Optional[str] = None,
+) -> Optional[CompanionSkill]:
+    """+1 hit_count when the user taps a skill-backed insight or check-in button.
+
+    Showing the line does not count. If this stage cannot run the skill's own
+    action, the nearest allowlisted button still counts — the tap came from
+    that skill.
+    """
+    wanted_id = str(skill_id or "").strip()
+    wanted_issue = str(issue_class or "").strip().lower()
+    if not wanted_id and not wanted_issue:
+        return None
+    skills = load_skills(base_dir)
+    found: Optional[CompanionSkill] = None
+    for skill in skills:
+        if wanted_id and skill.id == wanted_id:
+            found = skill
+            break
+        if wanted_issue and skill.issue_class == wanted_issue:
+            found = skill
+            break
+    if found is None:
+        return None
+    found.hit_count = int(found.hit_count or 0) + 1
+    save_skills(skills, base_dir=base_dir)
+    return found
+
+
 def has_skill(issue_class: str, base_dir: Optional[str] = None) -> bool:
     target = str(issue_class or "").lower()
     return any(s.issue_class == target for s in load_skills(base_dir))

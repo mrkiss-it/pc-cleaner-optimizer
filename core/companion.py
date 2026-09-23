@@ -72,6 +72,7 @@ STAGE_LEGEND_VI = (
 
 _last_postscript_at = 0.0
 _last_postscript_sig = ""
+_syncing_stage = False
 
 _MEMORY_HINTS = (
     "nhat ky", "nhật ký", "so tay", "sổ tay", "giai doan", "giai đoạn",
@@ -142,6 +143,11 @@ def record_app_event(
 ) -> Optional[Dict[str, Any]]:
     if config_manager is not None and not is_enabled(config_manager):
         return None
+    if str(kind or "") != "stage_up":
+        try:
+            maybe_note_stage_up(config_manager=config_manager, base_dir=base_dir, now=now)
+        except Exception:
+            pass
     try:
         event = append_event(
             kind,
@@ -162,9 +168,126 @@ def record_app_event(
                 refresh_profile(base_dir=base_dir, now=now)
             except Exception:
                 pass
+            if str(kind or "") != "stage_up":
+                try:
+                    maybe_note_stage_up(config_manager=config_manager, base_dir=base_dir, now=now)
+                except Exception:
+                    pass
         return event
     except Exception:
         return None
+
+
+def _pending_stage_payload(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    pending = state.get("pending_stage_up")
+    if isinstance(pending, dict) and str(pending.get("text") or "").strip():
+        return pending
+    return None
+
+
+def pending_stage_celebration(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """Undismissed stage-up line for the day it happened.
+
+    A later calendar day drops the banner without writing another diary event,
+    so reopening the app does not celebrate the same stage again.
+    """
+    state = load_state(base_dir)
+    pending = _pending_stage_payload(state)
+    if not pending:
+        return None
+    day = str(pending.get("date") or "")[:10]
+    today = (now or datetime.now()).strftime("%Y-%m-%d")
+    if day and today and day < today:
+        state["pending_stage_up"] = None
+        save_state(state, base_dir=base_dir)
+        return None
+    return pending
+
+
+def dismiss_stage_celebration(base_dir: Optional[str] = None) -> None:
+    """Hide the banner. last_celebrated_stage stays so the same stage is not announced again."""
+    state = load_state(base_dir)
+    state["pending_stage_up"] = None
+    save_state(state, base_dir=base_dir)
+
+
+def maybe_note_stage_up(
+    config_manager: Optional[Any] = None,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """Diary + one banner when compute_stage rises. The first sight of an existing stage is silent.
+
+    Celebration is one-shot per stage via last_celebrated_stage. Dismiss clears the banner only.
+    A later drop (for example deleting the skill that earned the stage) can celebrate
+    again only if the stage climbs past the last celebrated value.
+    """
+    global _syncing_stage
+    if _syncing_stage:
+        return None
+    if config_manager is not None and not is_enabled(config_manager):
+        return None
+    info = current_stage(config_manager=config_manager, base_dir=base_dir)
+    state = load_state(base_dir)
+    recorded = state.get("last_recorded_stage")
+    celebrated = state.get("last_celebrated_stage")
+    if recorded is None:
+        state["last_recorded_stage"] = info.stage
+        if celebrated is None:
+            state["last_celebrated_stage"] = info.stage
+        save_state(state, base_dir=base_dir)
+        return None
+    try:
+        recorded_n = int(recorded)
+    except (TypeError, ValueError):
+        recorded_n = info.stage
+    try:
+        celebrated_n = int(celebrated) if celebrated is not None else -1
+    except (TypeError, ValueError):
+        celebrated_n = -1
+    if info.stage < recorded_n:
+        state["last_recorded_stage"] = info.stage
+        save_state(state, base_dir=base_dir)
+        return _pending_stage_payload(state)
+    if info.stage == recorded_n:
+        return _pending_stage_payload(state)
+    reason = explain_stage_vi(info.active_days, info.positive_feedback, info.skills_count)
+    head = reason.split(".", 1)[0].strip()
+    banner = f"Mình vừa lên giai đoạn {info.stage} · {info.name_vi} — {head}."
+    summary = f"Mình vừa lên giai đoạn {info.stage} · {info.name_vi}. {reason}"
+    stamp = now or datetime.now()
+    if info.stage > celebrated_n:
+        _syncing_stage = True
+        try:
+            record_app_event(
+                "stage_up",
+                summary,
+                metrics={"stage": info.stage},
+                source="companion",
+                now=stamp,
+                base_dir=base_dir,
+                config_manager=config_manager,
+                outcome="ok",
+                tags=["stage"],
+                coalesce=False,
+            )
+        finally:
+            _syncing_stage = False
+        state = load_state(base_dir)
+        state["pending_stage_up"] = {
+            "stage": info.stage,
+            "name_vi": info.name_vi,
+            "reason_vi": reason,
+            "text": banner,
+            "date": stamp.strftime("%Y-%m-%d"),
+        }
+        state["last_celebrated_stage"] = info.stage
+    state["last_recorded_stage"] = info.stage
+    save_state(state, base_dir=base_dir)
+    return _pending_stage_payload(load_state(base_dir))
 
 
 def _refresh_skill_offer(base_dir: Optional[str] = None, now: Optional[datetime] = None) -> None:
@@ -245,6 +368,7 @@ def note_user_feedback(
     base_dir: Optional[str] = None,
     now: Optional[datetime] = None,
     config_manager: Optional[Any] = None,
+    topic: str = "",
 ) -> StageInfo:
     add_feedback(helpful, base_dir=base_dir, now=now)
     summary = "Người dùng thấy AI đồng hành hữu ích." if helpful else "Người dùng thấy gợi ý chưa khớp máy này."
@@ -267,6 +391,7 @@ def note_user_feedback(
             base_dir=base_dir,
             now=now,
             config_manager=config_manager,
+            topic=topic,
         )
     except Exception:
         pass
@@ -850,6 +975,15 @@ def build_prompt_context(
         f"Giai đoạn: {stage.badge_vi()} ({stage.active_days} ngày dùng máy).",
         stage.blurb_vi,
         f"Quy tắc: {policy}",
+    ]
+    try:
+        from core.companion_profile import format_muted_policy
+        muted_line = format_muted_policy(base_dir=base_dir, now=now)
+    except Exception:
+        muted_line = ""
+    if muted_line:
+        lines.append(muted_line)
+    lines.extend([
         "Về máy này:",
         profile_text,
         "Mục tiêu:",
@@ -863,7 +997,7 @@ def build_prompt_context(
         "Sổ tay:",
         note,
         "Không bịa kỷ niệm. Nếu nhật ký trống, nói chưa có dữ liệu.",
-    ]
+    ])
     offer = pending_skill_offer(base_dir)
     if offer:
         lines.append(
@@ -1338,6 +1472,20 @@ def observe_suggestion(accepted: bool, action_key: str = "", title: str = "", **
     )
 
 
+def _nudge_topic_blocked(issue_class: str, base_dir: Optional[str], now: datetime) -> bool:
+    """Muted topics and topic-level ask-more stay out of proactive nudges."""
+    try:
+        from core.companion_profile import active_muted_topics, topic_asks_more, topic_for_issue
+        topic = topic_for_issue(issue_class)
+        if not topic:
+            return False
+        if topic in active_muted_topics(base_dir=base_dir, now=now):
+            return True
+        return topic_asks_more(topic, base_dir=base_dir)
+    except Exception:
+        return False
+
+
 def _notifications_allowed(config_manager: Optional[Any]) -> bool:
     if config_manager is None:
         return True
@@ -1377,6 +1525,7 @@ def plan_companion_nudge(
     if not mature and not enough:
         return None
     hints = derive_machine_hints(events, load_skills(base_dir), limit=3, now=stamp, for_nudge=True)
+    hints = [item for item in hints if not _nudge_topic_blocked(str(item.get("issue_class") or ""), base_dir, stamp)]
     if not hints:
         return None
     chosen = hints[0]

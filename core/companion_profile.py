@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from config_manager import companion_dir
@@ -21,6 +21,8 @@ MAX_HABITS = 6
 MAX_GOAL_LEN = 80
 MAX_DISMISSED = 24
 PROFILE_VERSION = 1
+MUTE_DAYS = 7
+SOFT_MUTE_DAYS = 2
 
 TOPIC_META: Dict[str, Dict[str, Any]] = {
     "wifi": {
@@ -144,6 +146,8 @@ def default_profile() -> Dict[str, Any]:
         "insight_snooze_date": "",
         "habits_after": "",
         "last_chat": None,
+        "muted_topics": {},
+        "topic_coaching": {},
     }
 
 
@@ -192,6 +196,8 @@ def load_profile(base_dir: Optional[str] = None) -> Dict[str, Any]:
         }
     else:
         merged["last_chat"] = None
+    merged["muted_topics"] = _clean_muted(merged.get("muted_topics"))
+    merged["topic_coaching"] = _clean_topic_coaching(merged.get("topic_coaching"))
     return merged
 
 
@@ -203,6 +209,8 @@ def save_profile(profile: Dict[str, Any], base_dir: Optional[str] = None) -> Dic
     payload["dismissed_insights"] = [
         str(item) for item in (payload.get("dismissed_insights") or []) if str(item).strip()
     ][-MAX_DISMISSED:]
+    payload["muted_topics"] = _clean_muted(payload.get("muted_topics"))
+    payload["topic_coaching"] = _clean_topic_coaching(payload.get("topic_coaching"))
     _atomic_write_json(profile_path(base_dir), payload)
     return payload
 
@@ -256,6 +264,230 @@ def infer_topics(text: str) -> List[str]:
 
 def topic_issue(topic: str) -> str:
     return str((TOPIC_META.get(topic) or {}).get("issue") or "")
+
+
+def topic_for_issue(issue_class: str) -> str:
+    wanted = str(issue_class or "").strip().lower()
+    if not wanted:
+        return ""
+    for topic, meta in TOPIC_META.items():
+        if str(meta.get("issue") or "") == wanted:
+            return topic
+    return ""
+
+
+def _clean_topic_coaching(raw: Any) -> Dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for topic, mode in raw.items():
+        key = str(topic or "").strip()
+        if key in TOPIC_META and str(mode or "") == "ask_more":
+            out[key] = "ask_more"
+    return out
+
+
+def _parse_mute(value: Any) -> Optional[Dict[str, str]]:
+    if isinstance(value, str):
+        until, reason = value, "user"
+    elif isinstance(value, dict):
+        until = str(value.get("until") or "")
+        reason = str(value.get("reason") or "user")
+    else:
+        return None
+    try:
+        when = datetime.fromisoformat(str(until).replace("Z", ""))
+    except Exception:
+        return None
+    if reason not in ("user", "feedback"):
+        reason = "user"
+    return {
+        "until": when.replace(microsecond=0).isoformat(timespec="seconds"),
+        "reason": reason,
+    }
+
+
+def _clean_muted(raw: Any) -> Dict[str, Dict[str, str]]:
+    """Keep well-formed mutes, including ones a simulated clock would call expired."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for topic, value in raw.items():
+        key = str(topic or "").strip()
+        if key not in TOPIC_META:
+            continue
+        parsed = _parse_mute(value)
+        if parsed:
+            out[key] = parsed
+    return out
+
+
+def active_muted_topics(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, str]]:
+    data = profile if isinstance(profile, dict) else load_profile(base_dir)
+    stamp = now or datetime.now()
+    active: Dict[str, Dict[str, str]] = {}
+    for topic, meta in _clean_muted(data.get("muted_topics")).items():
+        try:
+            until = datetime.fromisoformat(meta["until"])
+        except Exception:
+            continue
+        if until > stamp:
+            active[topic] = meta
+    return active
+
+
+def topic_is_muted(
+    topic: str,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> bool:
+    key = str(topic or "").strip()
+    return bool(key) and key in active_muted_topics(base_dir=base_dir, now=now, profile=profile)
+
+
+def topic_asks_more(
+    topic: str,
+    base_dir: Optional[str] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> bool:
+    data = profile if isinstance(profile, dict) else load_profile(base_dir)
+    coaching = data.get("topic_coaching") if isinstance(data.get("topic_coaching"), dict) else {}
+    return str(coaching.get(str(topic or "").strip()) or "") == "ask_more"
+
+
+def mute_topic(
+    topic: str,
+    days: int = MUTE_DAYS,
+    reason: str = "user",
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[str]:
+    """Hide a topic from insight and nudges until the cooldown ends. Copilot may still answer."""
+    key = str(topic or "").strip()
+    if key not in TOPIC_META:
+        return None
+    try:
+        span = max(1, int(days))
+    except (TypeError, ValueError):
+        span = MUTE_DAYS
+    stamp = now or datetime.now()
+    until_dt = (stamp + timedelta(days=span)).replace(microsecond=0)
+    reason_key = "feedback" if str(reason or "") == "feedback" else "user"
+    profile = load_profile(base_dir)
+    muted = _clean_muted(profile.get("muted_topics"))
+    existing = muted.get(key)
+    if existing and reason_key == "feedback":
+        try:
+            old_until = datetime.fromisoformat(existing["until"])
+        except Exception:
+            old_until = None
+        if old_until is not None and old_until > until_dt:
+            return existing["until"]
+    until = until_dt.isoformat(timespec="seconds")
+    muted[key] = {"until": until, "reason": reason_key}
+    profile["muted_topics"] = muted
+    save_profile(profile, base_dir=base_dir)
+    return until
+
+
+def unmute_topic(topic: str, base_dir: Optional[str] = None) -> bool:
+    """Clear one mute and that topic's ask-more coaching. A hard mute is the user's call."""
+    key = str(topic or "").strip()
+    if not key:
+        return False
+    profile = load_profile(base_dir)
+    muted = _clean_muted(profile.get("muted_topics"))
+    coaching = _clean_topic_coaching(profile.get("topic_coaching"))
+    had = key in muted or key in coaching
+    muted.pop(key, None)
+    coaching.pop(key, None)
+    profile["muted_topics"] = muted
+    profile["topic_coaching"] = coaching
+    save_profile(profile, base_dir=base_dir)
+    return had
+
+
+def clear_feedback_mute(topic: str, base_dir: Optional[str] = None) -> bool:
+    """Helpful feedback lifts a soft mute. An explicit «đừng nhắc» mute stays."""
+    key = str(topic or "").strip()
+    if key not in TOPIC_META:
+        return False
+    profile = load_profile(base_dir)
+    muted = _clean_muted(profile.get("muted_topics"))
+    current = muted.get(key)
+    if not current or current.get("reason") != "feedback":
+        return False
+    muted.pop(key, None)
+    profile["muted_topics"] = muted
+    save_profile(profile, base_dir=base_dir)
+    return True
+
+
+def clear_muted_topics(base_dir: Optional[str] = None) -> int:
+    profile = load_profile(base_dir)
+    muted = _clean_muted(profile.get("muted_topics"))
+    count = len(muted)
+    profile["muted_topics"] = {}
+    profile["topic_coaching"] = {}
+    save_profile(profile, base_dir=base_dir)
+    return count
+
+
+def set_topic_coaching(topic: str, ask_more: bool, base_dir: Optional[str] = None) -> None:
+    key = str(topic or "").strip()
+    if key not in TOPIC_META:
+        return
+    profile = load_profile(base_dir)
+    coaching = _clean_topic_coaching(profile.get("topic_coaching"))
+    if ask_more:
+        coaching[key] = "ask_more"
+    else:
+        coaching.pop(key, None)
+    profile["topic_coaching"] = coaching
+    save_profile(profile, base_dir=base_dir)
+
+
+def format_muted_policy(
+    profile: Optional[Dict[str, Any]] = None,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> str:
+    """Tell Copilot not to volunteer muted topics. It may still answer a direct question."""
+    active = active_muted_topics(base_dir=base_dir, now=now, profile=profile)
+    if not active:
+        return ""
+    bits = []
+    for topic, meta in active.items():
+        name = str((TOPIC_META.get(topic) or {}).get("name") or topic)
+        until = str(meta.get("until") or "")
+        day = ""
+        if len(until) >= 10:
+            day = f"{until[8:10]}/{until[5:7]}"
+        bits.append(f"{name} đến {day}" if day else name)
+    return "Đừng chủ động nhắc: " + ", ".join(bits) + ". Vẫn trả lời nếu người dùng hỏi."
+
+
+def format_muted_browse(
+    profile: Optional[Dict[str, Any]] = None,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> str:
+    active = active_muted_topics(base_dir=base_dir, now=now, profile=profile)
+    if not active:
+        return "Không có chủ đề đang im."
+    bits = []
+    for topic, meta in active.items():
+        name = str((TOPIC_META.get(topic) or {}).get("name") or topic)
+        until = str(meta.get("until") or "")
+        day = f"{until[8:10]}/{until[5:7]}" if len(until) >= 10 else ""
+        why = "bạn bảo đừng nhắc" if meta.get("reason") == "user" else "phản hồi chưa khớp"
+        bits.append(f"{name} đến {day} ({why})" if day else f"{name} ({why})")
+    return "Đang im: " + "; ".join(bits) + "."
 
 
 def issues_for_topics(topics: Sequence[str]) -> List[str]:
@@ -644,6 +876,9 @@ def format_profile_browse(profile: Optional[Dict[str, Any]] = None, base_dir: Op
         lines.append(_EMPTY_PROFILE_VI)
     if str(data.get("coaching") or "") == "ask_more":
         lines.append("Phản hồi: gợi ý gần đây chưa khớp — hỏi thêm trước khi đề xuất.")
+    muted_line = format_muted_browse(data, base_dir=base_dir)
+    if muted_line and not muted_line.startswith("Không có"):
+        lines.append(muted_line)
     goal_line = format_goal_status(data, base_dir=base_dir)
     if goal_line:
         lines.append(goal_line)
@@ -902,7 +1137,11 @@ def current_insight(
     rows = list(events) if events is not None else recent_events(days=21, limit=0, base_dir=base_dir, now=stamp)
     candidates = build_insight_candidates(data, rows, now=stamp)
     dismissed = set(data.get("dismissed_insights") or [])
-    visible = [item for item in candidates if item.get("id") not in dismissed]
+    muted = set(active_muted_topics(now=stamp, profile=data))
+    visible = [
+        item for item in candidates
+        if item.get("id") not in dismissed and str(item.get("topic") or "") not in muted
+    ]
     if not visible:
         return None
     index = stamp.toordinal() % len(visible)

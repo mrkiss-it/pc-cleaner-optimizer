@@ -384,7 +384,7 @@ check(delete_diary_entry(ev1, base_dir=root) is True, "delete one diary row")
 left = format_diary_browse(base_dir=root)
 check("RAM cao" not in left and "Wi-Fi" in left, "other diary rows kept")
 n_cleared = clear_diary_memory(base_dir=root)
-check(n_cleared == 1, "clear diary removes remaining rows")
+check(n_cleared >= 1, "clear diary removes remaining rows")
 check(diary_is_empty(base_dir=root), "diary empty after clear")
 
 root = _fresh_dir()
@@ -481,11 +481,12 @@ for _ in range(5):
         base_dir=root,
     )
 rows = read_events(base_dir=root)
-check(len(rows) == 1, "noisy wifi episodes coalesce to one row")
-check(rows[0].get("outcome") == "warn", "wifi episode has outcome")
-check("wifi" in (rows[0].get("tags") or []), "wifi episode is tagged")
-check("evening" in (rows[0].get("tags") or []), "evening band tagged")
-check(event_weight(rows[0]) == 5, "coalesced episode keeps repeat count")
+wifi_rows = [row for row in rows if row.get("kind") == "wifi_weak"]
+check(len(wifi_rows) == 1, "noisy wifi episodes coalesce to one row")
+check(wifi_rows[0].get("outcome") == "warn", "wifi episode has outcome")
+check("wifi" in (wifi_rows[0].get("tags") or []), "wifi episode is tagged")
+check("evening" in (wifi_rows[0].get("tags") or []), "evening band tagged")
+check(event_weight(wifi_rows[0]) == 5, "coalesced episode keeps repeat count")
 check(count_by_kind(rows).get("wifi_weak") == 5, "kind counts use repeat weight")
 check(pending_skill_offer(base_dir=root)["issue_class"] == "wifi_weak", "coalesced repeats still offer a skill")
 check(observe_clean(0, ram_mb=0, base_dir=root) is None, "zero-byte clean is not a diary episode")
@@ -989,7 +990,7 @@ check(marker not in json.dumps(wired_rows, ensure_ascii=False), "ask() does not 
 print(" [PASS] chat turns update diary and habit profile")
 
 blocked = {
-    "clean_disk", "clean_junk", "clean_light", "winsxs_cleanup",
+    "clean_disk", "clean_junk", "winsxs_cleanup",
     "auto_optimize_all", "switch_dns", "registry_clean",
 }
 for key in blocked:
@@ -1120,6 +1121,222 @@ print(" [PASS] weekly digest gating")
 
 
 # ---------------------------------------------------------------------------
+# Skill button, mute, stage-up, morning check-in
+# ---------------------------------------------------------------------------
+
+from core.companion import dismiss_stage_celebration, pending_stage_celebration
+from core.companion_maturity import save_state
+from core.companion_profile import (
+    active_muted_topics,
+    clear_muted_topics,
+    mute_topic,
+    topic_asks_more,
+    topic_is_muted,
+    unmute_topic,
+)
+from core.companion_skills import bump_skill_hit
+from core.companion_moment import (
+    attach_insight_action,
+    compose_daily_checkin,
+    dismiss_daily_checkin,
+    skill_for_insight,
+    sync_daily_checkin,
+)
+
+root = _fresh_dir()
+for i in range(6):
+    day = datetime(2026, 9, 1) + timedelta(days=i)
+    record_app_event(
+        "high_ram",
+        "RAM cao 90%",
+        metrics={"ram_percent": 90},
+        now=day.replace(hour=12),
+        base_dir=root,
+        coalesce=False,
+    )
+save_skill("high_ram", hit_count=4, base_dir=root)
+# Six days plus a skill is stage 2, so the saved playbook may offer Thu hồi RAM.
+dates = [(datetime(2026, 9, 1) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6)]
+state = load_state(root)
+state["active_dates"] = dates
+state["last_recorded_stage"] = current_stage(base_dir=root).stage
+state["last_celebrated_stage"] = state["last_recorded_stage"]
+save_state(state, base_dir=root)
+ram_now = datetime(2026, 9, 10, 9, 0, 0)
+insight = current_insight(base_dir=root, now=ram_now)
+check(insight and insight.get("topic") == "ram", "ram habit is an insight topic")
+attached = attach_insight_action(insight, base_dir=root, now=ram_now)
+check(attached and attached.get("action_key") == "optimize_ram", "saved RAM skill becomes the insight button")
+check(attached.get("skill_id") == "high_ram", "insight remembers which skill backed the button")
+before = load_skills(root)[0].hit_count
+check(bump_skill_hit(skill_id=attached["skill_id"], base_dir=root).hit_count == before + 1, "tap increments hit_count once")
+check(bump_skill_hit(skill_id="missing", base_dir=root) is None, "unknown skill tap does not invent a skill")
+early = resolve_insight_action("ram", stage=1, may_propose=True, prefer_key="optimize_ram")
+check(early and early["key"] == "open_companion_memory", "RAM skill falls back to memory before stage 2")
+blocked_key = resolve_insight_action("disk", stage=3, may_propose=True, prefer_key="clean_junk")
+check(blocked_key and blocked_key["key"] == "open_companion_memory", "blocked skill action is not a button")
+save_skill("disk_low", hit_count=4, base_dir=root)
+disk_skill = resolve_insight_action("disk", stage=2, may_propose=True, prefer_key="clean_light")
+check(disk_skill and disk_skill["key"] == "clean_light", "saved disk skill offers Dọn nhẹ")
+check(is_allowed_insight_action("clean_light"), "light clean is allowlisted for a skill tap")
+check(not is_allowed_insight_action("clean_junk"), "full junk clean stays off the insight allowlist")
+check(not is_allowed_insight_action("winsxs_cleanup"), "WinSxS stays off the insight allowlist")
+check(skill_for_insight("ram", base_dir=root).issue_class == "high_ram", "insight topic finds the RAM skill")
+print(" [PASS] skill-backed insight action")
+
+root = _fresh_dir()
+evening = datetime(2026, 9, 20, 21, 0, 0)
+for i in range(4):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=evening + timedelta(days=i),
+        base_dir=root,
+        coalesce=False,
+    )
+insight_now = evening + timedelta(days=3)
+shown = current_insight(base_dir=root, now=insight_now)
+check(shown and shown.get("topic") == "wifi", "wifi insight is visible before mute")
+would_nudge = plan_companion_nudge(now=insight_now, base_dir=root, config_manager=_Cfg(), commit=False)
+check(would_nudge and would_nudge.get("issue_class") == "wifi_weak", "wifi evidence would nudge before a mute")
+mute_topic("wifi", days=7, reason="user", base_dir=root, now=insight_now)
+check(topic_is_muted("wifi", base_dir=root, now=insight_now), "mute lasts through the cooldown")
+hidden = current_insight(base_dir=root, now=insight_now)
+check(hidden is None or hidden.get("topic") != "wifi", "muted topic leaves the daily insight")
+nudge = plan_companion_nudge(now=insight_now, base_dir=root, config_manager=_Cfg())
+check(nudge is None or nudge.get("issue_class") != "wifi_weak", "muted topic is not a proactive nudge")
+asked = build_prompt_context("wifi chậm", base_dir=root, now=insight_now)
+check("Đừng chủ động nhắc" in asked and "Wi-Fi" in asked, "Copilot is told not to volunteer a muted topic")
+check("wifi_weak" in asked or "Wi-Fi" in asked, "Copilot can still see the diary if the user asks")
+check(not topic_is_muted("wifi", base_dir=root, now=insight_now + timedelta(days=8)), "mute expires after the cooldown")
+back = current_insight(base_dir=root, now=insight_now + timedelta(days=8))
+check(back and back.get("topic") == "wifi", "expired mute lets the wifi insight return")
+unmute_topic("wifi", base_dir=root)
+check(not active_muted_topics(base_dir=root, now=insight_now), "unmute clears the topic immediately")
+learn_from_chat(
+    "Wifi nhà mình chậm",
+    "Mình ghi nhận Wi-Fi, không đổi DNS.",
+    now=insight_now + timedelta(days=9),
+    base_dir=root,
+)
+note_user_feedback(False, base_dir=root, now=insight_now + timedelta(days=9, minutes=5), topic="wifi")
+check(topic_is_muted("wifi", base_dir=root, now=insight_now + timedelta(days=9, minutes=6)), "negative feedback soft-mutes the topic")
+check(topic_asks_more("wifi", base_dir=root), "negative feedback asks more before proposing that topic")
+shy_wifi = resolve_insight_action("wifi", stage=3, may_propose=True, coaching="ask_more")
+check(shy_wifi and shy_wifi["key"] != "disable_wifi_power_save", "ask-more topic does not change Wi-Fi power")
+note_user_feedback(True, base_dir=root, now=insight_now + timedelta(days=9, minutes=20), topic="wifi")
+check(not topic_asks_more("wifi", base_dir=root), "helpful feedback clears topic ask-more")
+check(not topic_is_muted("wifi", base_dir=root, now=insight_now + timedelta(days=9, minutes=21)), "helpful feedback lifts the soft mute")
+mute_topic("wifi", days=7, reason="user", base_dir=root, now=insight_now + timedelta(days=10))
+note_user_feedback(True, topic="wifi", base_dir=root, now=insight_now + timedelta(days=10, hours=2))
+check(topic_is_muted("wifi", base_dir=root, now=insight_now + timedelta(days=10, hours=3)), "helpful feedback keeps an explicit mute")
+check(clear_muted_topics(base_dir=root) >= 1, "memory screen can clear every mute")
+check(not active_muted_topics(base_dir=root), "clear mute leaves none behind")
+print(" [PASS] mute topic and feedback coaching")
+
+root = _fresh_dir()
+base_day = datetime(2026, 8, 1, 8, 0, 0)
+for i in range(6):
+    record_app_event(
+        "session_day",
+        "Phiên dùng app trên máy này",
+        now=base_day + timedelta(days=i),
+        base_dir=root,
+        coalesce=False,
+    )
+state = load_state(root)
+state["last_recorded_stage"] = 1
+state["last_celebrated_stage"] = 1
+state["pending_stage_up"] = None
+save_state(state, base_dir=root)
+before_stage = [row for row in read_events(base_dir=root) if row.get("kind") == "stage_up"]
+record_app_event(
+    "session_day",
+    "Phiên dùng app trên máy này",
+    now=base_day + timedelta(days=6),
+    base_dir=root,
+    coalesce=False,
+)
+stage_rows = [row for row in read_events(base_dir=root) if row.get("kind") == "stage_up"]
+check(len(stage_rows) == len(before_stage) + 1, "crossing into Lớn dần writes one diary line")
+latest = stage_rows[-1]
+check("giai đoạn 2" in latest["summary"].lower() or "Lớn dần" in latest["summary"], "stage-up names the new stage")
+check("ngày dùng" in latest["summary"], "stage-up cites why the stage rose")
+pending = pending_stage_celebration(root, now=base_day + timedelta(days=6))
+check(pending and pending.get("text", "").startswith("Mình vừa lên giai đoạn 2"), "stage-up banner explains the rise")
+check("ngày" in pending.get("reason_vi", "") or "ngày" in pending.get("text", ""), "banner keeps the stage reason")
+check(
+    pending_stage_celebration(root, now=base_day + timedelta(days=7)) is None,
+    "the banner does not repeat on a later day",
+)
+again = record_app_event(
+    "wifi_weak",
+    "Wi-Fi yếu",
+    now=base_day + timedelta(days=6, hours=2),
+    base_dir=root,
+    coalesce=False,
+)
+stage_rows_again = [row for row in read_events(base_dir=root) if row.get("kind") == "stage_up"]
+check(len(stage_rows_again) == len(stage_rows), "the same stage is not celebrated twice")
+check(again and again.get("kind") == "wifi_weak", "later events still record normally")
+dismiss_stage_celebration(root)
+check(pending_stage_celebration(root) is None, "dismiss hides the stage banner")
+record_app_event(
+    "wifi_weak",
+    "Wi-Fi yếu lần nữa",
+    now=base_day + timedelta(days=6, hours=3),
+    base_dir=root,
+    coalesce=False,
+)
+check(pending_stage_celebration(root) is None, "dismissed stage does not return on the next open")
+check(
+    len([row for row in read_events(base_dir=root) if row.get("kind") == "stage_up"]) == len(stage_rows),
+    "dismiss does not write another stage-up",
+)
+print(" [PASS] one-shot stage-up")
+
+root = _fresh_dir()
+quiet = compose_daily_checkin(now=datetime(2026, 9, 23, 8, 0, 0), base_dir=root, config_manager=_Cfg())
+check(quiet is None, "a brand-new machine has no morning check-in")
+yesterday = datetime(2026, 9, 22, 21, 0, 0)
+record_app_event("wifi_weak", "Wi-Fi yếu buổi tối", now=yesterday, base_dir=root, coalesce=False)
+record_app_event("thermal_warn", "Nhiệt cao", metrics={"thermal_c": 90}, now=yesterday.replace(hour=15), base_dir=root, coalesce=False)
+morning = datetime(2026, 9, 23, 8, 0, 0)
+first = sync_daily_checkin(now=morning, base_dir=root, config_manager=_Cfg())
+check(first and "Hôm qua" in first.get("text", ""), "check-in is built from yesterday")
+check("Wi-Fi" in first["text"] or "nhiệt" in first["text"], "check-in names yesterday's pattern")
+check("Gemini" not in first["text"] and "Ollama" not in first["text"], "check-in does not call a model")
+second = sync_daily_checkin(now=morning.replace(hour=18), base_dir=root, config_manager=_Cfg())
+check(second and second.get("text") == first.get("text"), "the same day reuses one check-in")
+dismiss_daily_checkin(base_dir=root, now=morning.replace(hour=19))
+check(sync_daily_checkin(now=morning.replace(hour=20), base_dir=root, config_manager=_Cfg()) is None, "dismissed check-in stays hidden today")
+next_morning = sync_daily_checkin(now=morning + timedelta(days=1), base_dir=root, config_manager=_Cfg())
+check(next_morning is None or "Hôm qua" in (next_morning.get("text") or ""), "the next day may check in again")
+goal_root = _fresh_dir()
+set_goal("ổn định Wi-Fi trước họp", base_dir=goal_root, now=morning - timedelta(days=2))
+for i in range(7):
+    record_app_event(
+        "session_day",
+        "Phiên dùng app trên máy này",
+        now=morning - timedelta(days=8 - i),
+        base_dir=goal_root,
+        coalesce=False,
+    )
+save_skill("wifi_weak", hit_count=3, base_dir=goal_root)
+goal_line = compose_daily_checkin(now=morning, base_dir=goal_root, config_manager=_Cfg(companion_may_propose_actions=True))
+check(goal_line and "Mục tiêu" in goal_line.get("text", "") or "mục tiêu" in goal_line.get("text", "").lower(), "check-in can remind an open goal")
+check(goal_line.get("action_key") in INSIGHT_ACTION_ALLOWLIST, "check-in action stays allowlisted")
+check(goal_line.get("action_key") not in ("clean_junk", "winsxs_cleanup", "switch_dns", "auto_optimize_all"), "check-in action is not destructive")
+mute_topic("wifi", days=7, base_dir=goal_root, now=morning)
+muted_line = compose_daily_checkin(now=morning + timedelta(days=1), base_dir=goal_root, config_manager=_Cfg())
+check("Wi-Fi" not in (muted_line or {}).get("text", ""), "check-in does not name a muted topic")
+check((muted_line or {}).get("topic") != "wifi", "check-in does not lead with a muted topic")
+off = sync_daily_checkin(now=morning, base_dir=root, config_manager=_Cfg(companion_enabled=False))
+check(off is None, "check-in respects companion_enabled")
+print(" [PASS] morning check-in")
+
+
+# ---------------------------------------------------------------------------
 # Qt smoke: Settings card + memory dialog
 # ---------------------------------------------------------------------------
 
@@ -1150,6 +1367,8 @@ check(hasattr(dlg, "list_diary") and hasattr(dlg, "list_skills"), "dialog lists 
 check(hasattr(dlg, "btn_clear_all") and "bộ nhớ" in dlg.btn_clear_all.text(), "dialog can clear all memory")
 check(hasattr(dlg, "lbl_profile") and "hồ sơ" in dlg.lbl_profile.text().lower(), "dialog shows the habit profile")
 check(hasattr(dlg, "btn_clear_profile"), "dialog can clear the habit profile")
+check(hasattr(dlg, "list_muted") and hasattr(dlg, "btn_unmute_all"), "dialog can clear muted topics")
+check("im" in dlg.lbl_muted.text().lower(), "dialog says when nothing is muted")
 check("vài ngày" in dlg.lbl_diary_empty.text(), "dialog empty diary copy")
 check(dlg.list_diary.count() == 0, "new install diary list empty")
 check(dlg.list_skills.count() == 0, "new install skills list empty")
@@ -1185,7 +1404,8 @@ card.insight_action_requested.connect(lambda key: fired.append(key))
 card.insight_bar.btn_action.click()
 check(fired == [card.insight_bar._action_key], "insight button emits that one allowlisted action")
 card.insight_bar._dismiss()
-check(card.insight_bar.isHidden(), "Ẩn hides the insight on the card")
+check(card.insight_bar.lbl_insight.text() == "", "Ẩn clears today's insight line")
+check(hasattr(card.insight_bar, "btn_mute") and "nhắc" in card.insight_bar.btn_mute.text(), "insight can mute a topic")
 dlg = CompanionDialog(config_manager=_Cfg())
 check(dlg.list_diary.count() >= 1, "dialog lists the new wifi episode")
 check("Đang học" in dlg.lbl_legend.text() or "ngày dùng" in dlg.lbl_legend.text(), "dialog explains the stage")
