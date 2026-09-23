@@ -537,6 +537,11 @@ def mute_topic(
     muted[key] = {"until": until, "reason": reason_key}
     profile["muted_topics"] = muted
     save_profile(profile, base_dir=base_dir)
+    try:
+        from core.companion_learning import apply_micro_update
+        apply_micro_update("mute", topic=key, now=stamp, base_dir=base_dir)
+    except Exception:
+        pass
     return until
 
 
@@ -694,6 +699,11 @@ def snooze_tip_family(
             )
         except Exception:
             pass
+    try:
+        from core.companion_learning import apply_micro_update
+        apply_micro_update("snooze", topic=key, now=stamp, base_dir=base_dir)
+    except Exception:
+        pass
     return {"topic": key, "until": until}
 
 

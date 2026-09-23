@@ -2990,6 +2990,8 @@ print(" [PASS] pin / weekly / exam card")
 # ---------------------------------------------------------------------------
 
 from core.companion_learning import (
+    apply_micro_update,
+    format_model_panel_vi,
     learn_status_vi,
     load_daily_model,
     merge_learning_models,
@@ -2997,6 +2999,8 @@ from core.companion_learning import (
     morning_learn_clause,
     prefer_learned_topics,
     prompt_learn_line,
+    rank_propose_key,
+    save_daily_model,
     update_daily_model,
     weekly_learn_line,
 )
@@ -3064,6 +3068,8 @@ second_model = update_daily_model(now=learn_day.replace(hour=21), base_dir=learn
 check(second_model.get("topic_scores") == first_model.get("topic_scores"), "a second run the same day does not add the new Có ích")
 check(second_model.get("summary_vi") == first_model.get("summary_vi"), "the same day keeps the same lesson")
 check(second_model.get("trust_deltas") == first_model.get("trust_deltas"), "trust deltas are not stacked the same day")
+check(int((second_model.get("micro") or {}).get("helpful") or 0) >= 1, "Có ích the same day updates the micro overlay only")
+check((second_model.get("windows") or {}) == (first_model.get("windows") or {}), "the same-day overlay does not rewrite rolling windows")
 next_model = update_daily_model(now=learn_day + timedelta(days=1), base_dir=learn_root)
 next_wifi = (next_model.get("topic_scores") or {}).get("wifi") or {}
 check(next_model.get("date") == "2026-09-24", "the next morning writes a new day")
@@ -3143,6 +3149,174 @@ learn_bar.refresh()
 check("không phải AGI" in learn_bar.lbl_learned_today.text(), "the companion card shows the local learning line")
 check("Ollama" not in learn_bar.lbl_learned_today.text(), "the learning line does not mention Ollama")
 learn_bar.deleteLater()
+
+# Schema v2 — richer snapshot, same-day micro updates, behavior, honest panel.
+check(first_model.get("version") == 2, "the snapshot schema is v2")
+check(isinstance(first_model.get("lessons"), list) and first_model.get("lessons"), "the model stores short lessons")
+check(all(len(item) <= 90 for item in first_model.get("lessons") or []), "each lesson stays short")
+check("Wi-Fi" in " ".join(first_model.get("lessons") or []), "a lesson names what this PC actually did")
+week = (first_model.get("windows") or {}).get("7d") or {}
+month = (first_model.get("windows") or {}).get("30d") or {}
+check(week.get("span_days") == 7 and month.get("span_days") == 30, "rolling windows are 7 and 30 days")
+wifi_week = (week.get("topic_helpfulness") or {}).get("wifi") or {}
+check(int(wifi_week.get("helpful") or 0) >= 3, "the 7-day window counts Có ích for Wi-Fi")
+ram_week = (week.get("topic_helpfulness") or {}).get("ram") or {}
+check(int(ram_week.get("unhelpful") or 0) >= 2, "the 7-day window counts Chưa for RAM")
+check(0 <= float(week.get("rough_day_rate") or 0) <= 1, "rough-day rate stays between 0 and 1")
+check(int(week.get("focus_sessions") or 0) >= 2, "the 7-day window counts focus starts")
+check(isinstance(first_model.get("time_preference"), dict), "time-of-day preference is stored")
+wifi_pref = ((first_model.get("time_preference") or {}).get("topics") or {}).get("wifi") or {}
+check(wifi_pref.get("evening"), "evening Wi-Fi weight comes from the diary")
+affinity = first_model.get("skill_affinity") or {}
+check(int((affinity.get("repair_network_now") or {}).get("confirmed") or 0) >= 3, "Có ích raises that skill's affinity")
+check("winsxs_cleanup" not in affinity, "affinity never keeps a blocked action")
+check(0 <= float(first_model.get("confidence") or 0) <= 1, "confidence is a 0–1 familiarity signal")
+check(first_model.get("maturity_signal") in ("new", "growing", "steady", "familiar"), "maturity is a small local signal")
+check(
+    "buổi" in (first_model.get("yesterday_lesson") or "") or "buổi" in (first_model.get("yesterday_vi") or ""),
+    "yesterday's lesson names a time of day",
+)
+check(ExamMeetingFocus.is_active() is False, "schema v2 does not turn on Trước thi / họp")
+
+legacy_model = {
+    "version": 1,
+    "date": "2026-09-01",
+    "topic_scores": {"wifi": {"helpful": 1, "unhelpful": 0, "diary": 1}},
+    "summary_vi": "Hôm nay học được: Wi-Fi.",
+}
+legacy_dir = _fresh_dir()
+with open(model_path(legacy_dir), "w", encoding="utf-8") as handle:
+    json.dump(legacy_model, handle)
+loaded_legacy = load_daily_model(legacy_dir)
+check(loaded_legacy.get("version") == 2, "a v1 file is read as schema v2")
+check(loaded_legacy.get("lessons") == [], "missing lessons default to an empty list")
+check((loaded_legacy.get("windows") or {}).get("7d", {}).get("span_days") == 7, "missing windows default to empty 7-day stats")
+check(loaded_legacy.get("skill_affinity") == {}, "missing affinity defaults to empty")
+check(float(loaded_legacy.get("confidence") or 0) == 0, "missing confidence defaults to zero")
+check(int((loaded_legacy.get("topic_scores") or {}).get("wifi", {}).get("helpful") or 0) == 1, "v1 topic scores still load")
+
+micro_root = _fresh_dir()
+micro_day = datetime(2026, 9, 23, 8, 0, 0)
+record_app_event("wifi_weak", "Wi-Fi yếu buổi sáng", now=micro_day.replace(hour=7), base_dir=micro_root, coalesce=False)
+base_micro = update_daily_model(now=micro_day, base_dir=micro_root)
+note_user_feedback(True, base_dir=micro_root, now=micro_day.replace(hour=9), topic="wifi")
+after_feedback = load_daily_model(micro_root)
+check(after_feedback.get("topic_scores") == base_micro.get("topic_scores"), "micro Có ích does not rewrite topic scores")
+check(after_feedback.get("trust_deltas") == base_micro.get("trust_deltas"), "micro Có ích does not rewrite deltas")
+check(int((after_feedback.get("micro") or {}).get("helpful") or 0) == 1, "micro counts one Có ích")
+check(any("có ích" in item.lower() or "Wi-Fi" in item for item in (after_feedback.get("micro") or {}).get("lesson_candidates") or []), "micro can add one lesson candidate")
+mute_topic("ram", days=7, base_dir=micro_root, now=micro_day.replace(hour=10))
+after_mute = load_daily_model(micro_root)
+check(int((after_mute.get("micro") or {}).get("mute") or 0) == 1, "mute increments the same-day counter once")
+check(any(row.get("topic") == "ram" for row in after_mute.get("signal_log") or []), "mute is logged for the next rebuild")
+mute_topic("ram", days=7, base_dir=micro_root, now=micro_day.replace(hour=11))
+check(int((load_daily_model(micro_root).get("micro") or {}).get("mute") or 0) == 1, "the same topic is not muted twice in one day")
+snooze_tip_family("disk", now=micro_day.replace(hour=12), base_dir=micro_root)
+check(int((load_daily_model(micro_root).get("micro") or {}).get("snooze") or 0) == 1, "snooze increments the same-day counter")
+pin_favorite_action("optimize_ram", topic="ram", now=micro_day.replace(hour=13), base_dir=micro_root)
+check(int((load_daily_model(micro_root).get("micro") or {}).get("pin") or 0) == 1, "a pin increments the same-day counter")
+check(ExamMeetingFocus.is_active() is False, "pinning from the model path does not enable focus")
+apply_micro_update("rough_day", now=micro_day.replace(hour=14), base_dir=micro_root)
+apply_micro_update("rough_day", now=micro_day.replace(hour=15), base_dir=micro_root)
+check(int((load_daily_model(micro_root).get("micro") or {}).get("rough_day") or 0) == 1, "a rough-day flag is counted once per day")
+apply_micro_update("focus_end", topic="focus", now=micro_day.replace(hour=16), base_dir=micro_root)
+check(int((load_daily_model(micro_root).get("micro") or {}).get("focus_end") or 0) == 1, "ending focus updates the overlay and does not start it")
+check(ExamMeetingFocus.is_active() is False, "a focus-end micro update does not enable Trước thi / họp")
+again_same = update_daily_model(now=micro_day.replace(hour=18), base_dir=micro_root)
+check(again_same.get("micro") == load_daily_model(micro_root).get("micro"), "a same-day rebuild keeps the overlay")
+check(again_same.get("topic_scores") == base_micro.get("topic_scores"), "a same-day rebuild still does not absorb the overlay into scores")
+next_micro = update_daily_model(now=micro_day + timedelta(days=1), base_dir=micro_root)
+check((next_micro.get("micro") or {}).get("helpful") == 0, "the next full rebuild clears the overlay")
+wifi_delta_micro = ((next_micro.get("trust_deltas") or {}).get("wifi") or {}).get("delta")
+check(wifi_delta_micro == 1, "the next day counts that Có ích once, not once plus the overlay")
+check(int(((next_micro.get("windows") or {}).get("7d") or {}).get("mute") or 0) >= 1, "the next rebuild counts the mute from the log")
+check(int(((next_micro.get("windows") or {}).get("7d") or {}).get("snooze") or 0) >= 1, "the next rebuild counts the snooze from the diary")
+check(ExamMeetingFocus.is_active() is False, "the next rebuild does not enable Trước thi / họp")
+
+ranked_pin = rank_propose_key("ram", base_dir=micro_root, fallback="open_companion_memory", now=micro_day)
+check(ranked_pin == "optimize_ram", "a pin outranks the generic memory button")
+ranked_block = rank_propose_key("disk", base_dir=micro_root, fallback="winsxs_cleanup", now=micro_day)
+check(ranked_block != "winsxs_cleanup" and "winsxs" not in ranked_block, "ranking never returns a blocked key")
+helpful_voice = stage_voice(2, confidence=0.2, maturity_signal="growing")
+check(helpful_voice["boldness"] == "suggest", "low confidence does not take away a stage-2 suggestion")
+check("ngắn" in helpful_voice["tone_vi"], "low confidence asks for a shorter tone")
+calm_voice = stage_voice(3, confidence=0.2, focus_active=True, maturity_signal="growing")
+check(calm_voice["boldness"] == "ask", "focus soft mode still wins over confidence")
+familiar_voice = stage_voice(3, confidence=0.8, maturity_signal="familiar")
+check(familiar_voice["boldness"] == "specific" and "quen" in familiar_voice["tone_vi"], "a familiar signal only warms the tone")
+stable_learn = _fresh_dir()
+save_daily_model(first_model, base_dir=stable_learn)
+weak_ordered = prefer_learned_topics(
+    [
+        {"id": "tip:ram", "topic": "ram", "text": "RAM"},
+        {"id": "tip:wifi", "topic": "wifi", "text": "Wi-Fi"},
+    ],
+    base_dir=stable_learn,
+    now=learn_day,
+)
+check(all(item.get("topic") != "ram" for item in weak_ordered) or weak_ordered[-1].get("topic") == "ram", "a Chưa-heavy topic is quieter")
+check(any(item.get("topic") == "wifi" for item in weak_ordered), "a useful topic stays in the list")
+
+panel = format_model_panel_vi(first_model)
+check("Mô hình học v2" in panel, "the panel names the schema version")
+check("không phải AGI" in panel and "mạng nơ-ron" in panel, "the panel says this is local memory, not a retrained net")
+check("Ollama" not in panel and "Gemini" not in panel, "the panel does not mention a base model")
+check(panel.count("•") <= 3, "the panel shows at most three lessons")
+export_root = _fresh_dir()
+save_daily_model(first_model, base_dir=export_root)
+round_path = os.path.join(export_root, "v2.json")
+check(export_companion_memory(round_path, base_dir=export_root).get("ok") is True, "schema v2 exports with the rest of memory")
+with open(round_path, "r", encoding="utf-8") as handle:
+    round_model = json.load(handle).get("learning_model") or {}
+check(round_model.get("version") == 2, "export keeps schema version 2")
+check(round_model.get("lessons"), "export keeps the lessons")
+round_dir = _fresh_dir()
+check(import_companion_memory(round_path, mode="replace", base_dir=round_dir).get("ok") is True, "schema v2 imports")
+imported_v2 = load_daily_model(round_dir)
+check(imported_v2.get("lessons") == first_model.get("lessons"), "import keeps the same lessons")
+check(imported_v2.get("version") == 2, "import stores schema v2")
+check(ExamMeetingFocus.is_active() is False, "importing schema v2 does not enable Trước thi / họp")
+poison_aff = dict(round_model)
+poison_aff["skill_affinity"] = {
+    "winsxs_cleanup": {"score": 9, "helpful": 9, "unhelpful": 0, "confirmed": 9, "title_vi": "no", "issue_class": "winsxs"},
+    "repair_network_now": {"score": 1, "helpful": 1, "unhelpful": 0, "confirmed": 1, "title_vi": "Wi-Fi", "issue_class": "wifi_weak"},
+}
+poison_aff_path = os.path.join(learn_root, "poison-aff.json")
+with open(poison_aff_path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "kind": "pc_cleaner_companion_memory",
+        "version": 1,
+        "learning_model": poison_aff,
+    }, handle)
+poison_aff_root = _fresh_dir()
+check(import_companion_memory(poison_aff_path, mode="replace", base_dir=poison_aff_root).get("ok") is True, "affinity with a blocked key still imports")
+imported_aff = load_daily_model(poison_aff_root).get("skill_affinity") or {}
+check("winsxs_cleanup" not in imported_aff and "repair_network_now" in imported_aff, "import drops the blocked affinity and keeps the safe one")
+
+ui_model = _fresh_dir()
+ui_now = datetime.now().replace(microsecond=0)
+record_app_event(
+    "wifi_weak",
+    "Wi-Fi yếu buổi sáng",
+    now=ui_now - timedelta(days=1, hours=1),
+    base_dir=ui_model,
+    coalesce=False,
+)
+note_user_feedback(True, base_dir=ui_model, now=ui_now - timedelta(hours=20), topic="wifi")
+update_daily_model(now=ui_now, base_dir=ui_model)
+panel_bar = CompanionInsightBar(config_manager=_Cfg())
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = ui_model
+panel_bar.refresh()
+shown_model = panel_bar.lbl_model.text() or panel_bar.lbl_learned_today.text()
+check("không phải AGI" in shown_model, "the card panel stays honest")
+check("mạng nơ-ron" in panel_bar.lbl_model.text() or "Mô hình học" in panel_bar.lbl_model.text() or "không phải AGI" in panel_bar.lbl_learned_today.text(), "the card can show the learning model")
+check("Ollama" not in panel_bar.lbl_model.text(), "the model panel does not mention Ollama")
+panel_bar.deleteLater()
+panel_dlg = CompanionDialog(config_manager=_Cfg())
+check("Mô hình học" in panel_dlg.lbl_model.text() or "không phải AGI" in panel_dlg.lbl_model.text(), "memory dialog shows the learning model")
+check("mạng nơ-ron" in panel_dlg.lbl_model.text(), "memory dialog says the model is not a retrained net")
+check("Ollama" not in panel_dlg.lbl_model.text(), "memory dialog does not mention Ollama")
+panel_dlg.close()
 print(" [PASS] mô hình học mỗi ngày")
 
 print(" [PASS] companion AI suite")
