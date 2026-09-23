@@ -1037,6 +1037,173 @@ def _count_line(events: List[Dict[str, Any]]) -> str:
     return "Trong tuần: " + ", ".join(bits) + "."
 
 
+def _loose_topic(event: Dict[str, Any]) -> str:
+    topic = event_topic(event)
+    if topic:
+        return topic
+    kind = str(event.get("kind") or "")
+    if kind in ("focus_mode", "focus_end"):
+        return "focus"
+    for tag in event.get("tags") or []:
+        if str(tag) in TOPIC_META:
+            return str(tag)
+    return ""
+
+
+def _focus_session_times(
+    events: List[Dict[str, Any]],
+    now: datetime,
+    *,
+    days: int = 7,
+) -> List[datetime]:
+    """One stamp per Trước thi / họp session in the window. Start+end is not two sessions."""
+    cutoff = now - timedelta(days=max(1, int(days)))
+    starts: List[datetime] = []
+    ends: List[datetime] = []
+    for event in events:
+        moment = _event_stamp(event)
+        if moment is None or moment < cutoff or moment > now + timedelta(minutes=1):
+            continue
+        kind = str(event.get("kind") or "")
+        if kind == "focus_mode":
+            starts.append(moment)
+        elif kind == "focus_end":
+            ends.append(moment)
+    sessions = list(ends)
+    for start in starts:
+        if any(timedelta(0) <= end - start <= timedelta(hours=18) for end in ends):
+            continue
+        sessions.append(start)
+    sessions.sort()
+    return sessions
+
+
+def _rough_day_count(
+    events: List[Dict[str, Any]],
+    now: datetime,
+    muted: set,
+    *,
+    days: int = 7,
+) -> int:
+    total = 0
+    for offset in range(max(1, int(days))):
+        day = now - timedelta(days=offset)
+        groups = machine_stress_groups(events, day)
+        if len(groups) < 2:
+            continue
+        topics = [_STRESS_TOPIC.get(group, "") for group in groups]
+        if topics and all(topic in muted for topic in topics if topic):
+            continue
+        total += 1
+    return total
+
+
+def local_weekly_bullets(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """1–3 short local bullets from diary, profile, milestones, focus, and rough days.
+
+    No Gemini. Muted topics are left out. An empty week returns no bullets.
+    """
+    stamp = now or datetime.now()
+    try:
+        from core.companion_profile import active_muted_topics, load_profile
+        muted = set(active_muted_topics(now=stamp, base_dir=base_dir))
+        profile = load_profile(base_dir)
+    except Exception:
+        muted = set()
+        profile = {}
+    events = _week_events(stamp, base_dir)
+    labels = {
+        "wifi_weak": "Wi-Fi yếu",
+        "wifi_repaired": "Wi-Fi ổn lại",
+        "ping_high": "ping cao",
+        "thermal_warn": "nhiệt cao",
+        "high_ram": "RAM cao",
+        "ram_optimized": "đã thu hồi RAM",
+        "clean_light": "dọn nhẹ",
+        "clean_freed": "dọn rác",
+        "focus_mode": "Trước thi / họp",
+        "focus_end": "kết thúc Trước thi / họp",
+    }
+    by_topic: Dict[str, Dict[str, int]] = {}
+    for event in events:
+        kind = str(event.get("kind") or "")
+        if kind not in labels:
+            continue
+        topic = _loose_topic(event)
+        if not topic or topic in muted:
+            continue
+        try:
+            weight = int((event.get("metrics") or {}).get("count") or 1)
+        except (TypeError, ValueError):
+            weight = 1
+        bucket = by_topic.setdefault(topic, {})
+        bucket[kind] = bucket.get(kind, 0) + max(1, weight)
+    items: List[Dict[str, str]] = []
+    for topic, kinds in by_topic.items():
+        if topic == "focus":
+            continue
+        bits = [f"{labels[kind]} {n} lần" for kind, n in kinds.items() if n]
+        if not bits:
+            continue
+        items.append({"text": ", ".join(bits[:2]) + ".", "topic": topic})
+    focus_n = len(_focus_session_times(events, stamp))
+    if focus_n and "focus" not in muted:
+        items.append({"text": f"Trước thi / họp {focus_n} lần.", "topic": "focus"})
+    rough_n = _rough_day_count(events, stamp, muted)
+    if rough_n:
+        items.append({"text": f"{rough_n} ngày máy hơi nặng.", "topic": ""})
+    try:
+        state = load_state(base_dir)
+        marked = str(state.get("last_milestone_date") or "")[:10]
+        if len(marked) == 10:
+            marked_day = datetime.fromisoformat(marked).date()
+            if 0 <= (stamp.date() - marked_day).days <= 6:
+                items.append({"text": "Có một cột mốc trong tuần.", "topic": ""})
+    except Exception:
+        pass
+    for habit in (profile.get("habits") or []) if isinstance(profile, dict) else []:
+        if not isinstance(habit, dict):
+            continue
+        topic = str(habit.get("topic") or "")
+        if topic in muted:
+            continue
+        detail = str(habit.get("detail_vi") or habit.get("label_vi") or "").strip()
+        if not detail:
+            continue
+        if not detail.endswith("."):
+            detail += "."
+        if len(detail) > 90:
+            detail = detail[:89].rstrip() + "…"
+        items.append({"text": detail, "topic": topic})
+        break
+    unique: List[Dict[str, str]] = []
+    seen = set()
+    for item in items:
+        text = str(item.get("text") or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique.append({"text": text, "topic": str(item.get("topic") or "")})
+        if len(unique) >= 3:
+            break
+    return unique
+
+
+def format_weekly_strip(items: List[Dict[str, str]]) -> str:
+    lines = ["Tóm tắt tuần:"]
+    for item in items[:3]:
+        text = str(item.get("text") or "").strip()
+        if text:
+            lines.append("• " + text)
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def local_weekly_summary(
     *,
     now: Optional[datetime] = None,
@@ -1075,6 +1242,14 @@ def local_weekly_summary(
                 names.append(name)
         lines.append("Bạn đã hỏi về " + ", ".join(names[:3]) + ".")
     lines.append("Không phải AGI; không tự chạy việc phá hủy.")
+    try:
+        extra = local_weekly_bullets(now=stamp, base_dir=base_dir)
+    except Exception:
+        extra = []
+    for item in extra:
+        bullet = "• " + str(item.get("text") or "").strip()
+        if bullet != "•" and bullet not in lines:
+            lines.append(bullet)
     return "\n".join(lines)
 
 
@@ -1181,6 +1356,92 @@ def format_weekly_feedback(result: Any = None, *, error: Optional[Any] = None) -
     return {"status": "success", "title": "Đã ghi tóm tắt tuần", "body": body}
 
 
+def _filter_weekly_items(
+    items: List[Dict[str, str]],
+    *,
+    now: datetime,
+    base_dir: Optional[str],
+) -> List[Dict[str, str]]:
+    try:
+        from core.companion_profile import topic_is_muted
+    except Exception:
+        topic_is_muted = None  # type: ignore
+    kept: List[Dict[str, str]] = []
+    for item in items:
+        topic = str(item.get("topic") or "")
+        if topic and topic_is_muted is not None and topic_is_muted(topic, base_dir=base_dir, now=now):
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            kept.append({"text": text, "topic": topic})
+        if len(kept) >= 3:
+            break
+    return kept
+
+
+def sync_weekly_strip(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """One local weekly strip per ISO week. Quiet hours wait; Gemini is not called.
+
+    Dismissing keeps the week consumed. An empty week does not consume the slot.
+    """
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    week = week_key(stamp)
+    try:
+        from core.companion_profile import in_quiet_hours
+        quiet = in_quiet_hours(stamp, base_dir=base_dir)
+    except Exception:
+        quiet = False
+    state = load_state(base_dir)
+    pending = state.get("pending_weekly_strip")
+    if isinstance(pending, dict) and str(pending.get("week") or "") == week and pending.get("text"):
+        if quiet:
+            return None
+        items = _filter_weekly_items(
+            list(pending.get("items") or []),
+            now=stamp,
+            base_dir=base_dir,
+        )
+        if not items:
+            return None
+        shown = dict(pending)
+        shown["items"] = items
+        shown["text"] = format_weekly_strip(items)
+        return shown
+    if str(state.get("last_weekly_strip_week") or "") == week:
+        return None
+    if quiet:
+        return None
+    items = local_weekly_bullets(now=stamp, base_dir=base_dir)
+    items = _filter_weekly_items(items, now=stamp, base_dir=base_dir)
+    text = format_weekly_strip(items)
+    if not text:
+        return None
+    payload = {"week": week, "text": text, "items": items}
+    state["pending_weekly_strip"] = payload
+    state["last_weekly_strip_week"] = week
+    save_state(state, base_dir=base_dir)
+    return payload
+
+
+def dismiss_weekly_strip(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    """Hide this week's strip. It does not come back until next week."""
+    stamp = now or datetime.now()
+    state = load_state(base_dir)
+    state["pending_weekly_strip"] = None
+    state["last_weekly_strip_week"] = week_key(stamp)
+    save_state(state, base_dir=base_dir)
+
+
 def digest_backoff(now: Optional[datetime] = None, hours: int = 3) -> datetime:
     stamp = now or datetime.now()
     return stamp + timedelta(hours=max(1, int(hours)))
@@ -1201,6 +1462,7 @@ _CHECKIN_SKIP_KINDS = frozenset({
     "user_feedback",
     "skill_saved",
     "tip_snooze",
+    "topic_trust",
 })
 _CHECKIN_LIMIT = 360
 # One extra morning sentence, in this order. Goal title stays in the existing
@@ -1552,7 +1814,12 @@ def sync_daily_checkin(
     if str(state.get("last_checkin_date") or "") == today:
         pending = state.get("pending_checkin")
         if isinstance(pending, dict) and str(pending.get("date") or "") == today and pending.get("text"):
-            return pending
+            return maybe_attach_pinned_action(
+                pending,
+                now=stamp,
+                base_dir=base_dir,
+                config_manager=config_manager,
+            )
         return None
     payload = compose_daily_checkin(now=stamp, base_dir=base_dir, config_manager=config_manager)
     if payload:
@@ -1568,7 +1835,12 @@ def sync_daily_checkin(
     state["last_checkin_date"] = today
     state["pending_checkin"] = payload
     save_state(state, base_dir=base_dir)
-    return payload
+    return maybe_attach_pinned_action(
+        payload,
+        now=stamp,
+        base_dir=base_dir,
+        config_manager=config_manager,
+    )
 
 
 def dismiss_daily_checkin(
@@ -1755,6 +2027,188 @@ def maybe_attach_helpful_replay(
     return out
 
 
+# Up to three allowlisted one-tap favorites. Pinning never runs the action.
+MAX_PINNED_ACTIONS = 3
+_PINNED_CHECKIN_NOTE = "Bạn đã ghim — mình để nút, không tự chạy."
+
+
+def list_pinned_actions(base_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Favorites already stored. Blocked keys are absent after load."""
+    rows = load_state(base_dir).get("pinned_actions")
+    return [dict(item) for item in rows] if isinstance(rows, list) else []
+
+
+def pin_favorite_action(
+    action_key: str,
+    *,
+    topic: str = "",
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Pin one allowlisted action. A fourth new key is refused. Blocked keys never stick.
+
+    Pinning does not run the action and does not turn Trước thi / họp on.
+    """
+    key = str(action_key or "").strip()
+    if not is_allowed_insight_action(key):
+        return None
+    try:
+        from core.companion_skills import BLOCKED_ACTION_KEYS
+        if key in BLOCKED_ACTION_KEYS:
+            return None
+    except Exception:
+        return None
+    stamp = now or datetime.now()
+    state = load_state(base_dir)
+    rows = [dict(item) for item in (state.get("pinned_actions") or []) if isinstance(item, dict)]
+    for item in rows:
+        if str(item.get("action_key") or "") == key:
+            return item
+    if len(rows) >= MAX_PINNED_ACTIONS:
+        return None
+    spec = INSIGHT_ACTION_ALLOWLIST.get(key) or {}
+    topics = [str(item) for item in (spec.get("topics") or []) if str(item)]
+    stored_topic = topics[0] if len(topics) == 1 else str(topic or "")[:24]
+    entry = {
+        "action_key": key,
+        "topic": stored_topic,
+        "label_vi": str(spec.get("label_vi") or ""),
+        "pinned_at": stamp.replace(microsecond=0).isoformat(timespec="seconds"),
+    }
+    rows.append(entry)
+    state["pinned_actions"] = rows
+    save_state(state, base_dir=base_dir)
+    cleaned = list_pinned_actions(base_dir)
+    for item in cleaned:
+        if item.get("action_key") == key:
+            return item
+    return None
+
+
+def unpin_favorite_action(
+    action_key: str,
+    base_dir: Optional[str] = None,
+) -> bool:
+    """Drop one favorite. Unknown keys are a no-op."""
+    key = str(action_key or "").strip()
+    if not key:
+        return False
+    state = load_state(base_dir)
+    rows = [item for item in (state.get("pinned_actions") or []) if isinstance(item, dict)]
+    kept = [item for item in rows if str(item.get("action_key") or "") != key]
+    if len(kept) == len(rows):
+        return False
+    state["pinned_actions"] = kept
+    save_state(state, base_dir=base_dir)
+    return True
+
+
+def eligible_pinned_actions(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> List[Dict[str, str]]:
+    """Pinned buttons that may show. Mute, snooze, quiet hours, focus, and a rough day hide them.
+
+    The same propose gates as the last Có ích replay. Nothing here runs an action.
+    """
+    if not _cfg_enabled(config_manager):
+        return []
+    stamp = now or datetime.now()
+    try:
+        from core.companion import current_stage
+        from core.companion_profile import (
+            effective_coaching,
+            in_quiet_hours,
+            load_profile,
+            quiet_hours_allow_actions,
+            score_trust,
+            topic_asks_more,
+            topic_is_muted,
+            topic_is_snoozed,
+        )
+    except Exception:
+        return []
+    if in_quiet_hours(stamp, base_dir=base_dir) and not quiet_hours_allow_actions(stamp, base_dir=base_dir):
+        return []
+    profile = load_profile(base_dir)
+    stage = current_stage(config_manager=config_manager, base_dir=base_dir)
+    trust = score_trust(profile=profile, base_dir=base_dir, now=stamp)
+    rows = recent_events(days=1, limit=0, base_dir=base_dir, now=stamp)
+    focus_on = exam_focus_is_live()
+    stressed = machine_stress_active(rows, stamp)
+    out: List[Dict[str, str]] = []
+    for pin in list_pinned_actions(base_dir):
+        key = str(pin.get("action_key") or "")
+        if not is_allowed_insight_action(key):
+            continue
+        topic = str(pin.get("topic") or "") or _topic_for_allowlisted(key)
+        if topic and (
+            topic_is_muted(topic, base_dir=base_dir, now=stamp)
+            or topic_is_snoozed(topic, base_dir=base_dir, now=stamp)
+        ):
+            continue
+        coaching = effective_coaching(profile, topic=topic, base_dir=base_dir, now=stamp)
+        voice = stage_voice(
+            stage.stage,
+            coaching=coaching,
+            may_propose=bool(stage.may_propose_actions),
+            trust=str(trust.get("level") or "steady"),
+            focus_active=focus_on,
+            stressed=stressed,
+        )
+        spec = INSIGHT_ACTION_ALLOWLIST.get(key) or {}
+        if spec.get("needs_propose") and voice.get("boldness") in ("shy", "ask"):
+            continue
+        if int(spec.get("min_stage") or 0) > int(stage.stage):
+            continue
+        if topic and topic_asks_more(topic, profile=profile):
+            continue
+        action = _calm_insight_action(
+            {"key": key, "label_vi": str(spec.get("label_vi") or pin.get("label_vi") or "")},
+            focus_active=focus_on,
+            stressed=stressed,
+        )
+        if not action or not action.get("key"):
+            continue
+        out.append({
+            "key": str(action.get("key") or ""),
+            "label_vi": str(action.get("label_vi") or ""),
+            "topic": topic,
+        })
+    return out
+
+
+def maybe_attach_pinned_action(
+    payload: Optional[Dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Put one favorite on a check-in that does not already have a button.
+
+    The last Có ích action wins when it is already attached. Other favorites
+    still show on the card row. This does not write the pin into the saved line.
+    """
+    if not isinstance(payload, dict) or not payload.get("text"):
+        return payload
+    if payload.get("action_key"):
+        return payload
+    pins = eligible_pinned_actions(now=now, base_dir=base_dir, config_manager=config_manager)
+    if not pins or not pins[0].get("key"):
+        return payload
+    out = dict(payload)
+    out["action_key"] = pins[0]["key"]
+    out["action_label_vi"] = pins[0].get("label_vi") or ""
+    out["pinned_action"] = True
+    text = str(out.get("text") or "")
+    if _PINNED_CHECKIN_NOTE not in text:
+        out["text"] = _clip_checkin((text + " " + _PINNED_CHECKIN_NOTE).strip())
+    return out
+
+
 # One local yes/no after an allowlisted tap. No second question while one is open.
 FOLLOWUP_DELAY_MIN = {
     "wifi": 60,
@@ -1787,6 +2241,7 @@ _EOD_SKIP = frozenset({
     "suggestion_accepted",
     "suggestion_rejected",
     "tip_snooze",
+    "topic_trust",
 })
 _EOD_LABEL = (
     ("wifi_weak", "Wi-Fi chưa ổn"),
@@ -2557,3 +3012,161 @@ def dismiss_milestone(
     state["pending_milestone"] = None
     state["last_milestone_date"] = stamp.strftime("%Y-%m-%d")
     save_state(state, base_dir=base_dir)
+
+
+def count_focus_sessions_with_feedback(
+    events: Optional[List[Dict[str, Any]]],
+    now: datetime,
+    *,
+    days: int = 7,
+) -> int:
+    """Sessions in the window that also have a Trước thi / họp Có ích or Chưa nearby."""
+    sessions = _focus_session_times(list(events or []), now, days=days)
+    cutoff = now - timedelta(days=max(1, int(days)))
+    feedbacks: List[datetime] = []
+    for event in events or []:
+        moment = _event_stamp(event)
+        if moment is None or moment < cutoff or moment > now + timedelta(minutes=1):
+            continue
+        if str(event.get("kind") or "") != "user_feedback":
+            continue
+        tags = {str(tag) for tag in (event.get("tags") or [])}
+        summary = str(event.get("summary") or "")
+        if "focus" in tags or "Trước thi" in summary:
+            feedbacks.append(moment)
+    used = [False] * len(feedbacks)
+    count = 0
+    for sess in sessions:
+        for index, feedback in enumerate(feedbacks):
+            if used[index]:
+                continue
+            delta = feedback - sess
+            if timedelta(hours=-2) <= delta <= timedelta(hours=36):
+                used[index] = True
+                count += 1
+                break
+    return count
+
+
+_EXAM_HINT_TEXT = (
+    "Hôm nay: Bạn đã dùng Trước thi / họp vài lần và có lời. "
+    "Khi cần tập trung, bạn có thể tự bật — mình không tự bật."
+)
+
+
+def _exam_hint_blocked(
+    stamp: datetime,
+    base_dir: Optional[str],
+) -> bool:
+    """Quiet hours, mute, Đừng nhắc, or an already-on session hide the suggestion."""
+    if exam_focus_is_live():
+        return True
+    try:
+        from core.companion_profile import in_quiet_hours, topic_is_muted, topic_is_snoozed
+        if in_quiet_hours(stamp, base_dir=base_dir):
+            return True
+        if topic_is_muted("focus", base_dir=base_dir, now=stamp):
+            return True
+        if topic_is_snoozed("focus", base_dir=base_dir, now=stamp):
+            return True
+    except Exception:
+        return True
+    return False
+
+
+def sync_exam_season_hint(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """One soft line per ISO week when focus sessions keep showing up with feedback.
+
+    Does not enable Trước thi / họp. Snooze, mute, and quiet hours hold the line
+    without burning the week if it has not been shown yet. A snooze after it
+    was shown only hides the same line.
+    """
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    week = week_key(stamp)
+    state = load_state(base_dir)
+    pending = state.get("pending_exam_hint")
+    blocked = _exam_hint_blocked(stamp, base_dir)
+    if isinstance(pending, dict) and str(pending.get("week") or "") == week and pending.get("text"):
+        if blocked:
+            return None
+        return dict(pending)
+    if str(state.get("last_exam_hint_week") or "") == week:
+        return None
+    if blocked:
+        return None
+    try:
+        from core.companion_profile import load_profile
+        if str(load_profile(base_dir).get("insight_snooze_date") or "") == stamp.strftime("%Y-%m-%d"):
+            return None
+    except Exception:
+        pass
+    try:
+        from core.companion_diary import read_events
+        events = read_events(base_dir=base_dir, limit=0)
+    except Exception:
+        events = []
+    if count_focus_sessions_with_feedback(events, stamp) < 2:
+        return None
+    if machine_stress_active(recent_events(days=1, limit=0, base_dir=base_dir, now=stamp), stamp):
+        # A rough day waits. The week stays open so the line can appear once it is calm.
+        return None
+    payload = {
+        "id": f"exam_season:{week}",
+        "week": week,
+        "text": _EXAM_HINT_TEXT,
+        "topic": "focus",
+    }
+    state["pending_exam_hint"] = payload
+    state["last_exam_hint_week"] = week
+    save_state(state, base_dir=base_dir)
+    return dict(payload)
+
+
+def dismiss_exam_season_hint(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    """Hide this week's gợi ý mùa thi. It does not enable anything."""
+    stamp = now or datetime.now()
+    state = load_state(base_dir)
+    state["pending_exam_hint"] = None
+    state["last_exam_hint_week"] = week_key(stamp)
+    save_state(state, base_dir=base_dir)
+
+
+def present_exam_season_hint(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """The weekly focus suggestion plus the existing Bật Trước thi / họp button when allowed.
+
+    The button is only the allowlisted key the app already runs when the user taps it.
+    This function never calls enable.
+    """
+    hint = sync_exam_season_hint(now=now, base_dir=base_dir, config_manager=config_manager)
+    if not hint:
+        return None
+    try:
+        attached = attach_insight_action(
+            hint,
+            config_manager=config_manager,
+            base_dir=base_dir,
+            now=now,
+        )
+    except Exception:
+        attached = dict(hint)
+    if not isinstance(attached, dict):
+        return dict(hint)
+    if attached.get("action_key") != "enable_exam_focus":
+        for extra in ("action_key", "action_label_vi", "skill_id", "skill_issue", "helpful_replay"):
+            attached.pop(extra, None)
+    return attached

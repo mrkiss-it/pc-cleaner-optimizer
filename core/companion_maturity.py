@@ -114,6 +114,11 @@ def default_state() -> Dict[str, Any]:
         "last_milestone_date": "",
         "pending_milestone": None,
         "helpful_replay": None,
+        "pinned_actions": [],
+        "last_weekly_strip_week": "",
+        "pending_weekly_strip": None,
+        "last_exam_hint_week": "",
+        "pending_exam_hint": None,
     }
 
 
@@ -179,6 +184,11 @@ def load_state(base_dir: Optional[str] = None) -> Dict[str, Any]:
     merged["last_milestone_date"] = str(merged.get("last_milestone_date") or "")[:10]
     merged["pending_milestone"] = _clean_pending_milestone(merged.get("pending_milestone"))
     merged["helpful_replay"] = _clean_helpful_replay(merged.get("helpful_replay"))
+    merged["pinned_actions"] = _clean_pinned_actions(merged.get("pinned_actions"))
+    merged["last_weekly_strip_week"] = str(merged.get("last_weekly_strip_week") or "")[:12]
+    merged["pending_weekly_strip"] = _clean_weekly_strip(merged.get("pending_weekly_strip"))
+    merged["last_exam_hint_week"] = str(merged.get("last_exam_hint_week") or "")[:12]
+    merged["pending_exam_hint"] = _clean_exam_hint(merged.get("pending_exam_hint"))
     return merged
 
 
@@ -231,6 +241,92 @@ def _clean_helpful_replay(raw: Any) -> Optional[Dict[str, Any]]:
         "topic": str(raw.get("topic") or "")[:24],
         "at": str(raw.get("at") or "")[:32],
         "surfaced": bool(raw.get("surfaced")),
+    }
+
+
+def _clean_pinned_actions(raw: Any) -> List[Dict[str, Any]]:
+    """Up to three allowlisted favorites. Blocked keys are dropped on load."""
+    if not isinstance(raw, list):
+        return []
+    try:
+        from core.companion_skills import BLOCKED_ACTION_KEYS
+    except Exception:
+        BLOCKED_ACTION_KEYS = frozenset()
+    try:
+        from core.companion_moment import INSIGHT_ACTION_ALLOWLIST
+    except Exception:
+        return []
+    try:
+        from core.companion_profile import TOPIC_META
+    except Exception:
+        TOPIC_META = {}
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("action_key") or "").strip()
+        if not key or key in seen or key in BLOCKED_ACTION_KEYS or key not in INSIGHT_ACTION_ALLOWLIST:
+            continue
+        spec = INSIGHT_ACTION_ALLOWLIST.get(key) or {}
+        topics = [str(topic) for topic in (spec.get("topics") or []) if str(topic)]
+        topic = topics[0] if len(topics) == 1 else str(item.get("topic") or "").strip()
+        if topic not in TOPIC_META:
+            topic = ""
+        seen.add(key)
+        out.append({
+            "action_key": key,
+            "topic": topic[:24],
+            "label_vi": str(spec.get("label_vi") or "")[:80],
+            "pinned_at": str(item.get("pinned_at") or "")[:32],
+        })
+        if len(out) >= 3:
+            break
+    return out
+
+
+def _clean_weekly_strip(raw: Any) -> Optional[Dict[str, Any]]:
+    """One local weekly strip. Missing or odd shapes become nothing."""
+    if not isinstance(raw, dict):
+        return None
+    week = str(raw.get("week") or "").strip()[:12]
+    items_raw = raw.get("items") if isinstance(raw.get("items"), list) else []
+    items: List[Dict[str, str]] = []
+    for item in items_raw:
+        if isinstance(item, str):
+            text = item.strip()
+            topic = ""
+        elif isinstance(item, dict):
+            text = str(item.get("text") or "").strip()
+            topic = str(item.get("topic") or "").strip()[:24]
+        else:
+            continue
+        if not text:
+            continue
+        items.append({"text": text[:160], "topic": topic})
+        if len(items) >= 3:
+            break
+    if not week or not items:
+        return None
+    text = str(raw.get("text") or "").strip()
+    if not text:
+        text = "Tóm tắt tuần:\n" + "\n".join("• " + item["text"] for item in items)
+    return {"week": week, "text": text[:500], "items": items}
+
+
+def _clean_exam_hint(raw: Any) -> Optional[Dict[str, Any]]:
+    """Soft exam-season line. Never keeps an action key from disk."""
+    if not isinstance(raw, dict):
+        return None
+    week = str(raw.get("week") or "").strip()[:12]
+    text = str(raw.get("text") or "").strip()
+    if not week or not text:
+        return None
+    return {
+        "id": str(raw.get("id") or f"exam_season:{week}")[:40],
+        "week": week,
+        "text": text[:320],
+        "topic": "focus",
     }
 
 

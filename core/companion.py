@@ -416,6 +416,25 @@ def note_user_feedback(
         )
     except Exception:
         pass
+    if topic_key:
+        shift = None
+        try:
+            from core.companion_profile import record_topic_trust
+            shift = record_topic_trust(topic_key, bool(helpful), base_dir=base_dir, now=now)
+        except Exception:
+            shift = None
+        if isinstance(shift, dict) and shift.get("summary"):
+            record_app_event(
+                "topic_trust",
+                str(shift.get("summary") or ""),
+                source="companion",
+                now=now,
+                base_dir=base_dir,
+                config_manager=config_manager,
+                outcome="neutral",
+                tags=["trust", topic_key],
+                coalesce=False,
+            )
     return current_stage(config_manager=config_manager, base_dir=base_dir)
 
 
@@ -1949,6 +1968,11 @@ def _merge_profiles(local: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str
         out["snoozed_tips"] = merge_snoozed_tips(local.get("snoozed_tips"), incoming.get("snoozed_tips"))
     except Exception:
         out["snoozed_tips"] = local.get("snoozed_tips") or {}
+    try:
+        from core.companion_profile import merge_topic_trust
+        out["topic_trust"] = merge_topic_trust(local.get("topic_trust"), incoming.get("topic_trust"))
+    except Exception:
+        out["topic_trust"] = local.get("topic_trust") or {}
     return out
 
 
@@ -1982,6 +2006,35 @@ def _merge_helpful_replay(local: Any, incoming: Any) -> Any:
         if best_shown == item_shown and str(item.get("at") or "") > str(best.get("at") or ""):
             best = item
     return best
+
+
+def _merge_pinned_actions(local: Any, incoming: Any) -> List[Any]:
+    """Union of favorites, local first, capped at three allowlisted keys."""
+    try:
+        from core.companion_maturity import _clean_pinned_actions
+        cleaned = _clean_pinned_actions(list(local or []) + list(incoming or []))
+    except Exception:
+        cleaned = []
+    return cleaned
+
+
+def _merge_week_marker(
+    local: Dict[str, Any],
+    incoming: Dict[str, Any],
+    week_key_name: str,
+    pending_name: str,
+) -> None:
+    """Keep the later calendar week. A pending line fills an empty local slot."""
+    local_week = str(local.get(week_key_name) or "")
+    incoming_week = str(incoming.get(week_key_name) or "")
+    if incoming_week > local_week:
+        local[week_key_name] = incoming_week
+        local[pending_name] = incoming.get(pending_name)
+        return
+    if incoming_week and incoming_week == local_week and not local.get(pending_name):
+        incoming_pending = incoming.get(pending_name)
+        if incoming_pending:
+            local[pending_name] = incoming_pending
 
 
 def _store_maturity(raw: Any, base_dir: Optional[str], mode: str) -> None:
@@ -2034,6 +2087,9 @@ def _store_maturity(raw: Any, base_dir: Optional[str], mode: str) -> None:
         if isinstance(incoming_pending, dict) and incoming_pending.get("text"):
             local["pending_milestone"] = incoming_pending
     local["helpful_replay"] = _merge_helpful_replay(local.get("helpful_replay"), incoming.get("helpful_replay"))
+    local["pinned_actions"] = _merge_pinned_actions(local.get("pinned_actions"), incoming.get("pinned_actions"))
+    _merge_week_marker(local, incoming, "last_weekly_strip_week", "pending_weekly_strip")
+    _merge_week_marker(local, incoming, "last_exam_hint_week", "pending_exam_hint")
     save_state(local, base_dir=base_dir)
 
 

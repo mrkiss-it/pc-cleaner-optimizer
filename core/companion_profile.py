@@ -36,6 +36,8 @@ QUIET_HOURS_START = "23:00"
 QUIET_HOURS_END = "07:00"
 # Trust is computed, not trained. Fewer than this many accept/reject rows stays "steady".
 TRUST_MIN_SAMPLE = 3
+# Per-topic Có ích / Chưa. High needs a small sample; low is "Chưa dominates".
+TOPIC_TRUST_MIN = 3
 WINDOW_PHRASE = "Thường vào khung giờ này trên máy này"
 GROWTH_EMPTY_VI = "Chưa có mốc lớn — mình mới gặp máy này. Dùng thêm rồi xem lại."
 GROWTH_LIMIT = 12
@@ -211,6 +213,7 @@ def default_profile() -> Dict[str, Any]:
         "preferences": [],
         "quiet_hours": _default_quiet_hours(),
         "snoozed_tips": {},
+        "topic_trust": {},
     }
 
 
@@ -266,6 +269,7 @@ def load_profile(base_dir: Optional[str] = None) -> Dict[str, Any]:
     merged["preferences"] = preferences
     merged["quiet_hours"] = _clean_quiet_hours(merged.get("quiet_hours"))
     merged["snoozed_tips"] = _clean_snoozed(merged.get("snoozed_tips"))
+    merged["topic_trust"] = _clean_topic_trust(merged.get("topic_trust"))
     return merged
 
 
@@ -284,6 +288,7 @@ def save_profile(profile: Dict[str, Any], base_dir: Optional[str] = None) -> Dic
     payload["preferences"] = preferences
     payload["quiet_hours"] = _clean_quiet_hours(payload.get("quiet_hours"))
     payload["snoozed_tips"] = _clean_snoozed(payload.get("snoozed_tips"))
+    payload["topic_trust"] = _clean_topic_trust(payload.get("topic_trust"))
     _atomic_write_json(profile_path(base_dir), payload)
     return payload
 
@@ -1008,6 +1013,165 @@ def annotate_learned_line(text: str, topic: str, profile: Optional[Dict[str, Any
     return body.rstrip() + suffix
 
 
+def _topic_trust_level_from_counts(helpful: Any, unhelpful: Any) -> str:
+    """low when Chưa dominates; high only after several Có ích. Otherwise steady."""
+    try:
+        yes = max(0, int(helpful or 0))
+    except (TypeError, ValueError):
+        yes = 0
+    try:
+        no = max(0, int(unhelpful or 0))
+    except (TypeError, ValueError):
+        no = 0
+    sample = yes + no
+    if no >= 2 and no > yes:
+        return "low"
+    if (
+        sample >= TOPIC_TRUST_MIN
+        and yes >= 2
+        and yes > no
+        and yes / float(sample) >= (2.0 / 3.0)
+    ):
+        return "high"
+    return "steady"
+
+
+def _clean_topic_trust(raw: Any) -> Dict[str, Dict[str, Any]]:
+    """Per-topic Có ích / Chưa. Missing keys and unknown topics drop out."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for topic, meta in raw.items():
+        key = str(topic or "").strip()
+        if key not in TOPIC_META or not isinstance(meta, dict):
+            continue
+        try:
+            helpful = max(0, int(meta.get("helpful") or 0))
+        except (TypeError, ValueError):
+            helpful = 0
+        try:
+            unhelpful = max(0, int(meta.get("unhelpful") or 0))
+        except (TypeError, ValueError):
+            unhelpful = 0
+        if helpful == 0 and unhelpful == 0:
+            continue
+        level = _topic_trust_level_from_counts(helpful, unhelpful)
+        noted = str(meta.get("noted") or "")
+        if noted not in ("low", "steady", "high"):
+            noted = level
+        out[key] = {"helpful": helpful, "unhelpful": unhelpful, "noted": noted}
+    return out
+
+
+def topic_trust_level(
+    topic: str,
+    profile: Optional[Dict[str, Any]] = None,
+    base_dir: Optional[str] = None,
+) -> str:
+    """steady / low / high for one tip family. Unknown topics stay steady."""
+    key = str(topic or "").strip()
+    if key not in TOPIC_META:
+        return "steady"
+    data = profile if isinstance(profile, dict) else load_profile(base_dir)
+    row = _clean_topic_trust(data.get("topic_trust")).get(key) or {}
+    return _topic_trust_level_from_counts(row.get("helpful"), row.get("unhelpful"))
+
+
+def record_topic_trust(
+    topic: str,
+    helpful: bool,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, str]]:
+    """Count one Có ích or Chưa. Returns a diary line only when the level shifts.
+
+    Global trust is untouched here. The caller writes the diary so this file
+    does not import the event log.
+    """
+    del now  # the diary timestamp belongs to the caller
+    key = str(topic or "").strip()
+    if key not in TOPIC_META:
+        return None
+    profile = load_profile(base_dir)
+    trust = _clean_topic_trust(profile.get("topic_trust"))
+    row = dict(trust.get(key) or {"helpful": 0, "unhelpful": 0, "noted": "steady"})
+    old_level = _topic_trust_level_from_counts(row.get("helpful"), row.get("unhelpful"))
+    if helpful:
+        row["helpful"] = int(row.get("helpful") or 0) + 1
+    else:
+        row["unhelpful"] = int(row.get("unhelpful") or 0) + 1
+    new_level = _topic_trust_level_from_counts(row.get("helpful"), row.get("unhelpful"))
+    row["noted"] = new_level
+    trust[key] = row
+    profile["topic_trust"] = trust
+    save_profile(profile, base_dir=base_dir)
+    if old_level == new_level:
+        return None
+    name = str((TOPIC_META.get(key) or {}).get("name") or key)
+    if new_level == "low":
+        summary = f"Độ tin {name} giảm: bạn chọn Chưa nhiều hơn. Mình sẽ nói nhẹ hơn."
+    elif new_level == "high":
+        summary = f"Độ tin {name} tăng: bạn chọn Có ích nhiều lần. Mình nói rõ hơn một chút."
+    else:
+        summary = f"Độ tin {name} trở lại mức vừa."
+    return {"topic": key, "level": new_level, "previous": old_level, "summary": summary}
+
+
+def merge_topic_trust(local: Any, incoming: Any) -> Dict[str, Dict[str, Any]]:
+    """Keep the larger Có ích / Chưa counts. Noted level follows the merged counts."""
+    left = _clean_topic_trust(local)
+    right = _clean_topic_trust(incoming)
+    out: Dict[str, Dict[str, Any]] = {}
+    for topic in set(left) | set(right):
+        a = left.get(topic) or {}
+        b = right.get(topic) or {}
+        helpful = max(int(a.get("helpful") or 0), int(b.get("helpful") or 0))
+        unhelpful = max(int(a.get("unhelpful") or 0), int(b.get("unhelpful") or 0))
+        level = _topic_trust_level_from_counts(helpful, unhelpful)
+        out[topic] = {"helpful": helpful, "unhelpful": unhelpful, "noted": level}
+    return out
+
+
+def order_insights_for_topic_trust(
+    candidates: Sequence[Dict[str, Any]],
+    now: Optional[datetime] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Show a Chưa-heavy topic less often, and a Có ích topic a bit more often.
+
+    Still one insight. This does not add buttons or skip mute — callers filter
+    mute and snooze first.
+    """
+    items = [dict(item) for item in (candidates or []) if isinstance(item, dict) and item.get("text")]
+    if not items:
+        return []
+    data = profile if isinstance(profile, dict) else {}
+    stamp = now or datetime.now()
+
+    def _level(item: Dict[str, Any]) -> str:
+        return topic_trust_level(str(item.get("topic") or ""), profile=data)
+
+    highs = [item for item in items if _level(item) == "high"]
+    lows = [item for item in items if _level(item) == "low"]
+    rest = [item for item in items if _level(item) == "steady"]
+    day = stamp.toordinal()
+    if highs or rest:
+        # A Chưa-heavy topic stays out three days in four when something else exists.
+        if day % 4 != 0:
+            pool = highs + rest
+        else:
+            pool = highs + rest + lows
+    else:
+        pool = list(lows) if day % 4 == 0 else []
+    if not pool:
+        return []
+    if highs and day % 3 != 2:
+        preferred = [item for item in pool if _level(item) == "high"]
+        if preferred:
+            return preferred
+    return pool
+
+
 def score_trust(
     events: Optional[Sequence[Dict[str, Any]]] = None,
     profile: Optional[Dict[str, Any]] = None,
@@ -1080,13 +1244,17 @@ def effective_coaching(
     """Global coaching, else low trust. A muted topic or topic ask-more always wins.
 
     High trust returns "steady" and does not clear a mute or an ask-more flag.
-    Callers still honor may_propose_actions and the insight allowlist.
+    A topic where Chưa dominates also asks more, without changing global trust.
+    Many Có ích on a topic do not raise the cap. Callers still honor
+    may_propose_actions and the insight allowlist.
     """
     data = profile if isinstance(profile, dict) else load_profile(base_dir)
     key = str(topic or "").strip()
     if key and (topic_is_muted(key, now=now, profile=data) or topic_asks_more(key, profile=data)):
         return "ask_more"
     if str(data.get("coaching") or "") == "ask_more":
+        return "ask_more"
+    if key and topic_trust_level(key, profile=data) == "low":
         return "ask_more"
     trust = score_trust(events, data, base_dir=base_dir, now=now)
     if trust.get("level") == "low":
@@ -1500,6 +1668,16 @@ def format_profile_browse(profile: Optional[Dict[str, Any]] = None, base_dir: Op
             for topic in sorted(snoozed)
         ]
         lines.append("Đừng nhắc: " + ", ".join(names) + ".")
+    trust_bits: List[str] = []
+    for topic, row in _clean_topic_trust(data.get("topic_trust")).items():
+        level = _topic_trust_level_from_counts(row.get("helpful"), row.get("unhelpful"))
+        name = str((TOPIC_META.get(topic) or {}).get("name") or topic)
+        if level == "low":
+            trust_bits.append(f"{name} nói nhẹ")
+        elif level == "high":
+            trust_bits.append(f"{name} rõ hơn")
+    if trust_bits:
+        lines.append("Độ tin theo chủ đề: " + ", ".join(trust_bits) + ".")
     return "\n".join(lines)
 
 
@@ -1903,12 +2081,21 @@ def current_insight(
     ]
     if not visible:
         return None
+    visible = order_insights_for_topic_trust(visible, now=stamp, profile=data)
+    if not visible:
+        return None
     windows = [item for item in visible if str(item.get("id") or "").startswith("window:")]
     if windows:
         chosen = dict(windows[0])
     else:
         chosen = dict(visible[stamp.toordinal() % len(visible)])
     chosen["text"] = annotate_learned_line(str(chosen.get("text") or ""), str(chosen.get("topic") or ""), data)
+    level = topic_trust_level(str(chosen.get("topic") or ""), profile=data)
+    text = str(chosen.get("text") or "")
+    if level == "high" and "Bạn hay thấy việc này có ích" not in text:
+        chosen["text"] = (text.rstrip() + " Bạn hay thấy việc này có ích.").strip()
+    elif level == "low" and "Mình nói nhẹ về việc này" not in text:
+        chosen["text"] = (text.rstrip() + " Mình nói nhẹ về việc này.").strip()
     return chosen
 
 
