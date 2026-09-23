@@ -1,11 +1,29 @@
 import os
-import glob
-import shutil
 import ctypes
 import stat
+import time
 from ctypes import wintypes
 from typing import Dict, Any, List, Callable, Optional
 from core.logger import logger
+from core.c_drive_clean import (
+    ADMIN_SKIP_REASON_VI,
+    DEFAULT_DOWNLOADS_MIN_AGE_DAYS,
+    LOCKED_REASON_VI,
+    PROTECTED_REASON_VI,
+    TARGET_CATALOG,
+    TARGET_ORDER,
+    TOO_BROAD_REASON_VI,
+    build_target_paths,
+    clean_one_path,
+    empty_detail,
+    format_clean_report_vi,
+    format_freed_vi,
+    is_process_elevated,
+    normalize_downloads_min_age_days,
+    resolve_clean_plan,
+    scan_old_files,
+    scan_tree,
+)
 
 def remove_readonly(func, path, exc_info):
     """
@@ -31,141 +49,18 @@ class SHQUERYRBINFO(ctypes.Structure):
 
 class JunkCleaner:
     @staticmethod
-    def get_target_paths() -> Dict[str, List[str]]:
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
-        app_data = os.environ.get("APPDATA", "")
-        user_temp = os.environ.get("TEMP", "")
-        system_root = os.environ.get("SystemRoot", "C:\\Windows")
+    def is_admin() -> bool:
+        """Tiến trình có đang elevated hay không. UI và lịch dọn dùng cùng một kết quả."""
+        return is_process_elevated()
 
-        targets = {
-            "user_temp": [],
-            "system_temp": [],
-            "browser_cache": [],
-            "crash_dumps": [],
-            "windows_update": [],
-            "app_caches": []
-        }
+    @staticmethod
+    def get_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, List[str]]:
+        paths = build_target_paths(environ)
+        # Giữ các khóa cũ luôn có mặt kể cả khi catalog thêm mục mới.
+        for legacy in ("user_temp", "system_temp", "browser_cache", "crash_dumps", "windows_update", "app_caches"):
+            paths.setdefault(legacy, [])
+        return paths
 
-        # 1. User Temp
-        if user_temp and os.path.exists(user_temp):
-            targets["user_temp"].append(user_temp)
-
-        # 2. System Temp
-        sys_temp = os.path.join(system_root, "Temp")
-        if os.path.exists(sys_temp):
-            targets["system_temp"].append(sys_temp)
-
-        # 3. Browser Caches (Hỗ trợ Default và mọi Profile 1, 2,...)
-        if local_app_data:
-            # Google Chrome
-            chrome_user_data = os.path.join(local_app_data, r"Google\Chrome\User Data")
-            if os.path.exists(chrome_user_data):
-                profiles = glob.glob(os.path.join(chrome_user_data, "Default")) + glob.glob(os.path.join(chrome_user_data, "Profile *"))
-                for prof in profiles:
-                    for sub in ["Cache", "Code Cache", "GPUCache"]:
-                        p_dir = os.path.join(prof, sub)
-                        if os.path.exists(p_dir):
-                            targets["browser_cache"].append(p_dir)
-
-            # Microsoft Edge
-            edge_user_data = os.path.join(local_app_data, r"Microsoft\Edge\User Data")
-            if os.path.exists(edge_user_data):
-                profiles = glob.glob(os.path.join(edge_user_data, "Default")) + glob.glob(os.path.join(edge_user_data, "Profile *"))
-                for prof in profiles:
-                    for sub in ["Cache", "Code Cache", "GPUCache"]:
-                        p_dir = os.path.join(prof, sub)
-                        if os.path.exists(p_dir):
-                            targets["browser_cache"].append(p_dir)
-
-            # Brave Browser
-            brave_user_data = os.path.join(local_app_data, r"BraveSoftware\Brave-Browser\User Data")
-            if os.path.exists(brave_user_data):
-                profiles = glob.glob(os.path.join(brave_user_data, "Default")) + glob.glob(os.path.join(brave_user_data, "Profile *"))
-                for prof in profiles:
-                    for sub in ["Cache", "Code Cache", "GPUCache"]:
-                        p_dir = os.path.join(prof, sub)
-                        if os.path.exists(p_dir):
-                            targets["browser_cache"].append(p_dir)
-
-            # Firefox Cache (profiles)
-            firefox_profiles = os.path.join(local_app_data, r"Mozilla\Firefox\Profiles")
-            if os.path.exists(firefox_profiles):
-                for p in glob.glob(os.path.join(firefox_profiles, "*", "cache2")):
-                    targets["browser_cache"].append(p)
-
-        # 4. Crash Dumps & Windows Error Reporting
-        if local_app_data:
-            crash_dumps = os.path.join(local_app_data, "CrashDumps")
-            wer_archive = os.path.join(local_app_data, r"Microsoft\Windows\WER\ReportArchive")
-            wer_queue = os.path.join(local_app_data, r"Microsoft\Windows\WER\ReportQueue")
-            targets["crash_dumps"].extend([crash_dumps, wer_archive, wer_queue])
-
-        # 5. Windows Update Download Cache (C:\Windows\SoftwareDistribution\Download)
-        win_update = os.path.join(system_root, r"SoftwareDistribution\Download")
-        if os.path.exists(win_update):
-            targets["windows_update"].append(win_update)
-
-        # 6. Popular App Caches (Zalo safe cache, Discord, Telegram Desktop, VS Code, Pip, Npm)
-        if app_data:
-            # Zalo Safe Cache (TUYỆT ĐỐI KHÔNG XÓA Database hoặc ZaloDownloads)
-            zalo_base = os.path.join(app_data, "ZaloData")
-            if os.path.exists(zalo_base):
-                zalo_safe_subs = [
-                    "Cache", "Code Cache", "GPUCache", "DawnCache", "logs",
-                    r"media\temp", r"media\update", "resp_cache",
-                    r"Partitions\zalo\Cache", r"Partitions\zalo\Code Cache", r"Partitions\zalo\GPUCache"
-                ]
-                for sub in zalo_safe_subs:
-                    p = os.path.join(zalo_base, sub)
-                    if os.path.exists(p):
-                        targets["app_caches"].append(p)
-
-            # Discord Cache
-            discord_base = os.path.join(app_data, "discord")
-            if os.path.exists(discord_base):
-                for sub in ["Cache", "Code Cache", "GPUCache"]:
-                    p = os.path.join(discord_base, sub)
-                    if os.path.exists(p):
-                        targets["app_caches"].append(p)
-
-            # Telegram Desktop Cache
-            tele_base = os.path.join(app_data, r"Telegram Desktop\tdata")
-            if os.path.exists(tele_base):
-                for sub in [r"user_data\cache", "temp"]:
-                    p = os.path.join(tele_base, sub)
-                    if os.path.exists(p):
-                        targets["app_caches"].append(p)
-
-            # VS Code Cache
-            code_base = os.path.join(app_data, "Code")
-            if os.path.exists(code_base):
-                for sub in ["Cache", "CachedData", "CachedExtensionVSIXs", "GPUCache", "logs"]:
-                    p = os.path.join(code_base, sub)
-                    if os.path.exists(p):
-                        targets["app_caches"].append(p)
-
-            # Roaming npm-cache if present
-            npm_roaming = os.path.join(app_data, "npm-cache")
-            if os.path.exists(npm_roaming):
-                targets["app_caches"].append(npm_roaming)
-
-        if local_app_data:
-            # Python pip cache
-            pip_cache = os.path.join(local_app_data, r"pip\cache")
-            if os.path.exists(pip_cache):
-                targets["app_caches"].append(pip_cache)
-
-            # Local npm-cache
-            npm_local = os.path.join(local_app_data, "npm-cache")
-            if os.path.exists(npm_local):
-                targets["app_caches"].append(npm_local)
-
-            # Programs\Zalo\logs
-            zalo_prog_logs = os.path.join(local_app_data, r"Programs\Zalo\logs")
-            if os.path.exists(zalo_prog_logs):
-                targets["app_caches"].append(zalo_prog_logs)
-
-        return targets
 
     @staticmethod
     def get_recycle_bin_info() -> Dict[str, Any]:
@@ -189,201 +84,283 @@ class JunkCleaner:
     @staticmethod
     def empty_recycle_bin() -> Dict[str, Any]:
         """
-        Dọn sạch Thùng Rác thông qua Win32 API mà không hiện hộp thoại xác nhận phiền phức
+        Làm trống thùng rác của người dùng hiện tại. Thất bại thì freed_bytes = 0.
         """
+        if os.name != "nt":
+            return {
+                "success": False,
+                "freed_bytes": 0,
+                "freed_mb": 0.0,
+                "items": 0,
+                "status": "skipped",
+                "reason": "Thùng rác chỉ có trên Windows — đã bỏ qua, không tính dung lượng.",
+            }
         info_before = JunkCleaner.get_recycle_bin_info()
         try:
             res = ctypes.windll.shell32.SHEmptyRecycleBinW(
-                None, 
-                None, 
+                None,
+                None,
                 SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND
             )
-            if res == 0 or res == -2147418113:  # 0 is S_OK, -2147418113 is E_UNEXPECTED (often when already empty)
+            # 0 = S_OK. -2147418113 (E_UNEXPECTED) thường gặp khi thùng đã trống.
+            if res == 0 or res == -2147418113:
+                freed = max(0, int(info_before.get("size_bytes") or 0))
                 return {
                     "success": True,
-                    "freed_bytes": info_before["size_bytes"],
-                    "freed_mb": info_before["size_mb"],
-                    "items": info_before["items"]
+                    "freed_bytes": freed,
+                    "freed_mb": round(freed / (1024 ** 2), 2),
+                    "items": int(info_before.get("items") or 0),
+                    "status": "cleaned",
+                    "reason": "",
                 }
         except Exception as e:
             print(f"[JunkCleaner] Error emptying recycle bin: {e}")
-        return {"success": False, "freed_bytes": 0, "freed_mb": 0.0, "items": 0}
+        return {
+            "success": False,
+            "freed_bytes": 0,
+            "freed_mb": 0.0,
+            "items": 0,
+            "status": "error",
+            "reason": "Không làm trống được thùng rác. Không tính dung lượng.",
+        }
 
     @staticmethod
     def scan_directory(directory: str) -> Dict[str, Any]:
-        total_size = 0
-        file_count = 0
-        if not os.path.exists(directory):
-            return {"size_bytes": 0, "file_count": 0}
-
-        try:
-            for root, dirs, files in os.walk(directory):
-                for f in files:
-                    try:
-                        filepath = os.path.join(root, f)
-                        # Avoid following symlinks outside
-                        if not os.path.islink(filepath):
-                            total_size += os.path.getsize(filepath)
-                            file_count += 1
-                    except (OSError, PermissionError):
-                        continue
-        except Exception:
-            pass
-        return {"size_bytes": total_size, "file_count": file_count}
+        return scan_tree(directory)
 
     @classmethod
-    def scan(cls, enabled_targets: Dict[str, bool]) -> Dict[str, Any]:
+    def scan(
+        cls,
+        enabled_targets: Dict[str, bool],
+        *,
+        is_admin: Optional[bool] = None,
+        environ: Optional[Dict[str, str]] = None,
+        downloads_min_age_days: Optional[int] = None,
+        now_ts: Optional[float] = None,
+        recycle_query: Optional[Callable[[], Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         """
-        Quét sơ bộ dung lượng rác và số file có thể dọn dẹp
+        Ước lượng dung lượng có thể xóa với quyền hiện tại.
+        Mục cần Admin khi chưa elevated vẫn hiện kích thước nhưng không cộng vào tổng.
         """
-        target_paths = cls.get_target_paths()
+        if is_admin is None:
+            is_admin = cls.is_admin()
+        target_paths = cls.get_target_paths(environ)
+        days = normalize_downloads_min_age_days(
+            DEFAULT_DOWNLOADS_MIN_AGE_DAYS if downloads_min_age_days is None else downloads_min_age_days
+        )
+        moment = time.time() if now_ts is None else float(now_ts)
         results = {
             "categories": {},
             "total_bytes": 0,
             "total_mb": 0.0,
-            "total_files": 0
+            "total_files": 0,
+            "admin_only_bytes": 0,
+            "admin_only_mb": 0.0,
+            "is_admin": bool(is_admin),
         }
-
-        for cat_key, is_enabled in enabled_targets.items():
-            if not is_enabled:
+        enabled = enabled_targets or {}
+        for cat_key in TARGET_ORDER:
+            if not enabled.get(cat_key, False):
                 continue
-
+            meta = TARGET_CATALOG[cat_key]
+            will_skip = bool(meta["needs_admin"]) and not is_admin
             if cat_key == "recycle_bin":
-                rb_info = cls.get_recycle_bin_info()
-                results["categories"]["recycle_bin"] = {
-                    "name": "Thùng rác (Recycle Bin)",
-                    "size_bytes": rb_info["size_bytes"],
-                    "size_mb": rb_info["size_mb"],
-                    "file_count": rb_info["items"]
-                }
-                results["total_bytes"] += rb_info["size_bytes"]
-                results["total_files"] += rb_info["items"]
-                continue
-
-            if cat_key in target_paths:
+                query = recycle_query or cls.get_recycle_bin_info
+                try:
+                    rb_info = query() or {}
+                except Exception:
+                    rb_info = {}
+                cat_bytes = max(0, int(rb_info.get("size_bytes") or 0))
+                cat_files = max(0, int(rb_info.get("items") or 0))
+            elif meta["clean_mode"] == "old_files":
                 cat_bytes = 0
                 cat_files = 0
-                for path in target_paths[cat_key]:
-                    stat = cls.scan_directory(path)
-                    cat_bytes += stat["size_bytes"]
-                    cat_files += stat["file_count"]
+                for path in target_paths.get(cat_key, []):
+                    stat_info = scan_old_files(path, days, moment)
+                    cat_bytes += stat_info["size_bytes"]
+                    cat_files += stat_info["file_count"]
+            else:
+                cat_bytes = 0
+                cat_files = 0
+                for path in target_paths.get(cat_key, []):
+                    stat_info = scan_tree(path)
+                    cat_bytes += stat_info["size_bytes"]
+                    cat_files += stat_info["file_count"]
 
-                name_map = {
-                    "user_temp": "File tạm người dùng (User Temp)",
-                    "system_temp": "File tạm hệ thống (System Temp)",
-                    "browser_cache": "Bộ nhớ đệm trình duyệt (Browser Cache)",
-                    "crash_dumps": "File kết xuất lỗi (Crash Dumps & WER)",
-                    "windows_update": "Bộ nhớ đệm Windows Update (SoftwareDistribution\\Download)",
-                    "app_caches": "Bộ nhớ đệm ứng dụng (Zalo, VS Code, Discord, Pip, Npm)"
-                }
-
-                results["categories"][cat_key] = {
-                    "name": name_map.get(cat_key, cat_key),
-                    "size_bytes": cat_bytes,
-                    "size_mb": round(cat_bytes / (1024 ** 2), 2),
-                    "file_count": cat_files
-                }
+            results["categories"][cat_key] = {
+                "name": meta["label_vi"],
+                "size_bytes": cat_bytes,
+                "size_mb": round(cat_bytes / (1024 ** 2), 2),
+                "file_count": cat_files,
+                "needs_admin": bool(meta["needs_admin"]),
+                "will_skip": will_skip,
+                "scope": meta["scope"],
+                "risk": meta["risk"],
+            }
+            if will_skip:
+                results["admin_only_bytes"] += cat_bytes
+            else:
                 results["total_bytes"] += cat_bytes
                 results["total_files"] += cat_files
 
         results["total_mb"] = round(results["total_bytes"] / (1024 ** 2), 2)
+        results["admin_only_mb"] = round(results["admin_only_bytes"] / (1024 ** 2), 2)
         return results
 
     @classmethod
-    def clean(cls, enabled_targets: Dict[str, bool], progress_callback: Optional[Callable[[str, int], None]] = None) -> Dict[str, Any]:
+    def _apply_recycle_result(cls, res: Dict[str, Any]) -> Dict[str, Any]:
+        """Chỉ cộng byte khi Windows báo thành công. Payload thất bại không được tin freed_bytes."""
+        if res.get("success"):
+            freed = max(0, int(res.get("freed_bytes") or 0))
+            items = max(0, int(res.get("items") or 0))
+            status = "cleaned" if freed or items else "empty"
+            return empty_detail(
+                "recycle_bin",
+                status=status,
+                reason="",
+                freed_bytes=freed,
+                deleted_files=items,
+            )
+        status = "skipped" if res.get("status") == "skipped" else "error"
+        return empty_detail(
+            "recycle_bin",
+            status=status,
+            reason=str(res.get("reason") or "Không làm trống được thùng rác. Không tính dung lượng."),
+            freed_bytes=0,
+            deleted_files=0,
+        )
+
+    @classmethod
+    def clean(
+        cls,
+        enabled_targets: Dict[str, bool],
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+        *,
+        is_admin: Optional[bool] = None,
+        deep_user_safe: bool = False,
+        downloads_min_age_days: Optional[int] = None,
+        environ: Optional[Dict[str, str]] = None,
+        now_ts: Optional[float] = None,
+        recycle_empty: Optional[Callable[[], Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         """
-        Thực hiện dọn dẹp an toàn các mục tiêu được chỉ định
+        Dọn các mục được chọn. Mục cần Admin bị bỏ qua khi chưa elevated.
+        total_freed_bytes chỉ gồm byte đã xóa thật.
         """
-        target_paths = cls.get_target_paths()
+        if is_admin is None:
+            is_admin = cls.is_admin()
+        plan = resolve_clean_plan(enabled_targets, is_admin=bool(is_admin), deep_user_safe=deep_user_safe)
+        target_paths = cls.get_target_paths(environ)
+        env = os.environ if environ is None else environ
+        user_profile = str(env.get("USERPROFILE", "") or "")
+        system_root = str(env.get("SystemRoot", "") or env.get("SYSTEMROOT", "") or "")
+        days = normalize_downloads_min_age_days(
+            DEFAULT_DOWNLOADS_MIN_AGE_DAYS if downloads_min_age_days is None else downloads_min_age_days
+        )
+        moment = time.time() if now_ts is None else float(now_ts)
+
+        details: Dict[str, Any] = {}
+        detail_order: List[str] = []
         total_freed_bytes = 0
         total_deleted_files = 0
-        details = {}
 
-        # 1. Dọn Thùng Rác
-        if enabled_targets.get("recycle_bin", False):
+        for skipped in plan["skipped"]:
+            key = skipped["key"]
+            details[key] = empty_detail(key, status="skipped", reason=skipped["reason"], freed_bytes=0)
+            detail_order.append(key)
+
+        runnable = [key for key in TARGET_ORDER if plan["to_run"].get(key)]
+        pct_step = 80 // max(1, len(runnable))
+        current_pct = 8
+
+        for cat_key in runnable:
+            meta = TARGET_CATALOG[cat_key]
             if progress_callback:
-                progress_callback("Đang dọn sạch Thùng rác...", 10)
-            rb_res = cls.empty_recycle_bin()
-            total_freed_bytes += rb_res["freed_bytes"]
-            total_deleted_files += rb_res["items"]
-            details["recycle_bin"] = rb_res
-
-        # 2. Dọn các thư mục tạm & cache
-        cat_order = ["user_temp", "system_temp", "browser_cache", "crash_dumps", "windows_update", "app_caches"]
-        pct_step = 80 // max(1, len(cat_order))
-        current_pct = 15
-
-        for cat_key in cat_order:
-            if not enabled_targets.get(cat_key, False):
-                continue
-
-            if progress_callback:
-                display_name = {
-                    "user_temp": "File tạm người dùng",
-                    "system_temp": "File tạm hệ thống",
-                    "browser_cache": "Cache trình duyệt",
-                    "crash_dumps": "Crash dumps & WER",
-                    "windows_update": "Cache Windows Update",
-                    "app_caches": "Cache ứng dụng (Zalo, VS Code, Discord, Pip, Npm)"
-                }.get(cat_key, cat_key)
-                progress_callback(f"Đang dọn dẹp {display_name}...", current_pct)
-
-            cat_freed_bytes = 0
-            cat_deleted_files = 0
-
-            for base_dir in target_paths.get(cat_key, []):
-                if not os.path.exists(base_dir):
-                    continue
-
-                # Xóa các file và thư mục con bên trong base_dir
-                try:
-                    for item in os.listdir(base_dir):
-                        item_path = os.path.join(base_dir, item)
-                        try:
-                            if os.path.isfile(item_path) or os.path.islink(item_path):
-                                file_size = os.path.getsize(item_path)
-                                try:
-                                    os.unlink(item_path)
-                                except PermissionError:
-                                    try:
-                                        os.chmod(item_path, stat.S_IWRITE)
-                                        os.unlink(item_path)
-                                    except Exception:
-                                        continue
-                                cat_freed_bytes += file_size
-                                cat_deleted_files += 1
-                            elif os.path.isdir(item_path):
-                                dir_size = cls.scan_directory(item_path)["size_bytes"]
-                                shutil.rmtree(item_path, onerror=remove_readonly)
-                                if not os.path.exists(item_path):
-                                    cat_freed_bytes += dir_size
-                                    cat_deleted_files += 1
-                        except (PermissionError, OSError):
-                            continue
-                except Exception:
-                    continue
-
-            total_freed_bytes += cat_freed_bytes
-            total_deleted_files += cat_deleted_files
-            details[cat_key] = {
-                "freed_bytes": cat_freed_bytes,
-                "freed_mb": round(cat_freed_bytes / (1024 ** 2), 2),
-                "deleted_files": cat_deleted_files
-            }
+                progress_callback(f"Đang dọn {meta['label_vi']}...", current_pct)
+            try:
+                if cat_key == "recycle_bin":
+                    runner = recycle_empty or cls.empty_recycle_bin
+                    raw = runner() or {}
+                    detail = cls._apply_recycle_result(raw)
+                else:
+                    agg = {
+                        "freed_bytes": 0,
+                        "deleted_files": 0,
+                        "skipped_locked": 0,
+                        "errors": 0,
+                        "protected": 0,
+                        "too_broad": 0,
+                    }
+                    for path in target_paths.get(cat_key, []):
+                        part = clean_one_path(
+                            path,
+                            clean_mode=meta["clean_mode"],
+                            min_age_days=days,
+                            now_ts=moment,
+                            user_profile=user_profile,
+                            system_root=system_root,
+                        )
+                        for field in agg:
+                            agg[field] += int(part.get(field) or 0)
+                    reason = ""
+                    status = "cleaned"
+                    if agg["protected"]:
+                        status = "error" if agg["freed_bytes"] <= 0 else "cleaned"
+                        reason = PROTECTED_REASON_VI
+                    elif agg["too_broad"] and agg["freed_bytes"] <= 0:
+                        status = "error"
+                        reason = TOO_BROAD_REASON_VI
+                    elif agg["freed_bytes"] <= 0 and agg["skipped_locked"] <= 0 and agg["errors"] <= 0:
+                        status = "empty"
+                    elif agg["skipped_locked"]:
+                        reason = LOCKED_REASON_VI
+                    detail = empty_detail(
+                        cat_key,
+                        status=status,
+                        reason=reason,
+                        freed_bytes=agg["freed_bytes"],
+                        deleted_files=agg["deleted_files"],
+                        skipped_locked=agg["skipped_locked"],
+                        errors=agg["errors"],
+                    )
+            except Exception as exc:
+                logger.warning(f"[JunkCleaner] Lỗi khi dọn {cat_key}: {exc}")
+                detail = empty_detail(
+                    cat_key,
+                    status="error",
+                    reason=f"Lỗi khi dọn mục này. Không tính dung lượng. ({exc})",
+                    freed_bytes=0,
+                )
+            details[cat_key] = detail
+            detail_order.append(cat_key)
+            total_freed_bytes += int(detail.get("freed_bytes") or 0)
+            total_deleted_files += int(detail.get("deleted_files") or 0)
             current_pct += pct_step
 
         if progress_callback:
             progress_callback("Hoàn tất dọn dẹp!", 100)
 
         freed_mb = round(total_freed_bytes / (1024 ** 2), 2)
-        logger.info(f"[JunkCleaner] Hoàn tất dọn dẹp: Đã xóa {total_deleted_files} files, giải phóng {freed_mb} MB.")
-
-        return {
+        skipped_names = [item.get("name") or item.get("key") for item in plan["skipped"]]
+        logger.info(
+            f"[JunkCleaner] Hoàn tất dọn dẹp: Đã xóa {total_deleted_files} files, "
+            f"giải phóng {format_freed_vi(total_freed_bytes)} ({total_freed_bytes} bytes). "
+            f"Bỏ qua: {skipped_names or 'không'}."
+        )
+        result = {
             "total_freed_bytes": total_freed_bytes,
             "total_freed_mb": freed_mb,
+            "freed_label_vi": format_freed_vi(total_freed_bytes),
             "total_deleted_files": total_deleted_files,
-            "details": details
+            "details": details,
+            "detail_order": detail_order,
+            "skipped": plan["skipped"],
+            "is_admin": bool(is_admin),
+            "deep_user_safe": bool(deep_user_safe),
         }
+        result["report_vi"] = format_clean_report_vi(result)
+        return result
 
 
 # ==============================================================================

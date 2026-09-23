@@ -143,7 +143,10 @@ def main():
         from core.cleaner import JunkCleaner
         from core.memory_optimizer import MemoryOptimizer
         
-        clean_res = JunkCleaner.clean(targets)
+        clean_res = JunkCleaner.clean(
+            targets,
+            downloads_min_age_days=config_mgr.get("downloads_old_min_days", 30),
+        )
         junk_mb = clean_res.get("total_freed_mb", 0.0)
         
         ram_mb = 0.0
@@ -441,6 +444,37 @@ def main():
 
     scheduler.thermal_snapshot_ready.connect(on_thermal_snapshot)
     scheduler.thermal_warning.connect(on_thermal_warning)
+
+    def on_low_disk_warning(info):
+        if not isinstance(info, dict):
+            return
+        title = str(info.get("title") or "Ổ C: sắp đầy")
+        msg = str(info.get("message") or "Ổ C: sắp hết dung lượng.")
+        try:
+            main_win.lbl_status.setText(f"💾 {title}")
+        except Exception:
+            pass
+        try:
+            from core.system_monitor import SystemMonitor
+            disk = SystemMonitor.get_disk_info("C:\\")
+            main_win._refresh_low_disk_banner(disk)
+        except Exception:
+            pass
+        if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
+            tray_mgr.notify(
+                title,
+                msg,
+                level="warning",
+                icon="💾",
+                action_text="Dọn ổ C (không cần Admin)",
+                action_callback=lambda: (
+                    force_activate_window(main_win),
+                    main_win.start_deep_c_clean(),
+                ),
+                duration_ms=7000,
+            )
+
+    scheduler.low_disk_warning.connect(on_low_disk_warning)
 
     def on_companion_tip(info):
         if not isinstance(info, dict):
