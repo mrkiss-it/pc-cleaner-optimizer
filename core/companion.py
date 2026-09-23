@@ -1770,6 +1770,16 @@ MEMORY_EXPORT_VERSION = 1
 _MEMORY_NOTE_VI = "Bản sao bộ nhớ trên một máy. Không phải đồng bộ đám mây."
 
 
+_EXPORT_SECRET_KEYS = frozenset({
+    "ai_copilot_gemini_api_key",
+    "email_report_smtp_password",
+    "smtp_password",
+    "api_key",
+    "gemini_api_key",
+    "password",
+})
+
+
 def _redact_tree(value: Any, depth: int = 0) -> Any:
     from core.companion_diary import redact_sensitive
     if depth > 8:
@@ -1789,6 +1799,8 @@ def _redact_tree(value: Any, depth: int = 0) -> Any:
     if isinstance(value, dict):
         out: Dict[str, Any] = {}
         for key, item in list(value.items())[:80]:
+            if str(key) in _EXPORT_SECRET_KEYS:
+                continue
             name = redact_sensitive(str(key))[:64]
             if not name or name == "[redacted]":
                 continue
