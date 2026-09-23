@@ -385,6 +385,15 @@ def note_user_feedback(
     summary = "Người dùng thấy AI đồng hành hữu ích." if helpful else "Người dùng thấy gợi ý chưa khớp máy này."
     if note:
         summary = f"{summary} {note}"
+    feedback_tags = None
+    topic_key = str(topic or "").strip()
+    if topic_key:
+        try:
+            from core.companion_profile import TOPIC_META
+            if topic_key in TOPIC_META:
+                feedback_tags = ["feedback", topic_key]
+        except Exception:
+            feedback_tags = None
     record_app_event(
         "user_feedback",
         summary,
@@ -394,6 +403,7 @@ def note_user_feedback(
         base_dir=base_dir,
         config_manager=config_manager,
         outcome="accepted" if helpful else "rejected",
+        tags=feedback_tags,
     )
     try:
         from core.companion_moment import learn_from_feedback
@@ -1567,6 +1577,41 @@ def observe_suggestion(accepted: bool, action_key: str = "", title: str = "", **
     )
 
 
+def _nudge_topic_snoozed(issue_class: str, base_dir: Optional[str], now: datetime) -> bool:
+    """Đừng nhắc hides that tip family from soft nudges until the 3-day window ends."""
+    try:
+        from core.companion_profile import topic_for_issue, topic_is_snoozed
+        topic = topic_for_issue(issue_class)
+        if not topic:
+            return False
+        return topic_is_snoozed(topic, base_dir=base_dir, now=now)
+    except Exception:
+        return False
+
+
+def companion_nudge_snooze_button(tip: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """Đừng nhắc for a soft info nudge.
+
+    Thermal warnings and Wi-Fi/ping emergency toasts are warning or danger
+    (or critical=True). Those never get this button.
+    """
+    try:
+        from core.companion_profile import TOPIC_META, tip_snooze_allowed
+    except Exception:
+        return None
+    if not isinstance(tip, dict):
+        return None
+    if not tip_snooze_allowed(
+        level=str(tip.get("level") or "info"),
+        critical=bool(tip.get("critical")),
+    ):
+        return None
+    topic = str(tip.get("snooze_topic") or "").strip()
+    if topic not in TOPIC_META:
+        return None
+    return {"label_vi": "Đừng nhắc", "topic": topic}
+
+
 def _nudge_topic_blocked(issue_class: str, base_dir: Optional[str], now: datetime) -> bool:
     """Muted topics and topic-level ask-more stay out of proactive nudges."""
     try:
@@ -1632,7 +1677,11 @@ def plan_companion_nudge(
     if not mature and not enough:
         return None
     hints = derive_machine_hints(events, load_skills(base_dir), limit=3, now=stamp, for_nudge=True)
-    hints = [item for item in hints if not _nudge_topic_blocked(str(item.get("issue_class") or ""), base_dir, stamp)]
+    hints = [
+        item for item in hints
+        if not _nudge_topic_blocked(str(item.get("issue_class") or ""), base_dir, stamp)
+        and not _nudge_topic_snoozed(str(item.get("issue_class") or ""), base_dir, stamp)
+    ]
     if not hints:
         return None
     chosen = dict(hints[0])
@@ -1663,7 +1712,16 @@ def plan_companion_nudge(
         "message": chosen["text"],
         "issue_class": chosen["issue_class"],
         "level": "info",
+        "critical": False,
     }
+    try:
+        from core.companion_profile import topic_for_issue
+        family = topic_for_issue(str(chosen.get("issue_class") or ""))
+        if family:
+            payload["snooze_topic"] = family
+            payload["snooze_label_vi"] = "Đừng nhắc"
+    except Exception:
+        pass
     if commit:
         state["last_nudge_ts"] = now_ts
         state["last_nudge_class"] = chosen["issue_class"]
@@ -1886,6 +1944,11 @@ def _merge_profiles(local: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str
             coaching[str(topic)] = "ask_more"
     out["topic_coaching"] = coaching
     out["quiet_hours"] = local.get("quiet_hours")
+    try:
+        from core.companion_profile import merge_snoozed_tips
+        out["snoozed_tips"] = merge_snoozed_tips(local.get("snoozed_tips"), incoming.get("snoozed_tips"))
+    except Exception:
+        out["snoozed_tips"] = local.get("snoozed_tips") or {}
     return out
 
 
@@ -1898,6 +1961,27 @@ def _store_profile(raw: Any, base_dir: Optional[str], mode: str) -> None:
         save_profile(incoming, base_dir=base_dir)
         return
     save_profile(_merge_profiles(load_profile(base_dir), incoming), base_dir=base_dir)
+
+
+def _merge_helpful_replay(local: Any, incoming: Any) -> Any:
+    """Keep the newer Có ích replay. An unsurfaced row wins over one already shown."""
+    options = [
+        item for item in (local, incoming)
+        if isinstance(item, dict) and str(item.get("action_key") or "").strip()
+    ]
+    best = None
+    for item in options:
+        if best is None:
+            best = item
+            continue
+        best_shown = bool(best.get("surfaced"))
+        item_shown = bool(item.get("surfaced"))
+        if best_shown and not item_shown:
+            best = item
+            continue
+        if best_shown == item_shown and str(item.get("at") or "") > str(best.get("at") or ""):
+            best = item
+    return best
 
 
 def _store_maturity(raw: Any, base_dir: Optional[str], mode: str) -> None:
@@ -1935,6 +2019,21 @@ def _store_maturity(raw: Any, base_dir: Optional[str], mode: str) -> None:
             local[key] = incoming.get(key)
     if not local.get("focus_session") and incoming.get("focus_session"):
         local["focus_session"] = incoming.get("focus_session")
+    shown = []
+    for item in list(local.get("shown_milestones") or []) + list(incoming.get("shown_milestones") or []):
+        text = str(item or "").strip()
+        if text and text not in shown:
+            shown.append(text)
+    local["shown_milestones"] = shown
+    local_day = str(local.get("last_milestone_date") or "")[:10]
+    incoming_day = str(incoming.get("last_milestone_date") or "")[:10]
+    if incoming_day > local_day:
+        local["last_milestone_date"] = incoming_day
+    if not (isinstance(local.get("pending_milestone"), dict) and local.get("pending_milestone", {}).get("text")):
+        incoming_pending = incoming.get("pending_milestone")
+        if isinstance(incoming_pending, dict) and incoming_pending.get("text"):
+            local["pending_milestone"] = incoming_pending
+    local["helpful_replay"] = _merge_helpful_replay(local.get("helpful_replay"), incoming.get("helpful_replay"))
     save_state(local, base_dir=base_dir)
 
 

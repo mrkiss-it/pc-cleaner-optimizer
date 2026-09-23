@@ -165,6 +165,19 @@ class CompanionInsightBar(QFrame):
         stage_row.addWidget(self.btn_stage_ok)
         self.row_stage.hide()
 
+        self.row_milestone = QWidget()
+        mile_row = QHBoxLayout(self.row_milestone)
+        mile_row.setContentsMargins(0, 0, 0, 0)
+        mile_row.setSpacing(8)
+        self.lbl_milestone = _plain_label("#fde68a")
+        self.btn_milestone_ok = QPushButton("Đã rõ")
+        self.btn_milestone_ok.setStyleSheet(_BTN_STYLE)
+        self.btn_milestone_ok.setToolTip("Mình chỉ nhắc cột mốc này một lần.")
+        self.btn_milestone_ok.clicked.connect(self._dismiss_milestone)
+        mile_row.addWidget(self.lbl_milestone, stretch=1)
+        mile_row.addWidget(self.btn_milestone_ok)
+        self.row_milestone.hide()
+
         self.row_checkin = QWidget()
         check_row = QHBoxLayout(self.row_checkin)
         check_row.setContentsMargins(0, 0, 0, 0)
@@ -254,6 +267,11 @@ class CompanionInsightBar(QFrame):
         self.btn_action.setToolTip("Một việc an toàn có sẵn trong app. Không tự dọn ổ đĩa hay sửa registry.")
         self.btn_action.clicked.connect(self._activate)
         self.btn_action.hide()
+        self.btn_snooze = QPushButton("Đừng nhắc")
+        self.btn_snooze.setStyleSheet(_BTN_STYLE)
+        self.btn_snooze.setToolTip("Ẩn chủ đề này 3 ngày. Cảnh báo nhiệt và Wi-Fi khẩn cấp vẫn hiện.")
+        self.btn_snooze.clicked.connect(self._snooze_topic)
+        self.btn_snooze.hide()
         self.btn_mute = QPushButton("Đừng nhắc lại")
         self.btn_mute.setStyleSheet(_BTN_STYLE)
         self.btn_mute.setToolTip("Im chủ đề này 7 ngày. Copilot vẫn trả lời nếu bạn hỏi.")
@@ -265,11 +283,13 @@ class CompanionInsightBar(QFrame):
         self.btn_dismiss.clicked.connect(self._dismiss)
         row.addWidget(self.lbl_insight, stretch=1)
         row.addWidget(self.btn_action)
+        row.addWidget(self.btn_snooze)
         row.addWidget(self.btn_mute)
         row.addWidget(self.btn_dismiss)
         self.row_insight.hide()
 
         root.addWidget(self.row_stage)
+        root.addWidget(self.row_milestone)
         root.addWidget(self.row_checkin)
         root.addWidget(self.row_follow)
         root.addWidget(self.row_eod)
@@ -295,6 +315,7 @@ class CompanionInsightBar(QFrame):
             except Exception:
                 pass
         self._show_stage(enabled)
+        self._show_milestone(enabled)
         self._show_checkin(enabled)
         self._show_followup(enabled)
         self._show_eod(enabled)
@@ -303,6 +324,7 @@ class CompanionInsightBar(QFrame):
         # isVisible() is false while this frame is hidden, so decide from the text.
         labels = (
             self.lbl_stage,
+            self.lbl_milestone,
             self.lbl_checkin,
             self.lbl_follow,
             self.lbl_eod,
@@ -330,6 +352,22 @@ class CompanionInsightBar(QFrame):
             return
         self.lbl_stage.setText(text)
         self.row_stage.show()
+
+    def _show_milestone(self, enabled: bool):
+        self.lbl_milestone.setText("")
+        self.row_milestone.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_moment import sync_milestone
+            payload = sync_milestone(config_manager=self.config_manager)
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("text") or "").strip()
+        if not text:
+            return
+        self.lbl_milestone.setText(text)
+        self.row_milestone.show()
 
     def _show_checkin(self, enabled: bool):
         self.lbl_checkin.setText("")
@@ -451,6 +489,7 @@ class CompanionInsightBar(QFrame):
         self._skill_id = ""
         self.lbl_insight.setText("")
         self.btn_action.hide()
+        self.btn_snooze.hide()
         self.btn_mute.hide()
         self.row_insight.hide()
         insight = current_insight(enabled=enabled) if enabled else None
@@ -471,6 +510,7 @@ class CompanionInsightBar(QFrame):
             self.btn_action.setText(label)
             self.btn_action.show()
         if self._insight_topic:
+            self.btn_snooze.show()
             self.btn_mute.show()
         self.lbl_insight.setText(str(insight.get("text") or ""))
         if insight.get("quiet"):
@@ -510,6 +550,24 @@ class CompanionInsightBar(QFrame):
 
     def _activate_checkin(self):
         self._emit_allowed(self._checkin_action, self._checkin_skill_id)
+
+    def _dismiss_milestone(self):
+        try:
+            from core.companion_moment import dismiss_milestone
+            dismiss_milestone()
+        except Exception:
+            pass
+        self.refresh()
+
+    def _snooze_topic(self):
+        topic = str(self._insight_topic or "")
+        if topic:
+            try:
+                from core.companion_profile import snooze_tip_family
+                snooze_tip_family(topic, level="info", critical=False)
+            except Exception:
+                pass
+        self.refresh()
 
     def _dismiss_stage(self):
         try:
