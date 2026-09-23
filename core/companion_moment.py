@@ -607,6 +607,22 @@ def attach_insight_action(
         if skill is not None:
             out["skill_id"] = str(getattr(skill, "id", "") or "")
             out["skill_issue"] = str(getattr(skill, "issue_class", "") or "")
+    replay_used = False
+    try:
+        if not out.get("action_key"):
+            attached = maybe_attach_helpful_replay(
+                out,
+                now=now,
+                base_dir=base_dir,
+                config_manager=config_manager,
+                surface="insight",
+                mark=False,
+            )
+            if isinstance(attached, dict) and attached.get("helpful_replay"):
+                out = attached
+                replay_used = True
+    except Exception:
+        replay_used = False
     try:
         from core.companion_profile import in_quiet_hours, quiet_hours_allow_actions
         stamp = now or datetime.now()
@@ -615,9 +631,16 @@ def attach_insight_action(
         ):
             for extra in ("action_key", "action_label_vi", "skill_id", "skill_issue"):
                 out.pop(extra, None)
+            out.pop("helpful_replay", None)
             out["quiet"] = True
+            replay_used = False
     except Exception:
         pass
+    if replay_used and out.get("action_key"):
+        try:
+            mark_helpful_replay_surfaced(base_dir)
+        except Exception:
+            pass
     if (focus_on or stressed) and stage is not None:
         try:
             from core.companion_profile import effective_coaching, score_trust
@@ -1177,8 +1200,16 @@ _CHECKIN_SKIP_KINDS = frozenset({
     "stage_up",
     "user_feedback",
     "skill_saved",
+    "tip_snooze",
 })
-_CHECKIN_LIMIT = 220
+_CHECKIN_LIMIT = 360
+# One extra morning sentence, in this order. Goal title stays in the existing
+# check-in sentence; it is not stacked on top of a second hint.
+_MORNING_HINT_ORDER = ("rough_yesterday", "quiet_ended", "battery_low")
+_BATTERY_LOW_PERCENT = 30
+# Minutes after quiet hours end when the greeting may mention that they ended.
+_QUIET_END_GREETING_MIN = 90
+_STRESS_TOPIC = {"network": "wifi", "thermal": "thermal", "ram": "ram"}
 
 
 def _checkin_weight(event: Dict[str, Any]) -> int:
@@ -1217,13 +1248,125 @@ def _clip_checkin(text: str) -> str:
     return raw[: _CHECKIN_LIMIT - 1].rstrip() + "…"
 
 
+def light_battery_hint() -> Optional[Dict[str, Any]]:
+    """Percent from the local battery sensor. Unknown → None.
+
+    Uses psutil only. No powercfg, no network, no Gemini.
+    """
+    try:
+        import psutil
+        battery = psutil.sensors_battery()
+    except Exception:
+        return None
+    if battery is None:
+        return None
+    try:
+        percent = int(battery.percent)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "has_battery": True,
+        "percent": max(0, min(100, percent)),
+        "power_plugged": bool(getattr(battery, "power_plugged", False)),
+    }
+
+
+def _normalize_battery(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict) or not raw.get("has_battery"):
+        return None
+    try:
+        percent = int(raw.get("percent"))
+    except (TypeError, ValueError):
+        return None
+    return {
+        "has_battery": True,
+        "percent": max(0, min(100, percent)),
+        "power_plugged": bool(raw.get("power_plugged")),
+    }
+
+
+def quiet_hours_just_ended(
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True in the short window after quiet hours end. Still-quiet stays false."""
+    stamp = now or datetime.now()
+    try:
+        from core.companion_profile import in_quiet_hours, quiet_hours_settings
+        settings = quiet_hours_settings(profile, base_dir)
+        if not settings.get("enabled"):
+            return False
+        if in_quiet_hours(stamp, base_dir=base_dir, profile=profile):
+            return False
+        end = str(settings.get("end") or "")
+        hour_s, minute_s = end.split(":", 1)
+        end_m = int(hour_s) * 60 + int(minute_s)
+    except Exception:
+        return False
+    now_m = stamp.hour * 60 + stamp.minute
+    delta = (now_m - end_m) % (24 * 60)
+    return delta <= _QUIET_END_GREETING_MIN
+
+
+def _morning_hint_line(
+    *,
+    now: datetime,
+    base_dir: Optional[str],
+    profile: Dict[str, Any],
+    events: List[Dict[str, Any]],
+    hidden: set,
+    focus_on: bool,
+    battery: Optional[Dict[str, Any]],
+) -> str:
+    """At most one calm clause. Focus mode adds nothing extra.
+
+    Priority: yesterday's rough day, quiet hours just ended, then a known low
+    battery. The active goal is already a sentence in the check-in body.
+    """
+    if focus_on:
+        return ""
+    yesterday = now - timedelta(days=1)
+    groups = [
+        group for group in machine_stress_groups(events, yesterday)
+        if _STRESS_TOPIC.get(group, "") not in hidden
+    ]
+    choices = {
+        "rough_yesterday": (
+            "Hôm qua máy hơi nặng, hôm nay mình nói nhẹ."
+            if len(groups) >= 2
+            else ""
+        ),
+        "quiet_ended": (
+            "Giờ yên vừa hết, mình chào nhẹ."
+            if quiet_hours_just_ended(now, base_dir=base_dir, profile=profile)
+            else ""
+        ),
+        "battery_low": "",
+    }
+    known = _normalize_battery(battery)
+    if known is not None and int(known["percent"]) <= _BATTERY_LOW_PERCENT:
+        choices["battery_low"] = "Pin đang thấp, mình chào ngắn thôi."
+    for key in _MORNING_HINT_ORDER:
+        line = str(choices.get(key) or "").strip()
+        if line:
+            return line
+    return ""
+
+
 def compose_daily_checkin(
     *,
     now: Optional[datetime] = None,
     base_dir: Optional[str] = None,
     config_manager: Optional[Any] = None,
+    battery: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """One local line from yesterday's journal, the goal, or a saved skill. No LLM."""
+    """One local morning line from this PC. No Gemini and no network.
+
+    Uses yesterday's journal, the goal title, and at most one extra hint:
+    a rough day yesterday, quiet hours just ending, or a known low battery.
+    Pass ``battery`` to skip the sensor (tests). ``None`` reads psutil only.
+    """
     if not _cfg_enabled(config_manager):
         return None
     stamp = now or datetime.now()
@@ -1231,6 +1374,7 @@ def compose_daily_checkin(
         from core.companion import current_stage
         from core.companion_profile import (
             active_muted_topics,
+            active_snoozed_topics,
             active_time_windows,
             annotate_learned_line,
             effective_coaching,
@@ -1247,13 +1391,15 @@ def compose_daily_checkin(
     except Exception:
         return None
     muted = set(active_muted_topics(now=stamp, profile=profile))
+    snoozed = set(active_snoozed_topics(now=stamp, profile=profile))
+    hidden = muted | snoozed
     yesterday = (stamp - timedelta(days=1)).strftime("%Y-%m-%d")
-    counts = _yesterday_counts(events, yesterday, muted)
+    counts = _yesterday_counts(events, yesterday, hidden)
     goal = profile.get("goal") if isinstance(profile.get("goal"), dict) else None
     goal_text = str((goal or {}).get("text") or "").strip()
     goal_topic = str((goal or {}).get("topic") or "")
     habits = [item for item in (profile.get("habits") or []) if isinstance(item, dict)]
-    has_local = bool(counts or (goal_text and goal_topic not in muted) or habits or skills)
+    has_local = bool(counts or (goal_text and goal_topic not in hidden) or habits or skills)
     if stage.stage <= 0 and not has_local:
         return None
     trust = score_trust(profile=profile, base_dir=base_dir, now=stamp)
@@ -1278,7 +1424,7 @@ def compose_daily_checkin(
             parts.append(f"Hôm qua {phrase} ({counts[lead]} lần).")
         else:
             parts.append(f"Hôm qua {phrase}.")
-    if goal_text and goal_topic not in muted:
+    if goal_text and goal_topic not in hidden:
         if shy or stage.stage <= 1:
             parts.append(f"Mục tiêu còn mở: «{goal_text}».")
         else:
@@ -1288,7 +1434,7 @@ def compose_daily_checkin(
     if not parts:
         for habit in habits:
             topic = str(habit.get("topic") or "")
-            if topic in muted:
+            if topic in hidden:
                 continue
             detail = str(habit.get("detail_vi") or habit.get("label_vi") or "").strip()
             if not detail:
@@ -1301,7 +1447,7 @@ def compose_daily_checkin(
     if not parts and skills:
         for skill in skills:
             topic = topic_for_issue(getattr(skill, "issue_class", ""))
-            if topic in muted:
+            if topic in hidden:
                 continue
             suggest = str(getattr(skill, "suggest", "") or "").strip()
             if not suggest:
@@ -1316,7 +1462,7 @@ def compose_daily_checkin(
             parts.append("Hôm qua máy này yên. Mình đang làm quen, chưa có gì mới để kể.")
         else:
             parts.append("Hôm qua máy này yên — mình chưa có gì mới để kể.")
-    if lead and lead not in muted:
+    if lead and lead not in hidden:
         for window in active_time_windows(wider, now=stamp, profile=profile):
             if str(window.get("topic") or "") != lead:
                 continue
@@ -1326,6 +1472,18 @@ def compose_daily_checkin(
             break
     if str(trust.get("level") or "") == "low" and parts:
         parts.append("Mình hỏi thêm, chưa đề xuất việc cần làm.")
+    known_battery = battery if battery is not None else light_battery_hint()
+    hint = _morning_hint_line(
+        now=stamp,
+        base_dir=base_dir,
+        profile=profile,
+        events=wider,
+        hidden=hidden,
+        focus_on=focus_on,
+        battery=known_battery if isinstance(known_battery, dict) else None,
+    )
+    if hint and hint not in " ".join(parts):
+        parts.append(hint)
     aside = str(voice.get("aside_vi") or "").strip()
     if aside and (focus_on or stressed) and stage.stage >= 1 and aside not in " ".join(parts):
         parts.append(aside)
@@ -1336,7 +1494,7 @@ def compose_daily_checkin(
         and stage.may_propose_actions
         and not shy
         and lead
-        and lead not in muted
+        and lead not in hidden
         and not topic_asks_more(lead, profile=profile)
     ):
         skill = skill_for_insight(lead, base_dir=base_dir, now=stamp, events=events)
@@ -1397,6 +1555,15 @@ def sync_daily_checkin(
             return pending
         return None
     payload = compose_daily_checkin(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    if payload:
+        payload = maybe_attach_helpful_replay(
+            payload,
+            now=stamp,
+            base_dir=base_dir,
+            config_manager=config_manager,
+            surface="checkin",
+            mark=True,
+        )
     state = load_state(base_dir)
     state["last_checkin_date"] = today
     state["pending_checkin"] = payload
@@ -1413,6 +1580,179 @@ def dismiss_daily_checkin(
     state["last_checkin_date"] = stamp.strftime("%Y-%m-%d")
     state["pending_checkin"] = None
     save_state(state, base_dir=base_dir)
+
+
+# A Có ích on an allowlisted tap can be offered once more, within this window.
+HELPFUL_REPLAY_DAYS = 7
+_HELPFUL_REPLAY_NOTE = "Lần trước có ích — mình để lại nút, không tự chạy."
+
+
+def remember_helpful_action(
+    action_key: str,
+    *,
+    topic: str = "",
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Remember one allowlisted action the user marked Có ích. Blocked keys are ignored."""
+    key = str(action_key or "").strip()
+    if not is_allowed_insight_action(key):
+        return None
+    try:
+        from core.companion_skills import BLOCKED_ACTION_KEYS
+        if key in BLOCKED_ACTION_KEYS:
+            return None
+    except Exception:
+        return None
+    stamp = now or datetime.now()
+    payload = {
+        "action_key": key,
+        "topic": _topic_for_allowlisted(key) or str(topic or "")[:24],
+        "at": stamp.replace(microsecond=0).isoformat(timespec="seconds"),
+        "surfaced": False,
+    }
+    state = load_state(base_dir)
+    state["helpful_replay"] = payload
+    save_state(state, base_dir=base_dir)
+    return payload
+
+
+def clear_helpful_replay(
+    action_key: str = "",
+    base_dir: Optional[str] = None,
+) -> None:
+    """Drop a replay. A key only clears that same action."""
+    state = load_state(base_dir)
+    current = state.get("helpful_replay")
+    if not isinstance(current, dict):
+        return
+    wanted = str(action_key or "").strip()
+    if wanted and str(current.get("action_key") or "") != wanted:
+        return
+    state["helpful_replay"] = None
+    save_state(state, base_dir=base_dir)
+
+
+def mark_helpful_replay_surfaced(base_dir: Optional[str] = None) -> None:
+    state = load_state(base_dir)
+    replay = state.get("helpful_replay")
+    if not isinstance(replay, dict) or not replay.get("action_key"):
+        return
+    replay = dict(replay)
+    replay["surfaced"] = True
+    state["helpful_replay"] = replay
+    save_state(state, base_dir=base_dir)
+
+
+def eligible_helpful_replay(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, str]]:
+    """The Có ích action, if propose rules still allow that button.
+
+    Mute, snooze, quiet hours, focus, and a rough day use the same gates as
+    other propose buttons. Nothing here invents a key outside the allowlist.
+    """
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    state = load_state(base_dir)
+    replay = state.get("helpful_replay")
+    if not isinstance(replay, dict) or replay.get("surfaced"):
+        return None
+    key = str(replay.get("action_key") or "").strip()
+    if not is_allowed_insight_action(key):
+        return None
+    try:
+        from core.companion_skills import BLOCKED_ACTION_KEYS
+        if key in BLOCKED_ACTION_KEYS:
+            return None
+    except Exception:
+        return None
+    at = _parse_iso(replay.get("at"))
+    if at is None or stamp - at > timedelta(days=HELPFUL_REPLAY_DAYS):
+        return None
+    topic = str(replay.get("topic") or "") or _topic_for_allowlisted(key)
+    try:
+        from core.companion_profile import (
+            effective_coaching,
+            in_quiet_hours,
+            load_profile,
+            quiet_hours_allow_actions,
+            score_trust,
+            topic_asks_more,
+            topic_is_muted,
+            topic_is_snoozed,
+        )
+        from core.companion import current_stage
+        if topic and (topic_is_muted(topic, base_dir=base_dir, now=stamp) or topic_is_snoozed(topic, base_dir=base_dir, now=stamp)):
+            return None
+        if in_quiet_hours(stamp, base_dir=base_dir) and not quiet_hours_allow_actions(stamp, base_dir=base_dir):
+            return None
+        profile = load_profile(base_dir)
+        stage = current_stage(config_manager=config_manager, base_dir=base_dir)
+        trust = score_trust(profile=profile, base_dir=base_dir, now=stamp)
+        coaching = effective_coaching(profile, topic=topic, base_dir=base_dir, now=stamp)
+        rows = recent_events(days=1, limit=0, base_dir=base_dir, now=stamp)
+        focus_on = exam_focus_is_live()
+        stressed = machine_stress_active(rows, stamp)
+        voice = stage_voice(
+            stage.stage,
+            coaching=coaching,
+            may_propose=bool(stage.may_propose_actions),
+            trust=str(trust.get("level") or "steady"),
+            focus_active=focus_on,
+            stressed=stressed,
+        )
+        spec = INSIGHT_ACTION_ALLOWLIST.get(key) or {}
+        if spec.get("needs_propose") and voice.get("boldness") in ("shy", "ask"):
+            return None
+        if topic and topic_asks_more(topic, profile=profile):
+            return None
+        action = _calm_insight_action(
+            {"key": key, "label_vi": str(spec.get("label_vi") or "")},
+            focus_active=focus_on,
+            stressed=stressed,
+        )
+        return action
+    except Exception:
+        return None
+
+
+def maybe_attach_helpful_replay(
+    payload: Optional[Dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+    surface: str = "checkin",
+    mark: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Offer the last Có ích action once, on the morning line or a matching insight."""
+    if not isinstance(payload, dict) or not payload.get("text"):
+        return payload
+    if payload.get("action_key"):
+        return payload
+    action = eligible_helpful_replay(now=now, base_dir=base_dir, config_manager=config_manager)
+    if not action or not action.get("key"):
+        return payload
+    if surface == "insight":
+        topic = str(payload.get("topic") or "")
+        replay_topic = _topic_for_allowlisted(str(action.get("key") or ""))
+        if topic and replay_topic and topic != replay_topic:
+            return payload
+    out = dict(payload)
+    out["action_key"] = action["key"]
+    out["action_label_vi"] = action.get("label_vi") or ""
+    out["helpful_replay"] = True
+    text = str(out.get("text") or "")
+    if _HELPFUL_REPLAY_NOTE not in text:
+        out["text"] = _clip_checkin((text + " " + _HELPFUL_REPLAY_NOTE).strip())
+    if mark:
+        mark_helpful_replay_surfaced(base_dir)
+    return out
 
 
 # One local yes/no after an allowlisted tap. No second question while one is open.
@@ -1446,6 +1786,7 @@ _EOD_SKIP = frozenset({
     "user_feedback",
     "suggestion_accepted",
     "suggestion_rejected",
+    "tip_snooze",
 })
 _EOD_LABEL = (
     ("wifi_weak", "Wi-Fi chưa ổn"),
@@ -1631,6 +1972,16 @@ def answer_action_followup(
         )
     except Exception:
         pass
+    if helpful and action_key:
+        try:
+            remember_helpful_action(action_key, topic=topic, now=stamp, base_dir=base_dir)
+        except Exception:
+            pass
+    elif action_key:
+        try:
+            clear_helpful_replay(action_key, base_dir=base_dir)
+        except Exception:
+            pass
     return {"helpful": bool(helpful), "topic": topic, "action_key": action_key}
 
 
@@ -2068,4 +2419,141 @@ def dismiss_goal_conflict(
     state = load_state(base_dir)
     state["last_goal_conflict_date"] = stamp.strftime("%Y-%m-%d")
     state["pending_goal_conflict"] = None
+    save_state(state, base_dir=base_dir)
+
+
+# Local milestones from diary + profile. One celebration a day, each id once.
+# Stage-up is not a milestone: pending_stage_up already celebrates it.
+USEFUL_ANSWER_GOAL = 5
+_MILESTONE_TEXT = {
+    "first_week": "Cột mốc: đủ một tuần mình ở cạnh máy này. Cảm ơn bạn đã để mình học dần.",
+    "useful_answers": "Cột mốc: bạn đã bảo Có ích năm lần. Mình nhớ những việc thật sự giúp máy này.",
+    "focus_session": "Cột mốc: buổi Trước thi / họp đầu tiên đã có lời bạn. Mình sẽ giữ nhẹ.",
+}
+
+
+def _useful_answer_count(events: Optional[List[Dict[str, Any]]]) -> int:
+    total = 0
+    for event in events or []:
+        if str(event.get("kind") or "") != "user_feedback":
+            continue
+        if "Có ích" not in str(event.get("summary") or ""):
+            continue
+        if str(event.get("outcome") or "") not in ("accepted", "ok", ""):
+            continue
+        total += 1
+    return total
+
+
+def _focus_session_with_feedback(events: Optional[List[Dict[str, Any]]]) -> bool:
+    ended = False
+    answered = False
+    for event in events or []:
+        kind = str(event.get("kind") or "")
+        if kind == "focus_end":
+            ended = True
+            continue
+        if kind != "user_feedback":
+            continue
+        tags = {str(tag) for tag in (event.get("tags") or [])}
+        summary = str(event.get("summary") or "")
+        if "focus" in tags or "Trước thi" in summary:
+            answered = True
+    return ended and answered
+
+
+def milestone_candidates(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, str]]:
+    """Unshown ids are filtered by the caller. This list never includes stage-up."""
+    del now  # candidates are facts already on disk, not a clock trick
+    try:
+        from core.companion_diary import read_events
+        events = read_events(base_dir=base_dir, limit=0)
+    except Exception:
+        events = []
+    state = load_state(base_dir)
+    dates = state.get("active_dates") if isinstance(state.get("active_dates"), list) else []
+    found: List[Dict[str, str]] = []
+    if len(dates) >= 7:
+        found.append({"id": "first_week", "text": _MILESTONE_TEXT["first_week"]})
+    if _useful_answer_count(events) >= USEFUL_ANSWER_GOAL:
+        found.append({"id": "useful_answers", "text": _MILESTONE_TEXT["useful_answers"]})
+    if _focus_session_with_feedback(events):
+        found.append({"id": "focus_session", "text": _MILESTONE_TEXT["focus_session"]})
+    return found
+
+
+def _stage_banner_open(base_dir: Optional[str], today: str) -> bool:
+    pending = load_state(base_dir).get("pending_stage_up")
+    if not isinstance(pending, dict) or not str(pending.get("text") or "").strip():
+        return False
+    day = str(pending.get("date") or "")[:10]
+    return (not day) or day >= today
+
+
+def sync_milestone(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """At most one warm line per day. Quiet hours and Trước thi / họp wait.
+
+    A stage-up banner that is still open today blocks a new milestone so the
+    same climb is not celebrated twice. Dismissing the stage banner does not
+    mark the milestone shown.
+    """
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    today = stamp.strftime("%Y-%m-%d")
+    try:
+        from core.companion_profile import in_quiet_hours
+        quiet = in_quiet_hours(stamp, base_dir=base_dir)
+    except Exception:
+        quiet = False
+    if quiet or exam_focus_is_live():
+        return None
+    state = load_state(base_dir)
+    pending = state.get("pending_milestone")
+    if (
+        isinstance(pending, dict)
+        and str(pending.get("text") or "").strip()
+        and str(pending.get("date") or "")[:10] == today
+    ):
+        return pending
+    if str(state.get("last_milestone_date") or "") == today:
+        return None
+    if _stage_banner_open(base_dir, today):
+        return None
+    shown = [str(item) for item in (state.get("shown_milestones") or [])]
+    chosen = None
+    for item in milestone_candidates(base_dir=base_dir, now=stamp):
+        if str(item.get("id") or "") in shown:
+            continue
+        chosen = dict(item)
+        break
+    if not chosen:
+        return None
+    chosen["date"] = today
+    if chosen["id"] not in shown:
+        shown.append(chosen["id"])
+    state["shown_milestones"] = shown
+    state["last_milestone_date"] = today
+    state["pending_milestone"] = chosen
+    save_state(state, base_dir=base_dir)
+    return chosen
+
+
+def dismiss_milestone(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    """Hide today's cột mốc. The id stays shown so it does not fire again."""
+    stamp = now or datetime.now()
+    state = load_state(base_dir)
+    state["pending_milestone"] = None
+    state["last_milestone_date"] = stamp.strftime("%Y-%m-%d")
     save_state(state, base_dir=base_dir)

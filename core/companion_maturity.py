@@ -16,6 +16,9 @@ from config_manager import companion_dir
 
 STATE_FILENAME = "maturity.json"
 MAX_ACTIVE_DATES = 400
+# Local celebrations that fire once. Stage-up is intentionally absent:
+# that banner already lives on pending_stage_up / last_celebrated_stage.
+MILESTONE_IDS = frozenset({"first_week", "useful_answers", "focus_session"})
 
 STAGE_LABELS_VI = {
     0: "Mới gặp",
@@ -107,6 +110,10 @@ def default_state() -> Dict[str, Any]:
         "focus_session": None,
         "last_goal_conflict_date": "",
         "pending_goal_conflict": None,
+        "shown_milestones": [],
+        "last_milestone_date": "",
+        "pending_milestone": None,
+        "helpful_replay": None,
     }
 
 
@@ -168,7 +175,63 @@ def load_state(base_dir: Optional[str] = None) -> Dict[str, Any]:
     merged["pending_goal_conflict"] = (
         pending_conflict if isinstance(pending_conflict, dict) and pending_conflict.get("text") else None
     )
+    merged["shown_milestones"] = _clean_shown_milestones(merged.get("shown_milestones"))
+    merged["last_milestone_date"] = str(merged.get("last_milestone_date") or "")[:10]
+    merged["pending_milestone"] = _clean_pending_milestone(merged.get("pending_milestone"))
+    merged["helpful_replay"] = _clean_helpful_replay(merged.get("helpful_replay"))
     return merged
+
+
+def _clean_shown_milestones(raw: Any) -> List[str]:
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for item in raw:
+        key = str(item or "").strip()
+        if key in MILESTONE_IDS and key not in out:
+            out.append(key)
+    return out
+
+
+def _clean_pending_milestone(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    milestone_id = str(raw.get("id") or "").strip()
+    text = str(raw.get("text") or "").strip()
+    if milestone_id not in MILESTONE_IDS or not text:
+        return None
+    return {
+        "id": milestone_id,
+        "text": text[:240],
+        "date": str(raw.get("date") or "")[:10],
+    }
+
+
+def _clean_helpful_replay(raw: Any) -> Optional[Dict[str, Any]]:
+    """One allowlisted Có ích action. Blocked keys are dropped on load."""
+    if not isinstance(raw, dict):
+        return None
+    key = str(raw.get("action_key") or "").strip()
+    if not key:
+        return None
+    try:
+        from core.companion_skills import BLOCKED_ACTION_KEYS
+        if key in BLOCKED_ACTION_KEYS:
+            return None
+    except Exception:
+        return None
+    try:
+        from core.companion_moment import INSIGHT_ACTION_ALLOWLIST
+        if key not in INSIGHT_ACTION_ALLOWLIST:
+            return None
+    except Exception:
+        return None
+    return {
+        "action_key": key,
+        "topic": str(raw.get("topic") or "")[:24],
+        "at": str(raw.get("at") or "")[:32],
+        "surfaced": bool(raw.get("surfaced")),
+    }
 
 
 def _clean_focus_session(raw: Any) -> Optional[Dict[str, Any]]:

@@ -26,6 +26,12 @@ MAX_NOTE_LEN = 120
 PROFILE_VERSION = 1
 MUTE_DAYS = 7
 SOFT_MUTE_DAYS = 2
+# Đừng nhắc hides one tip family for this many days from the tap.
+# Not "until tomorrow morning": a snooze at 22:00 still lasts three full days
+# (`until` is compared with `until > now`). Critical thermal / Wi-Fi emergency
+# alerts are never stored here — see tip_snooze_allowed.
+SNOOZE_DAYS = 3
+CRITICAL_ALERT_LEVELS = frozenset({"warning", "danger", "critical", "emergency"})
 QUIET_HOURS_START = "23:00"
 QUIET_HOURS_END = "07:00"
 # Trust is computed, not trained. Fewer than this many accept/reject rows stays "steady".
@@ -204,6 +210,7 @@ def default_profile() -> Dict[str, Any]:
         "corrections": [],
         "preferences": [],
         "quiet_hours": _default_quiet_hours(),
+        "snoozed_tips": {},
     }
 
 
@@ -258,6 +265,7 @@ def load_profile(base_dir: Optional[str] = None) -> Dict[str, Any]:
     merged["corrections"] = corrections
     merged["preferences"] = preferences
     merged["quiet_hours"] = _clean_quiet_hours(merged.get("quiet_hours"))
+    merged["snoozed_tips"] = _clean_snoozed(merged.get("snoozed_tips"))
     return merged
 
 
@@ -275,6 +283,7 @@ def save_profile(profile: Dict[str, Any], base_dir: Optional[str] = None) -> Dic
     payload["corrections"] = corrections
     payload["preferences"] = preferences
     payload["quiet_hours"] = _clean_quiet_hours(payload.get("quiet_hours"))
+    payload["snoozed_tips"] = _clean_snoozed(payload.get("snoozed_tips"))
     _atomic_write_json(profile_path(base_dir), payload)
     return payload
 
@@ -557,6 +566,140 @@ def clear_feedback_mute(topic: str, base_dir: Optional[str] = None) -> bool:
     profile["muted_topics"] = muted
     save_profile(profile, base_dir=base_dir)
     return True
+
+
+def _parse_snooze(value: Any) -> Optional[Dict[str, str]]:
+    if isinstance(value, str):
+        until = value
+    elif isinstance(value, dict):
+        until = str(value.get("until") or "")
+    else:
+        return None
+    try:
+        when = datetime.fromisoformat(str(until).replace("Z", ""))
+    except Exception:
+        return None
+    return {"until": when.replace(microsecond=0).isoformat(timespec="seconds")}
+
+
+def _clean_snoozed(raw: Any) -> Dict[str, Dict[str, str]]:
+    """Keep well-formed snoozes, including ones a simulated clock would call expired."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for topic, value in raw.items():
+        key = str(topic or "").strip()
+        if key not in TOPIC_META:
+            continue
+        parsed = _parse_snooze(value)
+        if parsed:
+            out[key] = parsed
+    return out
+
+
+def tip_snooze_allowed(*, level: str = "info", critical: bool = False) -> bool:
+    """Soft companion tips only.
+
+    Thermal warnings and Wi-Fi/ping emergency toasts use a warning or danger
+    level (or critical=True). Those are never snoozable. Habit nudges and
+    insight lines stay level=info and may be snoozed.
+    """
+    if critical:
+        return False
+    return str(level or "info").strip().lower() not in CRITICAL_ALERT_LEVELS
+
+
+def active_snoozed_topics(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, str]]:
+    data = profile if isinstance(profile, dict) else load_profile(base_dir)
+    stamp = now or datetime.now()
+    active: Dict[str, Dict[str, str]] = {}
+    for topic, meta in _clean_snoozed(data.get("snoozed_tips")).items():
+        try:
+            until = datetime.fromisoformat(meta["until"])
+        except Exception:
+            continue
+        if until > stamp:
+            active[topic] = meta
+    return active
+
+
+def topic_is_snoozed(
+    topic: str,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> bool:
+    key = str(topic or "").strip()
+    return bool(key) and key in active_snoozed_topics(base_dir=base_dir, now=now, profile=profile)
+
+
+def snooze_tip_family(
+    topic: str,
+    days: int = SNOOZE_DAYS,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    *,
+    level: str = "info",
+    critical: bool = False,
+    write_diary: bool = True,
+) -> Optional[Dict[str, str]]:
+    """Hide one tip family for SNOOZE_DAYS (default 3) from this moment.
+
+    The window is three days, not until tomorrow morning. A tap at 22:00 still
+    covers the next three days. Expired rows stay on disk but are inactive.
+
+    Critical thermal / Wi-Fi emergency alerts are refused: nothing is stored
+    and no diary line is written. Soft insight tips and info nudges may.
+    """
+    if not tip_snooze_allowed(level=level, critical=critical):
+        return None
+    key = str(topic or "").strip()
+    if key not in TOPIC_META:
+        return None
+    try:
+        span = max(1, int(days))
+    except (TypeError, ValueError):
+        span = SNOOZE_DAYS
+    stamp = now or datetime.now()
+    until_dt = (stamp + timedelta(days=span)).replace(microsecond=0)
+    until = until_dt.isoformat(timespec="seconds")
+    profile = load_profile(base_dir)
+    snoozed = _clean_snoozed(profile.get("snoozed_tips"))
+    snoozed[key] = {"until": until}
+    profile["snoozed_tips"] = snoozed
+    save_profile(profile, base_dir=base_dir)
+    if write_diary:
+        name = str((TOPIC_META.get(key) or {}).get("name") or key)
+        summary = f"Bạn chọn Đừng nhắc {name} trong {span} ngày."
+        try:
+            from core.companion import record_app_event
+            record_app_event(
+                "tip_snooze",
+                summary,
+                source="user",
+                now=stamp,
+                base_dir=base_dir,
+                outcome="neutral",
+                tags=["snooze", key],
+                coalesce=False,
+            )
+        except Exception:
+            pass
+    return {"topic": key, "until": until}
+
+
+def merge_snoozed_tips(local: Any, incoming: Any) -> Dict[str, Dict[str, str]]:
+    """Union of snoozes. The later `until` wins for the same family."""
+    merged = _clean_snoozed(local)
+    for topic, meta in _clean_snoozed(incoming).items():
+        current = merged.get(topic)
+        if current is None or str(meta.get("until") or "") > str(current.get("until") or ""):
+            merged[topic] = meta
+    return merged
 
 
 def clear_muted_topics(base_dir: Optional[str] = None) -> int:
@@ -1350,6 +1493,13 @@ def format_profile_browse(profile: Optional[Dict[str, Any]] = None, base_dir: Op
     quiet = quiet_hours_settings(data)
     if quiet.get("enabled"):
         lines.append(f"Giờ yên lặng: {quiet.get('start')}–{quiet.get('end')}.")
+    snoozed = active_snoozed_topics(profile=data)
+    if snoozed:
+        names = [
+            str((TOPIC_META.get(topic) or {}).get("name") or topic)
+            for topic in sorted(snoozed)
+        ]
+        lines.append("Đừng nhắc: " + ", ".join(names) + ".")
     return "\n".join(lines)
 
 
@@ -1744,9 +1894,12 @@ def current_insight(
     candidates = build_insight_candidates(data, rows, now=stamp)
     dismissed = set(data.get("dismissed_insights") or [])
     muted = set(active_muted_topics(now=stamp, profile=data))
+    snoozed = set(active_snoozed_topics(now=stamp, profile=data))
     visible = [
         item for item in candidates
-        if item.get("id") not in dismissed and str(item.get("topic") or "") not in muted
+        if item.get("id") not in dismissed
+        and str(item.get("topic") or "") not in muted
+        and str(item.get("topic") or "") not in snoozed
     ]
     if not visible:
         return None

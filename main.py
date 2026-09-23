@@ -458,11 +458,32 @@ def main():
         message = str(info.get("message") or "").strip()
         if not message:
             return
+        # Soft info nudges may offer Đừng nhắc. Thermal warnings and Wi-Fi
+        # emergency toasts (warning/danger) never take this button.
+        action_text = None
+        action_callback = None
+        try:
+            from core.companion import companion_nudge_snooze_button
+            from core.companion_profile import snooze_tip_family
+            button = companion_nudge_snooze_button(info)
+            if button:
+                action_text = button["label_vi"]
+                family = button["topic"]
+
+                def _snooze(topic=family):
+                    snooze_tip_family(topic, level="info", critical=False)
+
+                action_callback = _snooze
+        except Exception:
+            action_text = None
+            action_callback = None
         tray_mgr.notify(
             title,
             message,
             level=str(info.get("level") or "info"),
             icon="🌱",
+            action_text=action_text,
+            action_callback=action_callback,
             duration_ms=6500,
         )
 

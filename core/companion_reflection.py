@@ -222,6 +222,7 @@ def template_reflection(
         "suggestion_accepted": "làm theo gợi ý",
         "suggestion_rejected": "từ chối gợi ý",
         "ping_repaired": "ping đã đo lại",
+        "tip_snooze": "Đừng nhắc",
     }
     bits = []
     for kind, label in labels.items():

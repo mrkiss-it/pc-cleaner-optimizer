@@ -2090,11 +2090,405 @@ ExamMeetingFocus.reset_for_tests()
 
 
 # ---------------------------------------------------------------------------
+# Đừng nhắc, cột mốc, richer morning line, last Có ích action
+# ---------------------------------------------------------------------------
+
+from core.companion import companion_nudge_snooze_button, plan_companion_nudge
+from core.companion_moment import (
+    compose_daily_checkin,
+    dismiss_milestone,
+    eligible_helpful_replay,
+    light_battery_hint,
+    milestone_candidates,
+    quiet_hours_just_ended,
+    remember_helpful_action,
+    sync_daily_checkin,
+    sync_milestone,
+)
+from core.companion_profile import (
+    load_profile,
+    set_quiet_hours,
+    snooze_tip_family,
+    tip_snooze_allowed,
+    topic_is_snoozed,
+)
+from core.companion import dismiss_stage_celebration
+
+no_battery = {"has_battery": False}
+check(light_battery_hint() is None or isinstance(light_battery_hint(), dict), "battery hint stays local")
+check(not tip_snooze_allowed(level="warning"), "a warning alert cannot be snoozed")
+check(not tip_snooze_allowed(level="danger"), "a danger alert cannot be snoozed")
+check(not tip_snooze_allowed(critical=True), "an explicit emergency cannot be snoozed")
+check(tip_snooze_allowed(level="info"), "an info tip can be snoozed")
+check(
+    companion_nudge_snooze_button({"level": "warning", "snooze_topic": "thermal", "critical": True}) is None,
+    "thermal emergency toast has no Đừng nhắc button",
+)
+check(
+    companion_nudge_snooze_button({"level": "warning", "snooze_topic": "wifi"}) is None,
+    "Wi-Fi emergency toast has no Đừng nhắc button",
+)
+
+snooze_root = _fresh_dir()
+snooze_evening = datetime(2026, 9, 20, 21, 0, 0)
+for i in range(4):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=snooze_evening + timedelta(days=i),
+        base_dir=snooze_root,
+        coalesce=False,
+    )
+snooze_now = datetime(2026, 9, 24, 21, 0, 0)
+wifi_tip = current_insight(base_dir=snooze_root, now=snooze_now, enabled=True)
+check(wifi_tip and wifi_tip.get("topic") == "wifi", "wifi family is on the insight strip before snooze")
+would = plan_companion_nudge(now=snooze_now, base_dir=snooze_root, config_manager=_Cfg(), commit=False)
+check(would and would.get("issue_class") == "wifi_weak", "soft wifi nudge exists before snooze")
+check(would.get("level") == "info" and would.get("critical") is False, "habit nudge is not an emergency")
+button = companion_nudge_snooze_button(would)
+check(button and button.get("label_vi") == "Đừng nhắc" and button.get("topic") == "wifi", "soft nudge offers Đừng nhắc")
+refused = snooze_tip_family("thermal", now=snooze_now, base_dir=snooze_root, level="warning")
+check(refused is None, "snoozing a thermal warning stores nothing")
+refused_wifi = snooze_tip_family("wifi", now=snooze_now, base_dir=snooze_root, critical=True)
+check(refused_wifi is None and not topic_is_snoozed("wifi", base_dir=snooze_root, now=snooze_now), "critical wifi snooze is refused")
+kept = snooze_tip_family("wifi", now=snooze_now, base_dir=snooze_root)
+check(kept and kept.get("topic") == "wifi", "Đừng nhắc stores the wifi family")
+check(topic_is_snoozed("wifi", base_dir=snooze_root, now=snooze_now + timedelta(days=2)), "snooze lasts through day two")
+check(
+    not topic_is_snoozed("wifi", base_dir=snooze_root, now=snooze_now + timedelta(days=3, seconds=1)),
+    "snooze ends after three days, not the next morning",
+)
+hidden_tip = current_insight(base_dir=snooze_root, now=snooze_now + timedelta(hours=1), enabled=True)
+check(hidden_tip is None or hidden_tip.get("topic") != "wifi", "snoozed wifi leaves the insight strip")
+hidden_nudge = plan_companion_nudge(
+    now=snooze_now + timedelta(hours=2),
+    base_dir=snooze_root,
+    config_manager=_Cfg(),
+    commit=False,
+)
+check(hidden_nudge is None or hidden_nudge.get("issue_class") != "wifi_weak", "snoozed wifi is not a soft nudge")
+snooze_rows = [row for row in read_events(base_dir=snooze_root) if row.get("kind") == "tip_snooze"]
+check(len(snooze_rows) == 1 and "Đừng nhắc" in snooze_rows[0].get("summary", ""), "snooze writes one diary episode")
+check("wifi" in (snooze_rows[0].get("tags") or []), "snooze episode remembers the family")
+back = current_insight(
+    base_dir=snooze_root,
+    now=snooze_now + timedelta(days=3, hours=1),
+    enabled=True,
+)
+check(back and back.get("topic") == "wifi", "the wifi family can return after the snooze")
+print(" [PASS] Đừng nhắc snooze")
+
+mile_root = _fresh_dir()
+mile_start = datetime(2026, 9, 16, 9, 0, 0)
+for offset in range(7):
+    record_app_event(
+        "session_day",
+        "Phiên dùng app trên máy này",
+        now=mile_start + timedelta(days=offset),
+        base_dir=mile_root,
+        coalesce=False,
+    )
+for offset in range(5):
+    record_app_event(
+        "user_feedback",
+        "Người dùng thấy AI đồng hành hữu ích. Có ích.",
+        now=mile_start + timedelta(days=offset, hours=3),
+        base_dir=mile_root,
+        coalesce=False,
+        outcome="accepted",
+        metrics={"helpful": 1},
+    )
+mile_day = mile_start + timedelta(days=6)
+check(sync_milestone(now=mile_day, base_dir=mile_root, config_manager=_Cfg()) is None, "an open stage-up banner blocks a second celebration")
+dismiss_stage_celebration(base_dir=mile_root)
+first_mile = sync_milestone(now=mile_day, base_dir=mile_root, config_manager=_Cfg())
+check(first_mile and first_mile.get("id") == "first_week", "first week is the first milestone")
+check(str(first_mile.get("text") or "").startswith("Cột mốc:"), "milestone copy is warm Vietnamese")
+check("lên giai đoạn" not in first_mile.get("text", ""), "stage-up is not celebrated again as a milestone")
+again_mile = sync_milestone(now=mile_day.replace(hour=18), base_dir=mile_root, config_manager=_Cfg())
+check(again_mile and again_mile.get("id") == "first_week", "only one milestone shows that day")
+ids = [item.get("id") for item in milestone_candidates(base_dir=mile_root)]
+check("first_week" in ids and "useful_answers" in ids, "both facts are on disk")
+check("stage" not in " ".join(ids), "stage-up is not a milestone id")
+next_mile = sync_milestone(now=mile_day + timedelta(days=1), base_dir=mile_root, config_manager=_Cfg())
+check(next_mile and next_mile.get("id") == "useful_answers", "the next day can show the next unshown milestone")
+check(sync_milestone(now=mile_day + timedelta(days=1, hours=4), base_dir=mile_root, config_manager=_Cfg()).get("id") == "useful_answers", "that second milestone is also once that day")
+later_none = sync_milestone(now=mile_day + timedelta(days=2), base_dir=mile_root, config_manager=_Cfg())
+check(later_none is None, "shown milestones do not fire again")
+check(load_state(mile_root).get("shown_milestones") == ["first_week", "useful_answers"], "shown ids stay on disk")
+
+focus_mile = _fresh_dir()
+focus_when = datetime(2026, 9, 23, 9, 0, 0)
+observe_focus_enabled({"freed_junk_mb": 4}, base_dir=focus_mile, now=focus_when, config_manager=_Cfg())
+observe_focus_disabled({}, base_dir=focus_mile, now=focus_when.replace(hour=11), config_manager=_Cfg())
+answer_action_followup(True, now=focus_when.replace(hour=11, minute=5), base_dir=focus_mile, config_manager=_Cfg())
+dismiss_stage_celebration(base_dir=focus_mile)
+focus_line = sync_milestone(now=focus_when.replace(hour=12), base_dir=focus_mile, config_manager=_Cfg())
+check(focus_line and focus_line.get("id") == "focus_session", "a finished Trước thi / họp session with feedback is a milestone")
+check("Trước thi" in focus_line.get("text", ""), "the focus milestone names the session")
+check(ExamMeetingFocus.is_active() is False, "a focus milestone does not turn the mode on")
+dismiss_milestone(base_dir=focus_mile, now=focus_when.replace(hour=13))
+check(sync_milestone(now=focus_when.replace(hour=14), base_dir=focus_mile, config_manager=_Cfg()) is None, "hiding the milestone keeps it shown")
+
+quiet_mile = _fresh_dir()
+for offset in range(7):
+    record_app_event(
+        "session_day",
+        "Phiên dùng app trên máy này",
+        now=mile_start + timedelta(days=offset),
+        base_dir=quiet_mile,
+        coalesce=False,
+    )
+dismiss_stage_celebration(base_dir=quiet_mile)
+set_quiet_hours(True, base_dir=quiet_mile)
+check(sync_milestone(now=mile_day.replace(hour=23, minute=30), base_dir=quiet_mile, config_manager=_Cfg()) is None, "quiet hours hold the milestone")
+check(not load_state(quiet_mile).get("shown_milestones"), "a held milestone is not marked shown")
+set_quiet_hours(False, base_dir=quiet_mile)
+ExamMeetingFocus._is_active = True
+try:
+    check(sync_milestone(now=mile_day.replace(hour=10), base_dir=quiet_mile, config_manager=_Cfg()) is None, "Trước thi / họp holds the milestone")
+    check(ExamMeetingFocus.is_active() is True, "holding the milestone does not toggle focus")
+finally:
+    ExamMeetingFocus.reset_for_tests()
+after_focus = sync_milestone(now=mile_day.replace(hour=10), base_dir=quiet_mile, config_manager=_Cfg())
+check(after_focus and after_focus.get("id") == "first_week", "the milestone shows once focus and quiet hours are clear")
+print(" [PASS] cột mốc")
+
+greet_root = _fresh_dir()
+greet_day = datetime(2026, 9, 23, 8, 0, 0)
+for offset in range(2):
+    record_app_event(
+        "session_day",
+        "Phiên dùng app trên máy này",
+        now=greet_day - timedelta(days=2 - offset),
+        base_dir=greet_root,
+        coalesce=False,
+    )
+set_goal("ổn định Wi-Fi trước họp", base_dir=greet_root, now=greet_day)
+plain = compose_daily_checkin(
+    now=greet_day,
+    base_dir=greet_root,
+    config_manager=_Cfg(),
+    battery=no_battery,
+)
+check(plain and "ổn định Wi-Fi trước họp" in plain.get("text", ""), "morning line keeps the goal title")
+check("Pin" not in plain.get("text", ""), "unknown or full battery adds no pin line")
+check("Giờ yên" not in plain.get("text", ""), "quiet hours that are off are not mentioned")
+low = compose_daily_checkin(
+    now=greet_day,
+    base_dir=greet_root,
+    config_manager=_Cfg(),
+    battery={"has_battery": True, "percent": 18, "power_plugged": False},
+)
+check(low and "Pin đang thấp" in low.get("text", ""), "a known low battery adds one short line")
+check("ổn định Wi-Fi trước họp" in low.get("text", ""), "the goal title stays beside the battery line")
+set_quiet_hours(True, start="23:00", end="07:00", base_dir=greet_root)
+check(quiet_hours_just_ended(datetime(2026, 9, 23, 2, 0), base_dir=greet_root) is False, "02:00 is still quiet, not just ended")
+check(quiet_hours_just_ended(datetime(2026, 9, 23, 7, 20), base_dir=greet_root) is True, "07:20 is just after quiet hours")
+ended = compose_daily_checkin(
+    now=datetime(2026, 9, 23, 7, 20),
+    base_dir=greet_root,
+    config_manager=_Cfg(),
+    battery=no_battery,
+)
+check(ended and "Giờ yên vừa hết" in ended.get("text", ""), "the greeting notices quiet hours ending")
+check("Pin" not in ended.get("text", ""), "quiet-hours ending is the one extra line")
+rough_root = _fresh_dir()
+for offset in range(2):
+    record_app_event(
+        "session_day",
+        "Phiên dùng app trên máy này",
+        now=greet_day - timedelta(days=2 - offset),
+        base_dir=rough_root,
+        coalesce=False,
+    )
+yesterday = greet_day - timedelta(days=1)
+record_app_event("wifi_weak", "Wi-Fi yếu", now=yesterday.replace(hour=9), base_dir=rough_root, coalesce=False)
+record_app_event(
+    "thermal_warn",
+    "Nhiệt cao",
+    metrics={"thermal_c": 90},
+    now=yesterday.replace(hour=15),
+    base_dir=rough_root,
+    coalesce=False,
+)
+set_goal("xem nhiệt máy", base_dir=rough_root, now=greet_day)
+set_quiet_hours(True, start="23:00", end="07:00", base_dir=rough_root)
+stacked = compose_daily_checkin(
+    now=datetime(2026, 9, 23, 7, 20),
+    base_dir=rough_root,
+    config_manager=_Cfg(),
+    battery={"has_battery": True, "percent": 12, "power_plugged": False},
+)
+check(stacked and "nặng" in stacked.get("text", ""), "yesterday's rough day is the one extra line")
+check("xem nhiệt máy" in stacked.get("text", ""), "the rough-day line still names the goal")
+check("Pin" not in stacked.get("text", "") and "Giờ yên" not in stacked.get("text", ""), "only one extra hint is added")
+mute_topic("wifi", days=7, base_dir=rough_root, now=greet_day)
+mute_topic("thermal", days=7, base_dir=rough_root, now=greet_day)
+muted_rough = compose_daily_checkin(
+    now=greet_day,
+    base_dir=rough_root,
+    config_manager=_Cfg(),
+    battery=no_battery,
+)
+check(muted_rough and "nặng" not in muted_rough.get("text", ""), "muted stress families are not retold")
+check("Wi-Fi" not in muted_rough.get("text", ""), "a muted wifi family stays out of the greeting")
+ExamMeetingFocus._is_active = True
+try:
+    soft = compose_daily_checkin(
+        now=greet_day,
+        base_dir=greet_root,
+        config_manager=_Cfg(),
+        battery={"has_battery": True, "percent": 10, "power_plugged": False},
+    )
+    check(soft and "Pin" not in soft.get("text", ""), "Trước thi / họp skips the extra morning hint")
+    check(ExamMeetingFocus.is_active() is True, "the greeting does not turn focus on")
+finally:
+    ExamMeetingFocus.reset_for_tests()
+print(" [PASS] richer local morning line")
+
+replay_root = _fresh_dir()
+replay_base = datetime(2026, 9, 10, 8, 0, 0)
+for offset in range(7):
+    record_app_event(
+        "session_day",
+        "Phiên dùng app trên máy này",
+        now=replay_base + timedelta(days=offset),
+        base_dir=replay_root,
+        coalesce=False,
+    )
+asked_at = replay_base + timedelta(days=6, hours=2)
+schedule_action_followup("optimize_ram", now=asked_at, base_dir=replay_root, config_manager=_Cfg())
+helpful = answer_action_followup(
+    True,
+    now=asked_at + timedelta(minutes=40),
+    base_dir=replay_root,
+    config_manager=_Cfg(),
+)
+check(helpful and helpful.get("action_key") == "optimize_ram", "Có ích keeps the allowlisted key")
+stored = load_state(replay_root).get("helpful_replay") or {}
+check(stored.get("action_key") == "optimize_ram" and stored.get("surfaced") is False, "Có ích is waiting to be offered once")
+check(remember_helpful_action("winsxs_cleanup", base_dir=replay_root, now=asked_at) is None, "a blocked key is not a replay")
+check(remember_helpful_action("clean_junk", base_dir=replay_root, now=asked_at) is None, "clean_junk is not a replay")
+check((load_state(replay_root).get("helpful_replay") or {}).get("action_key") == "optimize_ram", "a blocked remember does not replace the allowlisted one")
+morning = datetime(2026, 9, 17, 8, 0, 0)
+hello = sync_daily_checkin(
+    now=morning,
+    base_dir=replay_root,
+    config_manager=_Cfg(companion_may_propose_actions=True),
+)
+check(hello and hello.get("action_key") == "optimize_ram", "morning offers the action that was Có ích")
+check(hello.get("action_key") in INSIGHT_ACTION_ALLOWLIST, "the replay stays allowlisted")
+check("Lần trước có ích" in hello.get("text", ""), "the morning line says it helped last time")
+check(load_state(replay_root).get("helpful_replay", {}).get("surfaced") is True, "the replay is marked shown")
+next_hello = sync_daily_checkin(
+    now=morning + timedelta(days=1),
+    base_dir=replay_root,
+    config_manager=_Cfg(companion_may_propose_actions=True),
+)
+check(not (next_hello or {}).get("action_key"), "the same Có ích action is not offered again the next day")
+
+stress_replay = _fresh_dir()
+for offset in range(7):
+    record_app_event(
+        "session_day",
+        "Phiên dùng app trên máy này",
+        now=replay_base + timedelta(days=offset),
+        base_dir=stress_replay,
+        coalesce=False,
+    )
+remember_helpful_action("optimize_ram", now=morning - timedelta(hours=5), base_dir=stress_replay)
+record_app_event("wifi_weak", "Wi-Fi yếu", now=morning.replace(hour=9), base_dir=stress_replay, coalesce=False)
+record_app_event(
+    "thermal_warn",
+    "Nhiệt cao",
+    metrics={"thermal_c": 91},
+    now=morning.replace(hour=10),
+    base_dir=stress_replay,
+    coalesce=False,
+)
+rough_offer = eligible_helpful_replay(
+    now=morning.replace(hour=11),
+    base_dir=stress_replay,
+    config_manager=_Cfg(companion_may_propose_actions=True),
+)
+check(rough_offer is None, "a rough day does not surface the propose button")
+check(load_state(stress_replay).get("helpful_replay", {}).get("surfaced") is False, "a suppressed replay can wait")
+next_calm = morning + timedelta(days=1)
+mute_topic("ram", days=7, base_dir=stress_replay, now=next_calm)
+check(
+    eligible_helpful_replay(now=next_calm.replace(hour=10), base_dir=stress_replay, config_manager=_Cfg(companion_may_propose_actions=True)) is None,
+    "a muted topic hides the replay",
+)
+unmute_topic("ram", base_dir=stress_replay)
+set_quiet_hours(True, base_dir=stress_replay)
+check(
+    eligible_helpful_replay(now=next_calm.replace(hour=23, minute=30), base_dir=stress_replay, config_manager=_Cfg(companion_may_propose_actions=True)) is None,
+    "quiet hours hide the replay button",
+)
+print(" [PASS] lần trước hữu ích")
+
+transfer_root = _fresh_dir()
+snooze_tip_family("ram", now=greet_day, base_dir=transfer_root)
+transfer_state = load_state(transfer_root)
+transfer_state["shown_milestones"] = ["first_week"]
+transfer_state["last_milestone_date"] = "2026-09-23"
+transfer_state["helpful_replay"] = {
+    "action_key": "clean_light",
+    "topic": "disk",
+    "at": "2026-09-23T08:00:00",
+    "surfaced": False,
+}
+save_state(transfer_state, base_dir=transfer_root)
+transfer_path = os.path.join(transfer_root, "bo-nho.json")
+check(export_companion_memory(transfer_path, base_dir=transfer_root).get("ok") is True, "new memory fields export")
+other_mem = _fresh_dir()
+set_goal("giữ mục tiêu local", base_dir=other_mem, now=greet_day)
+snooze_tip_family("wifi", now=greet_day, base_dir=other_mem)
+brought = import_companion_memory(transfer_path, mode="merge", base_dir=other_mem)
+check(brought.get("ok") is True, "merge accepts the new fields")
+merged_profile = load_profile(other_mem)
+check(topic_is_snoozed("ram", profile=merged_profile, now=greet_day), "merge keeps the imported snooze")
+check(topic_is_snoozed("wifi", profile=merged_profile, now=greet_day), "merge keeps the snooze already on this PC")
+check("first_week" in (load_state(other_mem).get("shown_milestones") or []), "merge keeps shown milestones")
+check((load_state(other_mem).get("helpful_replay") or {}).get("action_key") == "clean_light", "merge keeps the Có ích replay")
+legacy_path = os.path.join(transfer_root, "legacy.json")
+with open(legacy_path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "kind": "pc_cleaner_companion_memory",
+        "version": 1,
+        "profile": {"goal": {"text": "mục tiêu cũ", "topic": "disk", "topics": ["disk"], "set_at": "2026-09-01T08:00:00"}},
+        "maturity": {"active_dates": ["2026-09-01"]},
+        "diary": [],
+        "skills": [],
+        "reflection": "",
+    }, handle)
+legacy_dir = _fresh_dir()
+check(import_companion_memory(legacy_path, mode="replace", base_dir=legacy_dir).get("ok") is True, "an older backup still imports")
+check(load_profile(legacy_dir).get("snoozed_tips") == {}, "missing snooze keys default to empty")
+check(load_state(legacy_dir).get("shown_milestones") == [], "missing milestones default to empty")
+check(load_state(legacy_dir).get("helpful_replay") is None, "missing replay defaults to empty")
+blocked_path = os.path.join(transfer_root, "blocked-replay.json")
+with open(blocked_path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "kind": "pc_cleaner_companion_memory",
+        "version": 1,
+        "maturity": {"helpful_replay": {"action_key": "winsxs_cleanup", "topic": "disk", "at": "2026-09-23T08:00:00", "surfaced": False}},
+        "profile": {},
+    }, handle)
+blocked_dir = _fresh_dir()
+check(import_companion_memory(blocked_path, mode="replace", base_dir=blocked_dir).get("ok") is True, "a backup with a blocked replay still imports")
+check(load_state(blocked_dir).get("helpful_replay") is None, "imported replay cannot keep a blocked action")
+check(ExamMeetingFocus.is_active() is False, "importing milestones does not enable Trước thi / họp")
+print(" [PASS] snooze / milestone / replay round-trip")
+
+
+# ---------------------------------------------------------------------------
 # Qt smoke: Settings card + memory dialog
 # ---------------------------------------------------------------------------
 
 from PyQt5.QtWidgets import QApplication
-from ui.companion_card import CompanionCard, CompanionDialog
+from ui.companion_card import CompanionCard, CompanionDialog, CompanionInsightBar
 
 qt_app = QApplication.instance() or QApplication([])
 root = _fresh_dir()
@@ -2176,7 +2570,9 @@ card.insight_bar.btn_action.click()
 check(fired == [card.insight_bar._action_key], "insight button emits that one allowlisted action")
 card.insight_bar._dismiss()
 check(card.insight_bar.lbl_insight.text() == "", "Ẩn clears today's insight line")
-check(hasattr(card.insight_bar, "btn_mute") and "nhắc" in card.insight_bar.btn_mute.text(), "insight can mute a topic")
+check(hasattr(card.insight_bar, "btn_mute") and card.insight_bar.btn_mute.text() == "Đừng nhắc lại", "insight can mute a topic for longer")
+check(card.insight_bar.btn_snooze.text() == "Đừng nhắc", "insight can snooze a tip family")
+check(card.insight_bar.btn_milestone_ok.text() == "Đã rõ", "a milestone can be acknowledged")
 dlg = CompanionDialog(config_manager=_Cfg())
 check(dlg.list_diary.count() >= 1, "dialog lists the new wifi episode")
 check("Đang học" in dlg.lbl_legend.text() or "ngày dùng" in dlg.lbl_legend.text(), "dialog explains the stage")
@@ -2203,6 +2599,41 @@ card.insight_bar.refresh()
 check(card.insight_bar.lbl_eod.text().startswith("Cuối ngày:"), "the evening wrap uses the insight bar")
 card.insight_bar.btn_eod_hide.click()
 check(card.insight_bar.lbl_eod.text() == "", "Ẩn clears the evening wrap")
+snooze_ui = _fresh_dir()
+for i in range(3):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=datetime(2026, 9, 20, 21, 0, 0) + timedelta(days=i),
+        base_dir=snooze_ui,
+        coalesce=False,
+    )
+snooze_bar = CompanionInsightBar(config_manager=_Cfg())
+snooze_bar.refresh()
+check(snooze_bar.btn_snooze.text() == "Đừng nhắc", "the strip shows Đừng nhắc")
+check(not snooze_bar.btn_snooze.isHidden(), "Đừng nhắc is available on a soft tip")
+snooze_bar.btn_snooze.click()
+check("Wi-Fi" not in snooze_bar.lbl_insight.text(), "Đừng nhắc hides that tip family")
+check(any(row.get("kind") == "tip_snooze" for row in read_events(base_dir=snooze_ui)), "the strip writes a snooze episode")
+mile_ui = _fresh_dir()
+today_key = datetime.now().strftime("%Y-%m-%d")
+mile_state = load_state(mile_ui)
+mile_state["shown_milestones"] = ["first_week"]
+mile_state["last_milestone_date"] = today_key
+mile_state["pending_milestone"] = {
+    "id": "first_week",
+    "text": "Cột mốc: đủ một tuần mình ở cạnh máy này.",
+    "date": today_key,
+}
+save_state(mile_state, base_dir=mile_ui)
+mile_bar = CompanionInsightBar(config_manager=_Cfg())
+mile_bar.refresh()
+check(mile_bar.lbl_milestone.text().startswith("Cột mốc:"), "the card shows one milestone")
+mile_bar.btn_milestone_ok.click()
+check(mile_bar.lbl_milestone.text() == "", "Đã rõ clears the milestone")
+check("lên giai đoạn" not in mile_bar.lbl_stage.text(), "the milestone row is not a second stage-up")
+snooze_bar.deleteLater()
+mile_bar.deleteLater()
 card.deleteLater()
 print(" [PASS] companion card/dialog Qt smoke")
 
