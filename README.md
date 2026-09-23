@@ -6,7 +6,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/mrkiss-it/pc-cleaner-optimizer?style=for-the-badge&logo=github)](https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/latest)
 [![License Proprietary](https://img.shields.io/badge/License-Proprietary%20%7C%20All%20Rights%20Reserved-red?style=for-the-badge)](LICENSE)
 
-Tên sản phẩm và phiên bản lấy từ `app_meta.py` (`APP_NAME`, `APP_VERSION`) — **không** phải SKU “Pro”. Tag GitHub Releases phải khớp `APP_VERSION` (hiện tại **3.8.5**).
+Tên sản phẩm và phiên bản lấy từ `app_meta.py` (`APP_NAME`, `APP_VERSION`) — **không** phải SKU “Pro”. Tag GitHub Releases phải khớp `APP_VERSION` (hiện tại **3.8.6**).
 
 **Cài đặt khuyến nghị:** tải [`PCAutoCleaner_Setup.exe`](https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/latest/download/PCAutoCleaner_Setup.exe) từ [GitHub Releases](https://github.com/mrkiss-it/pc-cleaner-optimizer/releases/latest).
 
