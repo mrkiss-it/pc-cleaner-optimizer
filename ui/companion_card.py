@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 
 from app_meta import APP_NAME
@@ -113,8 +114,18 @@ _LIST_STYLE = """
 """
 
 
+def _plain_label(text_color: str) -> QLabel:
+    label = QLabel("")
+    label.setWordWrap(True)
+    label.setTextFormat(Qt.PlainText)
+    label.setStyleSheet(
+        f"color: {text_color}; font-size: 12px; background: transparent; border: none;"
+    )
+    return label
+
+
 class CompanionInsightBar(QFrame):
-    """One calm, dismissible line: «Hôm nay: …». Hidden when there is nothing to say."""
+    """Calm local lines: stage-up, morning check-in, and «Hôm nay: …». Never blocks startup."""
 
     dismissed = pyqtSignal()
     action_requested = pyqtSignal(str)
@@ -123,34 +134,84 @@ class CompanionInsightBar(QFrame):
         super().__init__(parent)
         self.config_manager = config_manager
         self._insight_id = ""
+        self._insight_topic = ""
         self._action_key = ""
+        self._skill_id = ""
+        self._checkin_action = ""
+        self._checkin_skill_id = ""
         self.setObjectName("CompanionInsightBar")
         self.setStyleSheet(
             "QFrame#CompanionInsightBar { background-color: #1e1b4b; border: 1px solid #4338ca; "
             "border-radius: 10px; }"
         )
-        row = QHBoxLayout(self)
-        row.setContentsMargins(12, 8, 12, 8)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 8, 12, 8)
+        root.setSpacing(6)
+
+        self.row_stage = QWidget()
+        stage_row = QHBoxLayout(self.row_stage)
+        stage_row.setContentsMargins(0, 0, 0, 0)
+        stage_row.setSpacing(8)
+        self.lbl_stage = _plain_label("#fde68a")
+        self.btn_stage_ok = QPushButton("Đã rõ")
+        self.btn_stage_ok.setStyleSheet(_BTN_STYLE)
+        self.btn_stage_ok.setToolTip("Mình chỉ chúc mừng giai đoạn này một lần.")
+        self.btn_stage_ok.clicked.connect(self._dismiss_stage)
+        stage_row.addWidget(self.lbl_stage, stretch=1)
+        stage_row.addWidget(self.btn_stage_ok)
+        self.row_stage.hide()
+
+        self.row_checkin = QWidget()
+        check_row = QHBoxLayout(self.row_checkin)
+        check_row.setContentsMargins(0, 0, 0, 0)
+        check_row.setSpacing(8)
+        self.lbl_checkin = _plain_label("#c7d2fe")
+        self.btn_checkin_action = QPushButton("")
+        self.btn_checkin_action.setStyleSheet(_BTN_STYLE)
+        self.btn_checkin_action.setToolTip("Một việc an toàn. Mình không tự chạy.")
+        self.btn_checkin_action.clicked.connect(self._activate_checkin)
+        self.btn_checkin_action.hide()
+        self.btn_checkin_hide = QPushButton("Ẩn")
+        self.btn_checkin_hide.setStyleSheet(_BTN_STYLE)
+        self.btn_checkin_hide.setToolTip("Ẩn lời chào hôm nay.")
+        self.btn_checkin_hide.clicked.connect(self._dismiss_checkin)
+        check_row.addWidget(self.lbl_checkin, stretch=1)
+        check_row.addWidget(self.btn_checkin_action)
+        check_row.addWidget(self.btn_checkin_hide)
+        self.row_checkin.hide()
+
+        self.row_insight = QWidget()
+        row = QHBoxLayout(self.row_insight)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
-        self.lbl_insight = QLabel("")
-        self.lbl_insight.setWordWrap(True)
-        self.lbl_insight.setTextFormat(Qt.PlainText)
-        self.lbl_insight.setStyleSheet(
-            "color: #e0e7ff; font-size: 12px; background: transparent; border: none;"
-        )
+        self.lbl_insight = _plain_label("#e0e7ff")
         self.btn_action = QPushButton("")
         self.btn_action.setStyleSheet(_BTN_STYLE)
-        self.btn_action.setToolTip("Một việc an toàn có sẵn trong app. Không tự dọn ổ đĩa.")
+        self.btn_action.setToolTip("Một việc an toàn có sẵn trong app. Không tự dọn ổ đĩa hay sửa registry.")
         self.btn_action.clicked.connect(self._activate)
         self.btn_action.hide()
+        self.btn_mute = QPushButton("Đừng nhắc lại")
+        self.btn_mute.setStyleSheet(_BTN_STYLE)
+        self.btn_mute.setToolTip("Im chủ đề này 7 ngày. Copilot vẫn trả lời nếu bạn hỏi.")
+        self.btn_mute.clicked.connect(self._mute_topic)
+        self.btn_mute.hide()
         self.btn_dismiss = QPushButton("Ẩn")
         self.btn_dismiss.setStyleSheet(_BTN_STYLE)
         self.btn_dismiss.setToolTip("Ẩn insight này. AI không hiện lại cùng một dòng.")
         self.btn_dismiss.clicked.connect(self._dismiss)
         row.addWidget(self.lbl_insight, stretch=1)
         row.addWidget(self.btn_action)
+        row.addWidget(self.btn_mute)
         row.addWidget(self.btn_dismiss)
+        self.row_insight.hide()
+
+        root.addWidget(self.row_stage)
+        root.addWidget(self.row_checkin)
+        root.addWidget(self.row_insight)
         self.hide()
+
+    def insight_topic(self) -> str:
+        return str(self._insight_topic or "")
 
     def refresh(self):
         enabled = is_enabled(self.config_manager)
@@ -160,6 +221,73 @@ class CompanionInsightBar(QFrame):
                 refresh_profile()
             except Exception:
                 pass
+        self._show_stage(enabled)
+        self._show_checkin(enabled)
+        self._show_insight(enabled)
+        # isVisible() is false while this frame is hidden, so decide from the text.
+        if any(label.text().strip() for label in (self.lbl_stage, self.lbl_checkin, self.lbl_insight)):
+            self.show()
+        else:
+            self.hide()
+
+    def _show_stage(self, enabled: bool):
+        self.lbl_stage.setText("")
+        self.row_stage.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion import maybe_note_stage_up, pending_stage_celebration
+            maybe_note_stage_up(config_manager=self.config_manager)
+            pending = pending_stage_celebration()
+        except Exception:
+            pending = None
+        text = str((pending or {}).get("text") or "").strip()
+        if not text:
+            return
+        self.lbl_stage.setText(text)
+        self.row_stage.show()
+
+    def _show_checkin(self, enabled: bool):
+        self.lbl_checkin.setText("")
+        self._checkin_action = ""
+        self._checkin_skill_id = ""
+        self.btn_checkin_action.hide()
+        self.row_checkin.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_moment import sync_daily_checkin
+            payload = sync_daily_checkin(config_manager=self.config_manager)
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("text") or "").strip()
+        if not text:
+            return
+        self.lbl_checkin.setText(text)
+        key = str((payload or {}).get("action_key") or "")
+        label = str((payload or {}).get("action_label_vi") or "")
+        self._checkin_skill_id = str((payload or {}).get("skill_id") or "")
+        if key and label:
+            try:
+                from core.companion_moment import is_allowed_insight_action
+                allowed = is_allowed_insight_action(key)
+            except Exception:
+                allowed = False
+            if allowed:
+                self._checkin_action = key
+                self.btn_checkin_action.setText(label)
+                self.btn_checkin_action.show()
+        self.row_checkin.show()
+
+    def _show_insight(self, enabled: bool):
+        self._insight_id = ""
+        self._insight_topic = ""
+        self._action_key = ""
+        self._skill_id = ""
+        self.lbl_insight.setText("")
+        self.btn_action.hide()
+        self.btn_mute.hide()
+        self.row_insight.hide()
         insight = current_insight(enabled=enabled) if enabled else None
         if insight and enabled:
             try:
@@ -168,25 +296,21 @@ class CompanionInsightBar(QFrame):
             except Exception:
                 pass
         if not insight:
-            self._insight_id = ""
-            self._action_key = ""
-            self.lbl_insight.setText("")
-            self.btn_action.hide()
-            self.hide()
             return
         self._insight_id = str(insight.get("id") or "")
+        self._insight_topic = str(insight.get("topic") or "")
         self._action_key = str(insight.get("action_key") or "")
+        self._skill_id = str(insight.get("skill_id") or "")
         label = str(insight.get("action_label_vi") or "")
         if self._action_key and label:
             self.btn_action.setText(label)
             self.btn_action.show()
-        else:
-            self.btn_action.hide()
+        if self._insight_topic:
+            self.btn_mute.show()
         self.lbl_insight.setText(str(insight.get("text") or ""))
-        self.show()
+        self.row_insight.show()
 
-    def _activate(self):
-        key = str(self._action_key or "")
+    def _emit_allowed(self, key: str, skill_id: str):
         if not key:
             return
         try:
@@ -195,7 +319,45 @@ class CompanionInsightBar(QFrame):
                 return
         except Exception:
             return
+        if skill_id:
+            try:
+                from core.companion_skills import bump_skill_hit
+                bump_skill_hit(skill_id=skill_id)
+            except Exception:
+                pass
         self.action_requested.emit(key)
+
+    def _activate(self):
+        self._emit_allowed(self._action_key, self._skill_id)
+
+    def _activate_checkin(self):
+        self._emit_allowed(self._checkin_action, self._checkin_skill_id)
+
+    def _dismiss_stage(self):
+        try:
+            from core.companion import dismiss_stage_celebration
+            dismiss_stage_celebration()
+        except Exception:
+            pass
+        self.refresh()
+
+    def _dismiss_checkin(self):
+        try:
+            from core.companion_moment import dismiss_daily_checkin
+            dismiss_daily_checkin()
+        except Exception:
+            pass
+        self.refresh()
+
+    def _mute_topic(self):
+        topic = str(self._insight_topic or "")
+        if topic:
+            try:
+                from core.companion_profile import MUTE_DAYS, mute_topic
+                mute_topic(topic, days=MUTE_DAYS, reason="user")
+            except Exception:
+                pass
+        self.refresh()
 
     def _dismiss(self):
         if self._insight_id:
@@ -502,7 +664,7 @@ class CompanionCard(QFrame):
         preview_kinds = (
             "high_ram", "ram_optimized", "wifi_weak", "wifi_repaired", "ping_high",
             "clean_freed", "clean_light", "focus_mode", "thermal_warn", "session_day",
-            "chat_note",
+            "chat_note", "stage_up",
         )
         interesting = [row for row in list_diary_rows(limit=20, days=14) if row.get("kind") in preview_kinds]
         if interesting:
@@ -583,8 +745,15 @@ class CompanionCard(QFrame):
         self.refresh()
 
     def _feedback(self, helpful: bool):
+        topic = ""
+        bar = getattr(self, "insight_bar", None)
+        if bar is not None:
+            try:
+                topic = bar.insight_topic()
+            except Exception:
+                topic = ""
         try:
-            note_user_feedback(helpful, config_manager=self.config_manager)
+            note_user_feedback(helpful, config_manager=self.config_manager, topic=topic)
         except Exception:
             pass
         self.refresh()
@@ -665,7 +834,7 @@ class CompanionDialog(QDialog):
         self.config_manager = config_manager
         self._reflect_worker: Optional[CompanionReflectWorker] = None
         self.setWindowTitle(f"AI đồng hành — {APP_NAME}")
-        self.resize(560, 720)
+        self.resize(560, 800)
         self.setStyleSheet("QDialog { background: #0f172a; color: #e2e8f0; }")
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -697,6 +866,27 @@ class CompanionDialog(QDialog):
         profile_btns.addWidget(self.btn_clear_profile)
         profile_btns.addStretch()
         root.addLayout(profile_btns)
+
+        root.addWidget(QLabel("Chủ đề đang im"))
+        self.lbl_muted = QLabel("")
+        self.lbl_muted.setWordWrap(True)
+        self.lbl_muted.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        root.addWidget(self.lbl_muted)
+        self.list_muted = QListWidget()
+        self.list_muted.setStyleSheet(_LIST_STYLE)
+        self.list_muted.setMaximumHeight(72)
+        root.addWidget(self.list_muted)
+        mute_btns = QHBoxLayout()
+        self.btn_unmute = QPushButton("Bỏ im chủ đề đã chọn")
+        self.btn_unmute.setStyleSheet(_BTN_STYLE)
+        self.btn_unmute.clicked.connect(self._unmute_selected)
+        self.btn_unmute_all = QPushButton("Bỏ hết im lặng")
+        self.btn_unmute_all.setStyleSheet(_BTN_STYLE)
+        self.btn_unmute_all.clicked.connect(self._unmute_all)
+        mute_btns.addWidget(self.btn_unmute)
+        mute_btns.addWidget(self.btn_unmute_all)
+        mute_btns.addStretch()
+        root.addLayout(mute_btns)
 
         reflect_row = QHBoxLayout()
         self.btn_reflect = QPushButton(REFLECT_BUTTON_VI)
@@ -800,6 +990,7 @@ class CompanionDialog(QDialog):
         if learned:
             self.lbl_legend.setText(self.lbl_legend.text() + "\n" + learned)
         self.lbl_profile.setText(format_profile_browse() or empty["profile"])
+        self._fill_muted()
 
         diary_rows = list_diary_rows(limit=20, days=30)
         self.list_diary.clear()
@@ -882,6 +1073,47 @@ class CompanionDialog(QDialog):
         if not _confirm(self, confirm_clear_prompt("skills")):
             return
         clear_skills_memory()
+        self.refresh()
+
+    def _fill_muted(self):
+        from core.companion_profile import active_muted_topics, format_muted_browse
+        from core.companion_profile import TOPIC_META
+        active = active_muted_topics()
+        self.list_muted.clear()
+        if not active:
+            self.lbl_muted.setText("Không có chủ đề đang im.")
+            self.lbl_muted.show()
+            return
+        self.lbl_muted.setText(format_muted_browse())
+        self.lbl_muted.show()
+        for topic, meta in active.items():
+            name = str((TOPIC_META.get(topic) or {}).get("name") or topic)
+            until = str(meta.get("until") or "")
+            day = f"{until[8:10]}/{until[5:7]}" if len(until) >= 10 else ""
+            item = QListWidgetItem(f"{name} — đến {day}" if day else name)
+            item.setData(Qt.UserRole, topic)
+            self.list_muted.addItem(item)
+
+    def _unmute_selected(self):
+        item = self.list_muted.currentItem()
+        if item is None:
+            QMessageBox.information(self, "Chủ đề đang im", "Chọn một chủ đề để bỏ im.")
+            return
+        topic = item.data(Qt.UserRole)
+        if topic:
+            try:
+                from core.companion_profile import unmute_topic
+                unmute_topic(str(topic))
+            except Exception:
+                pass
+        self.refresh()
+
+    def _unmute_all(self):
+        try:
+            from core.companion_profile import clear_muted_topics
+            clear_muted_topics()
+        except Exception:
+            pass
         self.refresh()
 
     def _clear_profile(self):

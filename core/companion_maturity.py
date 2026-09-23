@@ -94,6 +94,12 @@ def default_state() -> Dict[str, Any]:
         "last_nudge_class": "",
         "declined_skill_until": {},
         "last_weekly_digest_week": "",
+        # None until the first observation so an upgrade does not fake a stage-up.
+        "last_recorded_stage": None,
+        "last_celebrated_stage": None,
+        "pending_stage_up": None,
+        "last_checkin_date": "",
+        "pending_checkin": None,
     }
 
 
@@ -142,7 +148,24 @@ def load_state(base_dir: Optional[str] = None) -> Dict[str, Any]:
         merged["negative_feedback"] = max(0, int(merged.get("negative_feedback") or 0))
     except (TypeError, ValueError):
         merged["negative_feedback"] = 0
+    merged["last_recorded_stage"] = _optional_stage(merged.get("last_recorded_stage"))
+    merged["last_celebrated_stage"] = _optional_stage(merged.get("last_celebrated_stage"))
+    pending_stage = merged.get("pending_stage_up")
+    merged["pending_stage_up"] = pending_stage if isinstance(pending_stage, dict) and pending_stage.get("text") else None
+    pending_checkin = merged.get("pending_checkin")
+    merged["pending_checkin"] = pending_checkin if isinstance(pending_checkin, dict) and pending_checkin.get("text") else None
+    merged["last_checkin_date"] = str(merged.get("last_checkin_date") or "")[:10]
     return merged
+
+
+def _optional_stage(value: Any) -> Optional[int]:
+    """Missing stage stays unknown. 0 is a real baseline, not 'never seen'."""
+    if value is None or value == "":
+        return None
+    try:
+        return max(0, min(3, int(value)))
+    except (TypeError, ValueError):
+        return None
 
 
 def save_state(state: Dict[str, Any], base_dir: Optional[str] = None) -> Dict[str, Any]:
