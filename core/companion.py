@@ -416,6 +416,25 @@ def note_user_feedback(
         )
     except Exception:
         pass
+    if topic_key:
+        shift = None
+        try:
+            from core.companion_profile import record_topic_trust
+            shift = record_topic_trust(topic_key, bool(helpful), base_dir=base_dir, now=now)
+        except Exception:
+            shift = None
+        if isinstance(shift, dict) and shift.get("summary"):
+            record_app_event(
+                "topic_trust",
+                str(shift.get("summary") or ""),
+                source="companion",
+                now=now,
+                base_dir=base_dir,
+                config_manager=config_manager,
+                outcome="neutral",
+                tags=["trust", topic_key],
+                coalesce=False,
+            )
     return current_stage(config_manager=config_manager, base_dir=base_dir)
 
 
@@ -1025,6 +1044,13 @@ def build_prompt_context(
         f"Quy tắc: {policy}",
     ]
     try:
+        from core.companion_learning import prompt_learn_line
+        learned_line = prompt_learn_line(base_dir=base_dir, now=now)
+    except Exception:
+        learned_line = ""
+    if learned_line:
+        lines.append(learned_line)
+    try:
         from core.companion_profile import format_muted_policy
         muted_line = format_muted_policy(base_dir=base_dir, now=now)
     except Exception:
@@ -1242,6 +1268,11 @@ def maybe_run_reflection(
     state = load_state(base_dir)
     today = stamp.strftime("%Y-%m-%d")
     if not force and state.get("last_reflection_date") == today:
+        try:
+            from core.companion_learning import ensure_daily_model
+            ensure_daily_model(now=stamp, base_dir=base_dir, config_manager=config_manager)
+        except Exception:
+            pass
         return None
     if not force:
         try:
@@ -1321,6 +1352,11 @@ def maybe_run_reflection(
     state = load_state(base_dir)
     state["last_reflection_date"] = today
     save_state(state, base_dir=base_dir)
+    try:
+        from core.companion_learning import ensure_daily_model
+        ensure_daily_model(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    except Exception:
+        pass
     record_app_event(
         "reflection",
         "Đã ghi sổ tay buổi tối" if result.get("source") != "template" else "Đã ghi sổ tay từ số liệu (không LLM)",
@@ -1837,6 +1873,7 @@ def export_companion_memory(
             "diary": _redact_tree(read_events(base_dir=base_dir, limit=0)),
             "reflection": redact_sensitive(load_reflection(base_dir)),
             "reflection_meta": _redact_tree(load_reflection_meta(base_dir)),
+            "learning_model": _redact_tree(_load_learning_model(base_dir)),
         }
         temporary = target + ".tmp"
         with open(temporary, "w", encoding="utf-8") as handle:
@@ -1873,7 +1910,7 @@ def _read_memory_file(path: str) -> Tuple[Optional[Dict[str, Any]], str]:
         version = 0
     if version != MEMORY_EXPORT_VERSION:
         return None, "Mình chưa đọc được phiên bản file này."
-    if not any(key in data for key in ("profile", "maturity", "skills", "diary", "reflection")):
+    if not any(key in data for key in ("profile", "maturity", "skills", "diary", "reflection", "learning_model")):
         return None, "File không có bộ nhớ để nhập."
     if "profile" in data and data.get("profile") is not None and not isinstance(data.get("profile"), dict):
         return None, "Hồ sơ trong file không đúng định dạng."
@@ -1885,6 +1922,8 @@ def _read_memory_file(path: str) -> Tuple[Optional[Dict[str, Any]], str]:
         return None, "Nhật ký trong file không đúng định dạng."
     if "reflection" in data and data.get("reflection") is not None and not isinstance(data.get("reflection"), str):
         return None, "Sổ tay trong file không đúng định dạng."
+    if "learning_model" in data and data.get("learning_model") is not None and not isinstance(data.get("learning_model"), dict):
+        return None, "Mô hình học trong file không đúng định dạng."
     return data, ""
 
 
@@ -1949,6 +1988,11 @@ def _merge_profiles(local: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str
         out["snoozed_tips"] = merge_snoozed_tips(local.get("snoozed_tips"), incoming.get("snoozed_tips"))
     except Exception:
         out["snoozed_tips"] = local.get("snoozed_tips") or {}
+    try:
+        from core.companion_profile import merge_topic_trust
+        out["topic_trust"] = merge_topic_trust(local.get("topic_trust"), incoming.get("topic_trust"))
+    except Exception:
+        out["topic_trust"] = local.get("topic_trust") or {}
     return out
 
 
@@ -1982,6 +2026,35 @@ def _merge_helpful_replay(local: Any, incoming: Any) -> Any:
         if best_shown == item_shown and str(item.get("at") or "") > str(best.get("at") or ""):
             best = item
     return best
+
+
+def _merge_pinned_actions(local: Any, incoming: Any) -> List[Any]:
+    """Union of favorites, local first, capped at three allowlisted keys."""
+    try:
+        from core.companion_maturity import _clean_pinned_actions
+        cleaned = _clean_pinned_actions(list(local or []) + list(incoming or []))
+    except Exception:
+        cleaned = []
+    return cleaned
+
+
+def _merge_week_marker(
+    local: Dict[str, Any],
+    incoming: Dict[str, Any],
+    week_key_name: str,
+    pending_name: str,
+) -> None:
+    """Keep the later calendar week. A pending line fills an empty local slot."""
+    local_week = str(local.get(week_key_name) or "")
+    incoming_week = str(incoming.get(week_key_name) or "")
+    if incoming_week > local_week:
+        local[week_key_name] = incoming_week
+        local[pending_name] = incoming.get(pending_name)
+        return
+    if incoming_week and incoming_week == local_week and not local.get(pending_name):
+        incoming_pending = incoming.get(pending_name)
+        if incoming_pending:
+            local[pending_name] = incoming_pending
 
 
 def _store_maturity(raw: Any, base_dir: Optional[str], mode: str) -> None:
@@ -2034,6 +2107,9 @@ def _store_maturity(raw: Any, base_dir: Optional[str], mode: str) -> None:
         if isinstance(incoming_pending, dict) and incoming_pending.get("text"):
             local["pending_milestone"] = incoming_pending
     local["helpful_replay"] = _merge_helpful_replay(local.get("helpful_replay"), incoming.get("helpful_replay"))
+    local["pinned_actions"] = _merge_pinned_actions(local.get("pinned_actions"), incoming.get("pinned_actions"))
+    _merge_week_marker(local, incoming, "last_weekly_strip_week", "pending_weekly_strip")
+    _merge_week_marker(local, incoming, "last_exam_hint_week", "pending_exam_hint")
     save_state(local, base_dir=base_dir)
 
 
@@ -2099,6 +2175,24 @@ def _store_diary(raw: Any, base_dir: Optional[str], mode: str) -> None:
     write_events(merged[-MAX_DIARY_EVENTS:], base_dir=base_dir)
 
 
+def _load_learning_model(base_dir: Optional[str]) -> Dict[str, Any]:
+    try:
+        from core.companion_learning import load_daily_model
+        return load_daily_model(base_dir)
+    except Exception:
+        return {}
+
+
+def _store_learning_model(raw: Any, base_dir: Optional[str], mode: str) -> None:
+    from core.companion_learning import load_daily_model, merge_learning_models, save_daily_model
+    if not isinstance(raw, dict):
+        return
+    if mode == "replace":
+        save_daily_model(raw, base_dir=base_dir)
+        return
+    save_daily_model(merge_learning_models(load_daily_model(base_dir), raw), base_dir=base_dir)
+
+
 def _store_reflection(raw: Any, base_dir: Optional[str], mode: str) -> None:
     from core.companion_diary import redact_sensitive
     from core.companion_reflection import load_reflection, save_reflection
@@ -2140,6 +2234,8 @@ def import_companion_memory(
             _store_diary(data.get("diary"), base_dir, chosen)
         if "reflection" in data:
             _store_reflection(data.get("reflection"), base_dir, chosen)
+        if "learning_model" in data:
+            _store_learning_model(data.get("learning_model"), base_dir, chosen)
     except Exception:
         return _memory_error("Chưa nhập được bộ nhớ. File có thể chưa đúng hoặc máy không ghi được.")
     verb = "Đã thay bộ nhớ trên máy này." if chosen == "replace" else "Đã gộp bộ nhớ vào máy này."

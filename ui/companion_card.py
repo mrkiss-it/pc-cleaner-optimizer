@@ -178,6 +178,46 @@ class CompanionInsightBar(QFrame):
         mile_row.addWidget(self.btn_milestone_ok)
         self.row_milestone.hide()
 
+        self.row_week = QWidget()
+        week_row = QHBoxLayout(self.row_week)
+        week_row.setContentsMargins(0, 0, 0, 0)
+        week_row.setSpacing(8)
+        self.lbl_week = _plain_label("#ddd6fe")
+        self.btn_week_hide = QPushButton("Ẩn")
+        self.btn_week_hide.setStyleSheet(_BTN_STYLE)
+        self.btn_week_hide.setToolTip("Ẩn tóm tắt tuần này.")
+        self.btn_week_hide.clicked.connect(self._dismiss_week)
+        week_row.addWidget(self.lbl_week, stretch=1)
+        week_row.addWidget(self.btn_week_hide)
+        self.row_week.hide()
+
+        self.row_pins = QWidget()
+        pins_row = QHBoxLayout(self.row_pins)
+        pins_row.setContentsMargins(0, 0, 0, 0)
+        pins_row.setSpacing(8)
+        self.lbl_pins = _plain_label("#c4b5fd")
+        pins_row.addWidget(self.lbl_pins)
+        self.pin_action_buttons = []
+        self.pin_unpin_buttons = []
+        self._pin_keys: list = []
+        for index in range(3):
+            action = QPushButton("")
+            action.setStyleSheet(_BTN_STYLE)
+            action.setToolTip("Một việc đã ghim. Mình không tự chạy.")
+            action.clicked.connect(lambda _checked=False, i=index: self._activate_pin(i))
+            unpin = QPushButton("Bỏ ghim")
+            unpin.setStyleSheet(_BTN_STYLE)
+            unpin.setToolTip("Bỏ ghim việc này. Mình không tự chạy.")
+            unpin.clicked.connect(lambda _checked=False, i=index: self._unpin_at(i))
+            action.hide()
+            unpin.hide()
+            pins_row.addWidget(action)
+            pins_row.addWidget(unpin)
+            self.pin_action_buttons.append(action)
+            self.pin_unpin_buttons.append(unpin)
+        pins_row.addStretch(1)
+        self.row_pins.hide()
+
         self.row_checkin = QWidget()
         check_row = QHBoxLayout(self.row_checkin)
         check_row.setContentsMargins(0, 0, 0, 0)
@@ -214,9 +254,15 @@ class CompanionInsightBar(QFrame):
         self.btn_follow_hide.setStyleSheet(_BTN_STYLE)
         self.btn_follow_hide.setToolTip("Ẩn câu hỏi này. Không tính là từ chối.")
         self.btn_follow_hide.clicked.connect(self._dismiss_followup)
+        self.btn_follow_pin = QPushButton("Ghim")
+        self.btn_follow_pin.setStyleSheet(_BTN_STYLE)
+        self.btn_follow_pin.setToolTip("Ghim việc vừa rồi (tối đa 3). Mình không tự chạy.")
+        self.btn_follow_pin.clicked.connect(self._toggle_pin_follow)
+        self.btn_follow_pin.hide()
         follow_row.addWidget(self.lbl_follow, stretch=1)
         follow_row.addWidget(self.btn_follow_yes)
         follow_row.addWidget(self.btn_follow_no)
+        follow_row.addWidget(self.btn_follow_pin)
         follow_row.addWidget(self.btn_follow_hide)
         self.row_follow.hide()
 
@@ -267,6 +313,11 @@ class CompanionInsightBar(QFrame):
         self.btn_action.setToolTip("Một việc an toàn có sẵn trong app. Không tự dọn ổ đĩa hay sửa registry.")
         self.btn_action.clicked.connect(self._activate)
         self.btn_action.hide()
+        self.btn_pin = QPushButton("Ghim")
+        self.btn_pin.setStyleSheet(_BTN_STYLE)
+        self.btn_pin.setToolTip("Ghim việc này (tối đa 3). Mình không tự chạy.")
+        self.btn_pin.clicked.connect(self._toggle_pin_insight)
+        self.btn_pin.hide()
         self.btn_snooze = QPushButton("Đừng nhắc")
         self.btn_snooze.setStyleSheet(_BTN_STYLE)
         self.btn_snooze.setToolTip("Ẩn chủ đề này 3 ngày. Cảnh báo nhiệt và Wi-Fi khẩn cấp vẫn hiện.")
@@ -283,6 +334,7 @@ class CompanionInsightBar(QFrame):
         self.btn_dismiss.clicked.connect(self._dismiss)
         row.addWidget(self.lbl_insight, stretch=1)
         row.addWidget(self.btn_action)
+        row.addWidget(self.btn_pin)
         row.addWidget(self.btn_snooze)
         row.addWidget(self.btn_mute)
         row.addWidget(self.btn_dismiss)
@@ -290,11 +342,21 @@ class CompanionInsightBar(QFrame):
 
         root.addWidget(self.row_stage)
         root.addWidget(self.row_milestone)
+        root.addWidget(self.row_week)
+        root.addWidget(self.row_pins)
         root.addWidget(self.row_checkin)
         root.addWidget(self.row_follow)
         root.addWidget(self.row_eod)
         root.addWidget(self.row_conflict)
         root.addWidget(self.row_insight)
+
+        self.lbl_learned_today = QLabel("")
+        self.lbl_learned_today.setWordWrap(True)
+        self.lbl_learned_today.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; background: transparent; border: none;"
+        )
+        self.lbl_learned_today.hide()
+        root.addWidget(self.lbl_learned_today)
         self.hide()
 
     def insight_topic(self) -> str:
@@ -316,20 +378,26 @@ class CompanionInsightBar(QFrame):
                 pass
         self._show_stage(enabled)
         self._show_milestone(enabled)
+        self._show_week(enabled)
+        self._show_pins(enabled)
         self._show_checkin(enabled)
         self._show_followup(enabled)
         self._show_eod(enabled)
         self._show_conflict(enabled)
         self._show_insight(enabled)
+        self._show_learned_today(enabled)
         # isVisible() is false while this frame is hidden, so decide from the text.
         labels = (
             self.lbl_stage,
             self.lbl_milestone,
+            self.lbl_week,
+            self.lbl_pins,
             self.lbl_checkin,
             self.lbl_follow,
             self.lbl_eod,
             self.lbl_conflict,
             self.lbl_insight,
+            self.lbl_learned_today,
         )
         if any(label.text().strip() for label in labels):
             self.show()
@@ -404,6 +472,8 @@ class CompanionInsightBar(QFrame):
     def _show_followup(self, enabled: bool):
         self.lbl_follow.setText("")
         self._follow_topic = ""
+        self._follow_action = ""
+        self.btn_follow_pin.hide()
         self.row_follow.hide()
         if not enabled:
             return
@@ -416,7 +486,9 @@ class CompanionInsightBar(QFrame):
         if not text:
             return
         self._follow_topic = str((payload or {}).get("topic") or "")
+        self._follow_action = str((payload or {}).get("action_key") or "")
         self.lbl_follow.setText(text)
+        self._refresh_pin_button(self.btn_follow_pin, self._follow_action)
         self.row_follow.show()
 
     def _show_eod(self, enabled: bool):
@@ -482,6 +554,23 @@ class CompanionInsightBar(QFrame):
             pass
         self.refresh()
 
+    def _show_learned_today(self, enabled: bool):
+        self.lbl_learned_today.setText("")
+        self.lbl_learned_today.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_learning import ensure_daily_model, learn_status_vi
+            model = ensure_daily_model(config_manager=self.config_manager)
+            summary = str((model or {}).get("summary_vi") or "")
+            text = "" if "chưa có gì mới" in summary else learn_status_vi(model)
+        except Exception:
+            text = ""
+        if not text:
+            return
+        self.lbl_learned_today.setText(text)
+        self.lbl_learned_today.show()
+
     def _show_insight(self, enabled: bool):
         self._insight_id = ""
         self._insight_topic = ""
@@ -489,16 +578,25 @@ class CompanionInsightBar(QFrame):
         self._skill_id = ""
         self.lbl_insight.setText("")
         self.btn_action.hide()
+        self.btn_pin.hide()
         self.btn_snooze.hide()
         self.btn_mute.hide()
         self.row_insight.hide()
-        insight = current_insight(enabled=enabled) if enabled else None
-        if insight and enabled:
+        insight = None
+        if enabled:
             try:
-                from core.companion_moment import attach_insight_action
-                insight = attach_insight_action(insight, config_manager=self.config_manager)
+                from core.companion_moment import present_exam_season_hint
+                insight = present_exam_season_hint(config_manager=self.config_manager)
             except Exception:
-                pass
+                insight = None
+        if not insight:
+            insight = current_insight(enabled=enabled) if enabled else None
+            if insight and enabled:
+                try:
+                    from core.companion_moment import attach_insight_action
+                    insight = attach_insight_action(insight, config_manager=self.config_manager)
+                except Exception:
+                    pass
         if not insight:
             return
         self._insight_id = str(insight.get("id") or "")
@@ -509,6 +607,7 @@ class CompanionInsightBar(QFrame):
         if self._action_key and label:
             self.btn_action.setText(label)
             self.btn_action.show()
+            self._refresh_pin_button(self.btn_pin, self._action_key)
         if self._insight_topic:
             self.btn_snooze.show()
             self.btn_mute.show()
@@ -550,6 +649,134 @@ class CompanionInsightBar(QFrame):
 
     def _activate_checkin(self):
         self._emit_allowed(self._checkin_action, self._checkin_skill_id)
+
+    def _show_week(self, enabled: bool):
+        self.lbl_week.setText("")
+        self.row_week.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_moment import sync_weekly_strip
+            payload = sync_weekly_strip(config_manager=self.config_manager)
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("text") or "").strip()
+        if not text:
+            return
+        self.lbl_week.setText(text)
+        self.row_week.show()
+
+    def _dismiss_week(self):
+        try:
+            from core.companion_moment import dismiss_weekly_strip
+            dismiss_weekly_strip()
+        except Exception:
+            pass
+        self.refresh()
+
+    def _show_pins(self, enabled: bool):
+        self.lbl_pins.setText("")
+        self._pin_keys = []
+        for button in self.pin_action_buttons:
+            button.hide()
+            button.setText("")
+        for button in self.pin_unpin_buttons:
+            button.hide()
+        self.row_pins.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_moment import eligible_pinned_actions, list_pinned_actions
+            stored = list_pinned_actions()
+            eligible = {
+                str(item.get("key") or "")
+                for item in eligible_pinned_actions(config_manager=self.config_manager)
+            }
+        except Exception:
+            return
+        if not stored:
+            return
+        self.lbl_pins.setText("Đã ghim")
+        for index, pin in enumerate(stored[:3]):
+            key = str(pin.get("action_key") or "")
+            label = str(pin.get("label_vi") or "")
+            self._pin_keys.append(key)
+            self.pin_unpin_buttons[index].show()
+            if key in eligible and label:
+                self.pin_action_buttons[index].setText(label)
+                self.pin_action_buttons[index].show()
+        self.row_pins.show()
+
+    def _activate_pin(self, index: int):
+        keys = list(getattr(self, "_pin_keys", []) or [])
+        if index < 0 or index >= len(keys):
+            return
+        key = keys[index]
+        try:
+            from core.companion_moment import eligible_pinned_actions
+            allowed = {
+                str(item.get("key") or "")
+                for item in eligible_pinned_actions(config_manager=self.config_manager)
+            }
+        except Exception:
+            return
+        if key not in allowed:
+            return
+        self._emit_allowed(key, "")
+
+    def _unpin_at(self, index: int):
+        keys = list(getattr(self, "_pin_keys", []) or [])
+        if index < 0 or index >= len(keys):
+            return
+        try:
+            from core.companion_moment import unpin_favorite_action
+            unpin_favorite_action(keys[index])
+        except Exception:
+            pass
+        self.refresh()
+
+    def _refresh_pin_button(self, button, action_key: str):
+        key = str(action_key or "").strip()
+        button.hide()
+        if not key:
+            return
+        try:
+            from core.companion_moment import MAX_PINNED_ACTIONS, is_allowed_insight_action, list_pinned_actions
+            from core.companion_skills import BLOCKED_ACTION_KEYS
+            if not is_allowed_insight_action(key) or key in BLOCKED_ACTION_KEYS:
+                return
+            pinned = {str(item.get("action_key") or "") for item in list_pinned_actions()}
+        except Exception:
+            return
+        if key in pinned:
+            button.setText("Bỏ ghim")
+            button.show()
+            return
+        if len(pinned) >= MAX_PINNED_ACTIONS:
+            return
+        button.setText("Ghim")
+        button.show()
+
+    def _toggle_pin_key(self, action_key: str, topic: str = ""):
+        key = str(action_key or "").strip()
+        if not key:
+            return
+        try:
+            from core.companion_moment import list_pinned_actions, pin_favorite_action, unpin_favorite_action
+            pinned = {str(item.get("action_key") or "") for item in list_pinned_actions()}
+            if key in pinned:
+                unpin_favorite_action(key)
+            else:
+                pin_favorite_action(key, topic=topic)
+        except Exception:
+            pass
+        self.refresh()
+
+    def _toggle_pin_insight(self):
+        self._toggle_pin_key(self._action_key, self._insight_topic)
+
+    def _toggle_pin_follow(self):
+        self._toggle_pin_key(getattr(self, "_follow_action", ""), getattr(self, "_follow_topic", ""))
 
     def _dismiss_milestone(self):
         try:
@@ -625,6 +852,12 @@ class CompanionInsightBar(QFrame):
         self.refresh()
 
     def _dismiss(self):
+        if str(self._insight_id or "").startswith("exam_season:"):
+            try:
+                from core.companion_moment import dismiss_exam_season_hint
+                dismiss_exam_season_hint()
+            except Exception:
+                pass
         if self._insight_id:
             dismiss_insight(self._insight_id)
         self.refresh()
@@ -996,7 +1229,14 @@ class CompanionCard(QFrame):
         self.lbl_reason.setText(explain_stage_progress(stage) if enabled else "")
         learned = recent_learning_text() if enabled else ""
         guidance = active_guidance_text() if enabled else ""
-        learning_bits = [bit for bit in (learned, guidance) if bit]
+        daily = ""
+        if enabled:
+            try:
+                from core.companion_learning import ensure_daily_model, learn_status_vi
+                daily = learn_status_vi(ensure_daily_model(config_manager=self.config_manager))
+            except Exception:
+                daily = ""
+        learning_bits = [bit for bit in (learned, guidance, daily) if bit]
         self.lbl_learning.setText("\n".join(learning_bits))
         digest = diary_digest(limit=3, days=14)
         preview_kinds = (
@@ -1498,6 +1738,13 @@ class CompanionDialog(QDialog):
         learned = recent_learning_text()
         if learned:
             self.lbl_legend.setText(self.lbl_legend.text() + "\n" + learned)
+        try:
+            from core.companion_learning import ensure_daily_model, learn_status_vi
+            daily = learn_status_vi(ensure_daily_model(config_manager=self.config_manager))
+        except Exception:
+            daily = ""
+        if daily:
+            self.lbl_legend.setText(self.lbl_legend.text() + "\n" + daily)
         self.lbl_profile.setText(format_profile_browse() or empty["profile"])
         self._fill_corrections()
         self._fill_growth()

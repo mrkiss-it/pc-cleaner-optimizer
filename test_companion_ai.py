@@ -2637,4 +2637,512 @@ mile_bar.deleteLater()
 card.deleteLater()
 print(" [PASS] companion card/dialog Qt smoke")
 
+
+# ---------------------------------------------------------------------------
+# Pins, per-topic trust, local weekly strip, exam-season hint
+# ---------------------------------------------------------------------------
+
+from core.companion_moment import (
+    dismiss_exam_season_hint,
+    dismiss_weekly_strip,
+    eligible_pinned_actions,
+    list_pinned_actions,
+    local_weekly_bullets,
+    pin_favorite_action,
+    present_exam_season_hint,
+    sync_daily_checkin,
+    sync_exam_season_hint,
+    sync_weekly_strip,
+    unpin_favorite_action,
+    week_key,
+)
+from core.companion_profile import (
+    effective_coaching,
+    load_profile,
+    order_insights_for_topic_trust,
+    save_profile,
+    score_trust,
+    topic_trust_level,
+    unmute_topic,
+)
+from core.companion_maturity import load_state, save_state
+from core.companion_skills import BLOCKED_ACTION_KEYS
+from core.exam_focus import ExamMeetingFocus
+
+pin_root = _fresh_dir()
+check(pin_favorite_action("winsxs_cleanup", base_dir=pin_root) is None, "blocked key cannot be pinned")
+check(pin_favorite_action("clean_disk", base_dir=pin_root) is None, "destructive clean cannot be pinned")
+check(list_pinned_actions(pin_root) == [], "blocked pin is not stored")
+check(ExamMeetingFocus.is_active() is False, "pinning does not enable Trước thi / họp")
+for key in ("open_wifi_stability", "open_thermal_card", "optimize_ram"):
+    pinned = pin_favorite_action(key, base_dir=pin_root, now=datetime(2026, 9, 23, 9, 0, 0))
+    check(pinned and pinned.get("action_key") == key, "allowlisted action can be pinned")
+check(len(list_pinned_actions(pin_root)) == 3, "at most three favorites")
+check(pin_favorite_action("enable_exam_focus", base_dir=pin_root) is None, "a fourth favorite is refused")
+check(ExamMeetingFocus.is_active() is False, "refusing a pin does not enable focus")
+check(unpin_favorite_action("optimize_ram", base_dir=pin_root), "unpin removes one favorite")
+check(pin_favorite_action("enable_exam_focus", base_dir=pin_root) is not None, "a free slot accepts another allowlisted action")
+check(all(item.get("action_key") not in BLOCKED_ACTION_KEYS for item in list_pinned_actions(pin_root)), "stored pins stay allowlisted")
+
+gate_root = _fresh_dir()
+for offset in range(2):
+    record_app_event(
+        "session_day",
+        "Phiên dùng app trên máy này",
+        now=datetime(2026, 9, 21 + offset, 8, 0, 0),
+        base_dir=gate_root,
+        coalesce=False,
+    )
+pin_favorite_action("open_wifi_stability", base_dir=gate_root, now=datetime(2026, 9, 23, 8, 0, 0))
+morning = datetime(2026, 9, 23, 8, 0, 0)
+shown_pins = eligible_pinned_actions(now=morning, base_dir=gate_root, config_manager=_Cfg())
+check(any(item.get("key") == "open_wifi_stability" for item in shown_pins), "a pinned Wi-Fi guide can show")
+line = sync_daily_checkin(now=morning, base_dir=gate_root, config_manager=_Cfg())
+check(line and line.get("action_key") == "open_wifi_stability", "daily check-in can show a pin that is not the last Có ích")
+check("ghim" in (line.get("text") or "").lower(), "check-in says the button is pinned and not automatic")
+saved_line = load_state(gate_root).get("pending_checkin") or {}
+check(not saved_line.get("action_key"), "the saved check-in does not bake the pin")
+mute_topic("wifi", days=7, reason="user", base_dir=gate_root, now=morning)
+check(eligible_pinned_actions(now=morning, base_dir=gate_root, config_manager=_Cfg()) == [], "mute hides a pinned button")
+unmute_topic("wifi", base_dir=gate_root)
+set_quiet_hours(True, base_dir=gate_root)
+check(
+    eligible_pinned_actions(now=datetime(2026, 9, 23, 23, 30), base_dir=gate_root, config_manager=_Cfg()) == [],
+    "quiet hours hide pinned buttons",
+)
+set_quiet_hours(False, base_dir=gate_root)
+state = load_state(gate_root)
+state["active_dates"] = [(datetime(2026, 9, 1) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(10)]
+save_state(state, base_dir=gate_root)
+pin_favorite_action("optimize_ram", base_dir=gate_root)
+calm_pins = eligible_pinned_actions(now=datetime(2026, 9, 22, 12, 0), base_dir=gate_root, config_manager=_Cfg())
+check(any(item.get("key") == "optimize_ram" for item in calm_pins), "a propose pin can show on a calm day")
+record_app_event("wifi_weak", "Wi-Fi yếu", now=datetime(2026, 9, 23, 11, 0, 0), base_dir=gate_root, coalesce=False)
+record_app_event("thermal_warn", "Nhiệt cao", now=datetime(2026, 9, 23, 11, 5, 0), base_dir=gate_root, coalesce=False)
+rough_pins = eligible_pinned_actions(now=datetime(2026, 9, 23, 12, 0), base_dir=gate_root, config_manager=_Cfg())
+check(all(item.get("key") != "optimize_ram" for item in rough_pins), "a rough day hides a propose pin")
+ExamMeetingFocus._is_active = True
+try:
+    focus_pins = eligible_pinned_actions(now=datetime(2026, 9, 23, 12, 0), base_dir=gate_root, config_manager=_Cfg())
+    check(focus_pins == [], "Trước thi / họp hides pinned propose buttons")
+    check(ExamMeetingFocus.is_active() is True, "hiding pins does not toggle focus")
+finally:
+    ExamMeetingFocus.reset_for_tests()
+print(" [PASS] ghim hành động yêu thích")
+
+trust_root = _fresh_dir()
+trust_now = datetime(2026, 9, 10, 9, 0, 0)
+for i in range(3):
+    note_user_feedback(False, topic="wifi", base_dir=trust_root, now=trust_now + timedelta(days=i), config_manager=_Cfg())
+for i in range(3):
+    note_user_feedback(True, topic="ram", base_dir=trust_root, now=trust_now + timedelta(days=i, hours=1), config_manager=_Cfg())
+unmute_topic("wifi", base_dir=trust_root)
+check(topic_trust_level("wifi", base_dir=trust_root) == "low", "Chưa dominates Wi-Fi trust")
+check(topic_trust_level("ram", base_dir=trust_root) == "high", "many Có ích raise RAM trust")
+check(score_trust(base_dir=trust_root)["level"] == "steady", "per-topic trust keeps global trust")
+check(load_profile(trust_root).get("coaching") == "steady", "topic trust does not flip global coaching")
+check(effective_coaching(base_dir=trust_root, topic="wifi", now=trust_now + timedelta(days=4)) == "ask_more", "a quiet topic asks more")
+check(effective_coaching(base_dir=trust_root, topic="ram") == "steady", "a trusted topic does not become aggressive")
+trust_rows = [row for row in read_events(base_dir=trust_root) if row.get("kind") == "topic_trust"]
+check(any("nhẹ" in row.get("summary", "") for row in trust_rows), "a meaningful drop is noted in the diary")
+check(any("Có ích" in row.get("summary", "") for row in trust_rows), "a meaningful rise is noted in the diary")
+check(score_trust(base_dir=trust_root)["sample"] == 6, "trust notes are not extra accept/reject points")
+low_only = [{"id": "a", "text": "Hôm nay: Wi-Fi.", "topic": "wifi"}]
+hide_day = datetime(2026, 9, 1, 8, 0, 0)
+while hide_day.toordinal() % 4 == 0:
+    hide_day += timedelta(days=1)
+show_day = datetime(2026, 9, 1, 8, 0, 0)
+while show_day.toordinal() % 4 != 0:
+    show_day += timedelta(days=1)
+wifi_profile = {"topic_trust": {"wifi": {"helpful": 0, "unhelpful": 3, "noted": "low"}}}
+check(order_insights_for_topic_trust(low_only, now=hide_day, profile=wifi_profile) == [], "a Chưa-heavy topic is quieter most days")
+check(len(order_insights_for_topic_trust(low_only, now=show_day, profile=wifi_profile)) == 1, "that topic can still appear sometimes")
+mixed = [
+    {"id": "w", "text": "Hôm nay: Wi-Fi.", "topic": "wifi"},
+    {"id": "r", "text": "Hôm nay: RAM.", "topic": "ram"},
+]
+mixed_profile = {
+    "topic_trust": {
+        "wifi": {"helpful": 0, "unhelpful": 3, "noted": "low"},
+        "ram": {"helpful": 4, "unhelpful": 0, "noted": "high"},
+    }
+}
+prefer_day = datetime(2026, 9, 1, 8, 0, 0)
+while prefer_day.toordinal() % 3 == 2:
+    prefer_day += timedelta(days=1)
+preferred = order_insights_for_topic_trust(mixed, now=prefer_day, profile=mixed_profile)
+check(preferred and all(item.get("topic") == "ram" for item in preferred), "Có ích topics are a bit more likely")
+print(" [PASS] độ tin theo chủ đề")
+
+week_root = _fresh_dir()
+week_now = datetime(2026, 9, 23, 18, 0, 0)
+record_app_event("wifi_weak", "Wi-Fi yếu buổi tối", now=week_now - timedelta(days=1), base_dir=week_root, coalesce=False)
+record_app_event(
+    "focus_mode",
+    "Người dùng bật Trước thi / họp",
+    now=week_now - timedelta(days=2),
+    base_dir=week_root,
+    coalesce=False,
+)
+record_app_event("wifi_weak", "Wi-Fi yếu", now=week_now - timedelta(days=1, hours=2), base_dir=week_root, coalesce=False)
+record_app_event("thermal_warn", "Nhiệt cao", now=week_now - timedelta(days=1, hours=1), base_dir=week_root, coalesce=False)
+state = load_state(week_root)
+state["last_milestone_date"] = (week_now - timedelta(days=1)).strftime("%Y-%m-%d")
+save_state(state, base_dir=week_root)
+bullets = local_weekly_bullets(now=week_now, base_dir=week_root)
+check(1 <= len(bullets) <= 3, "weekly strip has 1–3 bullets")
+blob = " ".join(item.get("text", "") for item in bullets)
+check("Wi-Fi" in blob or "Trước thi" in blob or "cột mốc" in blob or "nặng" in blob, "weekly bullets use on-disk facts")
+check("Gemini" not in blob and "Ollama" not in blob, "weekly bullets do not need Gemini")
+set_quiet_hours(True, base_dir=week_root)
+check(sync_weekly_strip(now=week_now.replace(hour=23, minute=30), base_dir=week_root, config_manager=_Cfg()) is None, "quiet hours hold the weekly strip")
+check(not load_state(week_root).get("last_weekly_strip_week"), "a held strip does not consume the week")
+set_quiet_hours(False, base_dir=week_root)
+strip = sync_weekly_strip(now=week_now, base_dir=week_root, config_manager=_Cfg())
+check(strip and strip.get("text", "").startswith("Tóm tắt tuần:"), "the strip is a local weekly digest")
+check(strip.get("text", "").count("•") <= 3, "the shown strip stays within three bullets")
+again_strip = sync_weekly_strip(now=week_now + timedelta(days=1), base_dir=week_root, config_manager=_Cfg())
+check(again_strip and again_strip.get("week") == strip.get("week"), "one strip per calendar week")
+mute_topic("wifi", days=7, base_dir=week_root, now=week_now)
+muted_strip = sync_weekly_strip(now=week_now, base_dir=week_root, config_manager=_Cfg())
+check("Wi-Fi" not in (muted_strip or {}).get("text", ""), "mute hides that topic from the strip")
+unmute_topic("wifi", base_dir=week_root)
+dismiss_weekly_strip(base_dir=week_root, now=week_now + timedelta(days=2))
+check(sync_weekly_strip(now=week_now + timedelta(days=2), base_dir=week_root, config_manager=_Cfg()) is None, "Ẩn keeps the strip down this week")
+print(" [PASS] tóm tắt tuần local")
+
+exam_root = _fresh_dir()
+exam_day = datetime(2026, 9, 16, 9, 0, 0)
+record_app_event(
+    "focus_end",
+    "Người dùng tắt Trước thi / họp",
+    now=exam_day,
+    base_dir=exam_root,
+    tags=["focus", "end"],
+    coalesce=False,
+)
+note_user_feedback(True, topic="focus", base_dir=exam_root, now=exam_day + timedelta(minutes=10), config_manager=_Cfg())
+check(sync_exam_season_hint(now=exam_day + timedelta(hours=2), base_dir=exam_root, config_manager=_Cfg()) is None, "one focus session is not a season")
+check(not load_state(exam_root).get("last_exam_hint_week"), "a quiet week is not consumed")
+record_app_event(
+    "focus_end",
+    "Người dùng tắt Trước thi / họp",
+    now=exam_day + timedelta(days=1),
+    base_dir=exam_root,
+    tags=["focus", "end"],
+    coalesce=False,
+)
+note_user_feedback(True, topic="focus", base_dir=exam_root, now=exam_day + timedelta(days=1, minutes=10), config_manager=_Cfg())
+state = load_state(exam_root)
+state["active_dates"] = [(exam_day + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(8)]
+save_state(state, base_dir=exam_root)
+enable_calls = []
+_orig_enable = ExamMeetingFocus.enable
+
+def _refuse_enable(*_a, **_k):
+    enable_calls.append(True)
+    return None
+
+ExamMeetingFocus.enable = classmethod(lambda cls, *a, **k: _refuse_enable(*a, **k))
+try:
+    set_quiet_hours(True, base_dir=exam_root)
+    check(present_exam_season_hint(now=exam_day + timedelta(days=1, hours=14, minutes=30), base_dir=exam_root, config_manager=_Cfg()) is None, "quiet hours hold the exam hint")
+    check(not load_state(exam_root).get("last_exam_hint_week"), "quiet hours do not consume the exam week")
+    set_quiet_hours(False, base_dir=exam_root)
+    snooze_tip_family("focus", now=exam_day + timedelta(days=1, hours=3), base_dir=exam_root)
+    check(sync_exam_season_hint(now=exam_day + timedelta(days=1, hours=4), base_dir=exam_root, config_manager=_Cfg()) is None, "Đừng nhắc holds the exam hint")
+    check(not load_state(exam_root).get("last_exam_hint_week"), "snooze does not consume the exam week")
+    profile = load_profile(exam_root)
+    profile["snoozed_tips"] = {}
+    save_profile(profile, base_dir=exam_root)
+    record_app_event("wifi_weak", "Wi-Fi yếu", now=exam_day + timedelta(days=1, hours=5), base_dir=exam_root, coalesce=False)
+    record_app_event("thermal_warn", "Nhiệt cao", now=exam_day + timedelta(days=1, hours=5, minutes=5), base_dir=exam_root, coalesce=False)
+    check(sync_exam_season_hint(now=exam_day + timedelta(days=1, hours=6), base_dir=exam_root, config_manager=_Cfg()) is None, "a rough day waits")
+    check(not load_state(exam_root).get("last_exam_hint_week"), "a rough day does not consume the exam week")
+    calm = exam_day + timedelta(days=2, hours=4)
+    hint = present_exam_season_hint(now=calm, base_dir=exam_root, config_manager=_Cfg())
+    check(hint and "không tự bật" in hint.get("text", ""), "the hint asks the user to turn focus on")
+    check(hint.get("action_key") == "enable_exam_focus", "the button is the existing Bật Trước thi / họp action")
+    check(hint.get("action_label_vi") == "Bật Trước thi / họp", "the button label matches the app")
+    check(enable_calls == [], "showing the hint does not call enable")
+    check(ExamMeetingFocus.is_active() is False, "the hint does not turn Trước thi / họp on")
+    again_hint = sync_exam_season_hint(now=calm + timedelta(hours=3), base_dir=exam_root, config_manager=_Cfg())
+    check(again_hint and again_hint.get("id") == hint.get("id"), "the same week keeps the same hint")
+    dismiss_exam_season_hint(base_dir=exam_root, now=calm + timedelta(hours=4))
+    check(sync_exam_season_hint(now=calm + timedelta(hours=5), base_dir=exam_root, config_manager=_Cfg()) is None, "Ẩn keeps the hint down this week")
+finally:
+    ExamMeetingFocus.enable = _orig_enable
+    ExamMeetingFocus.reset_for_tests()
+print(" [PASS] gợi ý mùa thi / họp")
+
+transfer_root = _fresh_dir()
+pin_favorite_action("open_thermal_card", base_dir=transfer_root, now=datetime(2026, 9, 23, 8, 0, 0))
+note_user_feedback(False, topic="thermal", base_dir=transfer_root, now=datetime(2026, 9, 20, 8, 0, 0), config_manager=_Cfg())
+note_user_feedback(False, topic="thermal", base_dir=transfer_root, now=datetime(2026, 9, 21, 8, 0, 0), config_manager=_Cfg())
+state = load_state(transfer_root)
+state["last_weekly_strip_week"] = "2026-W39"
+state["pending_weekly_strip"] = {
+    "week": "2026-W39",
+    "text": "Tóm tắt tuần:\n• Nhiệt cao 1 lần.",
+    "items": [{"text": "Nhiệt cao 1 lần.", "topic": "thermal"}],
+}
+state["last_exam_hint_week"] = "2026-W39"
+state["pending_exam_hint"] = {
+    "id": "exam_season:2026-W39",
+    "week": "2026-W39",
+    "text": "Hôm nay: bạn có thể tự bật Trước thi / họp — mình không tự bật.",
+    "topic": "focus",
+    "action_key": "winsxs_cleanup",
+}
+save_state(state, base_dir=transfer_root)
+transfer_path = os.path.join(transfer_root, "memory.json")
+check(export_companion_memory(transfer_path, base_dir=transfer_root).get("ok") is True, "pins and topic trust export")
+other_root = _fresh_dir()
+pin_favorite_action("open_wifi_stability", base_dir=other_root)
+check(import_companion_memory(transfer_path, mode="merge", base_dir=other_root).get("ok") is True, "new fields merge")
+merged_pins = [item.get("action_key") for item in list_pinned_actions(other_root)]
+check("open_thermal_card" in merged_pins and "open_wifi_stability" in merged_pins, "merge keeps both favorites")
+check("winsxs_cleanup" not in merged_pins, "merge does not keep a blocked pin")
+check(topic_trust_level("thermal", base_dir=other_root) == "low", "merged topic trust survives")
+check(load_state(other_root).get("last_weekly_strip_week") == "2026-W39", "weekly strip week round-trips")
+check(load_state(other_root).get("pending_exam_hint", {}).get("action_key") in (None, ""), "imported exam hint cannot carry an action")
+check(ExamMeetingFocus.is_active() is False, "import does not enable Trước thi / họp")
+legacy_dir = _fresh_dir()
+with open(transfer_path, "r", encoding="utf-8") as handle:
+    legacy = json.load(handle)
+legacy.get("profile", {}).pop("topic_trust", None)
+legacy.get("maturity", {}).pop("pinned_actions", None)
+legacy.get("maturity", {}).pop("pending_weekly_strip", None)
+legacy.get("maturity", {}).pop("pending_exam_hint", None)
+legacy_path = os.path.join(legacy_dir, "legacy.json")
+with open(legacy_path, "w", encoding="utf-8") as handle:
+    json.dump(legacy, handle)
+check(import_companion_memory(legacy_path, mode="replace", base_dir=legacy_dir).get("ok") is True, "older backup still imports")
+check(load_profile(legacy_dir).get("topic_trust") == {}, "missing topic trust defaults empty")
+check(list_pinned_actions(legacy_dir) == [], "missing pins default empty")
+blocked_dir = _fresh_dir()
+legacy["maturity"]["pinned_actions"] = [{"action_key": "clean_disk", "topic": "disk"}]
+blocked_path = os.path.join(blocked_dir, "blocked.json")
+with open(blocked_path, "w", encoding="utf-8") as handle:
+    json.dump(legacy, handle)
+check(import_companion_memory(blocked_path, mode="replace", base_dir=blocked_dir).get("ok") is True, "a backup with a blocked pin still imports")
+check(list_pinned_actions(blocked_dir) == [], "imported pins cannot keep a blocked action")
+print(" [PASS] pin / topic trust / weekly / exam round-trip")
+
+qt_root = _fresh_dir()
+for i in range(3):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=datetime(2026, 9, 20, 21, 0, 0) + timedelta(days=i),
+        base_dir=qt_root,
+        coalesce=False,
+    )
+qt_bar = CompanionInsightBar(config_manager=_Cfg())
+qt_bar.refresh()
+check(qt_bar.btn_pin.text() == "Ghim", "insight can pin the propose button")
+check(not qt_bar.btn_pin.isHidden(), "Ghim sits next to the propose button")
+fired_pins = []
+qt_bar.action_requested.connect(lambda key: fired_pins.append(key))
+qt_bar.btn_pin.click()
+check(fired_pins == [], "Ghim does not run the action")
+check(qt_bar.lbl_pins.text() == "Đã ghim", "the card lists pinned actions")
+check(any(button.text() == "Bỏ ghim" and not button.isHidden() for button in qt_bar.pin_unpin_buttons), "unpin is on the card")
+qt_bar.pin_unpin_buttons[0].click()
+check(list_pinned_actions(qt_root) == [], "Bỏ ghim clears the favorite")
+this_week = week_key()
+week_state = load_state(qt_root)
+week_state["last_weekly_strip_week"] = this_week
+week_state["pending_weekly_strip"] = {
+    "week": this_week,
+    "text": "Tóm tắt tuần:\n• Wi-Fi yếu 1 lần.",
+    "items": [{"text": "Wi-Fi yếu 1 lần.", "topic": "wifi"}],
+}
+save_state(week_state, base_dir=qt_root)
+qt_bar.refresh()
+check(qt_bar.lbl_week.text().startswith("Tóm tắt tuần:"), "the card shows the local weekly strip")
+check(qt_bar.lbl_week.text().count("•") <= 3, "the card strip has at most three bullets")
+qt_bar.btn_week_hide.click()
+check(qt_bar.lbl_week.text() == "", "Ẩn clears the weekly strip")
+exam_state = load_state(qt_root)
+exam_state["active_dates"] = [(datetime(2026, 9, 1) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(10)]
+exam_state["last_exam_hint_week"] = this_week
+exam_state["pending_exam_hint"] = {
+    "id": f"exam_season:{this_week}",
+    "week": this_week,
+    "text": "Hôm nay: bạn có thể tự bật Trước thi / họp — mình không tự bật.",
+    "topic": "focus",
+}
+save_state(exam_state, base_dir=qt_root)
+qt_bar.refresh()
+check("không tự bật" in qt_bar.lbl_insight.text(), "the card shows the exam-season hint")
+check(qt_bar.btn_action.text() == "Bật Trước thi / họp", "the card offers the existing focus button")
+fired_exam = []
+qt_bar.action_requested.connect(lambda key: fired_exam.append(key))
+qt_bar.btn_action.click()
+check(fired_exam == ["enable_exam_focus"], "the button emits the existing focus action")
+check(ExamMeetingFocus.is_active() is False, "the card click does not enable focus by itself")
+qt_bar.deleteLater()
+print(" [PASS] pin / weekly / exam card")
+
+# ---------------------------------------------------------------------------
+# Mô hình học mỗi ngày — JSON snapshot, not an LLM weight file
+# ---------------------------------------------------------------------------
+
+from core.companion_learning import (
+    learn_status_vi,
+    load_daily_model,
+    merge_learning_models,
+    model_path,
+    morning_learn_clause,
+    prefer_learned_topics,
+    prompt_learn_line,
+    update_daily_model,
+    weekly_learn_line,
+)
+from core.companion_skills import BLOCKED_ACTION_KEYS as _LEARN_BLOCKED
+
+learn_root = _fresh_dir()
+learn_day = datetime(2026, 9, 23, 8, 0, 0)
+record_app_event(
+    "wifi_weak",
+    "Wi-Fi yếu buổi tối",
+    now=datetime(2026, 9, 22, 21, 0, 0),
+    base_dir=learn_root,
+    coalesce=False,
+)
+for offset in range(3):
+    note_user_feedback(
+        True,
+        base_dir=learn_root,
+        now=learn_day - timedelta(days=1, minutes=30 - offset),
+        topic="wifi",
+    )
+note_user_feedback(False, base_dir=learn_root, now=learn_day - timedelta(days=1, minutes=10), topic="ram")
+note_user_feedback(False, base_dir=learn_root, now=learn_day - timedelta(days=1, minutes=8), topic="ram")
+record_app_event(
+    "focus_mode",
+    "Người dùng bật Trước thi / họp",
+    now=learn_day - timedelta(days=2),
+    base_dir=learn_root,
+    coalesce=False,
+)
+record_app_event(
+    "focus_mode",
+    "Người dùng bật Trước thi / họp",
+    now=learn_day - timedelta(days=3),
+    base_dir=learn_root,
+    coalesce=False,
+)
+ExamMeetingFocus.reset_for_tests()
+first_model = update_daily_model(now=learn_day, base_dir=learn_root)
+check(os.path.isfile(model_path(learn_root)), "daily model is a JSON file on this PC")
+check(first_model.get("date") == "2026-09-23", "the snapshot is stamped with the local day")
+check(first_model.get("source") == "local", "the model is local memory, not a downloaded LLM")
+check("trọng số" in first_model.get("note_vi", "") or "AGI" in first_model.get("note_vi", ""), "the file says it is not an LLM weight file")
+check("Hôm nay học được" in first_model.get("summary_vi", ""), "the snapshot has a Vietnamese lesson")
+check("Ollama" not in json.dumps(first_model, ensure_ascii=False), "the snapshot does not call Ollama")
+wifi_score = (first_model.get("topic_scores") or {}).get("wifi") or {}
+check(int(wifi_score.get("helpful") or 0) >= 3, "Có ích counts land in the topic score")
+ram_score = (first_model.get("topic_scores") or {}).get("ram") or {}
+check(int(ram_score.get("unhelpful") or 0) >= 2, "Chưa counts land in the topic score")
+check(int(first_model.get("focus_sessions") or 0) >= 2, "focus sessions are a stat, not a switch")
+check(ExamMeetingFocus.is_active() is False, "learning does not turn on Trước thi / họp")
+check("Hôm qua mình học" in (morning_learn_clause(now=learn_day, base_dir=learn_root) or ""), "the morning line can say what was learned yesterday")
+check("Hôm nay học được" in (weekly_learn_line(now=learn_day, base_dir=learn_root, muted=set()) or ""), "the weekly digest can use the daily lesson")
+mute_topic("wifi", days=7, base_dir=learn_root, now=learn_day)
+check(morning_learn_clause(now=learn_day, base_dir=learn_root, hidden={"wifi"}) == "", "a muted topic stays out of the morning lesson")
+check(weekly_learn_line(now=learn_day, base_dir=learn_root, muted={"wifi"}) == "", "a muted topic stays out of the weekly lesson")
+unmute_topic("wifi", base_dir=learn_root)
+check(any(item.get("issue_class") == "wifi_weak" for item in first_model.get("skill_candidates") or []), "skill candidates come from the diary")
+check(
+    all(item.get("action_key") not in _LEARN_BLOCKED for item in first_model.get("skill_candidates") or []),
+    "skill candidates do not carry blocked actions",
+)
+note_user_feedback(True, base_dir=learn_root, now=learn_day.replace(hour=9), topic="wifi")
+second_model = update_daily_model(now=learn_day.replace(hour=21), base_dir=learn_root)
+check(second_model.get("topic_scores") == first_model.get("topic_scores"), "a second run the same day does not add the new Có ích")
+check(second_model.get("summary_vi") == first_model.get("summary_vi"), "the same day keeps the same lesson")
+check(second_model.get("trust_deltas") == first_model.get("trust_deltas"), "trust deltas are not stacked the same day")
+next_model = update_daily_model(now=learn_day + timedelta(days=1), base_dir=learn_root)
+next_wifi = (next_model.get("topic_scores") or {}).get("wifi") or {}
+check(next_model.get("date") == "2026-09-24", "the next morning writes a new day")
+check(int(next_wifi.get("helpful") or 0) == int(wifi_score.get("helpful") or 0) + 1, "the next day counts the Có ích once")
+wifi_delta = ((next_model.get("trust_deltas") or {}).get("wifi") or {}).get("delta")
+check(wifi_delta == 1, "the trust delta is the change since yesterday, not the full total")
+check("Ollama" not in prompt_learn_line(now=learn_day, base_dir=learn_root), "prompt context does not fetch a base model")
+status = learn_status_vi(first_model, now=learn_day)
+check("Hôm nay đã học từ máy này" in status and "không phải AGI" in status, "the status line is honest and local")
+empty_status = learn_status_vi(update_daily_model(now=learn_day, base_dir=_fresh_dir()), now=learn_day)
+check("chưa có gì mới" in empty_status and "không phải AGI" in empty_status, "an empty day does not pretend to have learned")
+ordered = prefer_learned_topics(
+    [
+        {"id": "tip:wifi", "topic": "wifi", "text": "Wi-Fi"},
+        {"id": "tip:ram", "topic": "ram", "text": "RAM"},
+        {"id": "window:wifi", "topic": "wifi", "text": "Buổi tối"},
+    ],
+    base_dir=learn_root,
+)
+check(str(ordered[0].get("id")).startswith("window:"), "a time window still comes before the learned topic")
+check(ordered[1].get("topic") == "wifi", "a topic with more Có ích is preferred after the window")
+quiet_root = _fresh_dir()
+record_app_event("wifi_weak", "Wi-Fi yếu", now=learn_day - timedelta(hours=12), base_dir=quiet_root, coalesce=False)
+set_quiet_hours(True, base_dir=quiet_root)
+check(sync_daily_checkin(now=learn_day.replace(hour=23, minute=30), base_dir=quiet_root, config_manager=_Cfg()) is None, "quiet hours still hide the morning line")
+check(load_daily_model(quiet_root).get("date") == "2026-09-23", "the daily job still learns during quiet hours")
+set_quiet_hours(False, base_dir=quiet_root)
+spoken = sync_daily_checkin(now=learn_day.replace(hour=8), base_dir=quiet_root, config_manager=_Cfg())
+check(spoken and "Hôm qua mình học" in spoken.get("text", ""), "the morning line shows yesterday's lesson")
+check("Gemini" not in spoken.get("text", "") and "Ollama" not in spoken.get("text", ""), "the morning lesson is not an online model")
+again_spoken = sync_daily_checkin(now=learn_day.replace(hour=11), base_dir=quiet_root, config_manager=_Cfg())
+check(again_spoken and again_spoken.get("text") == spoken.get("text"), "the learned morning line is still once per day")
+learn_path = os.path.join(learn_root, "hoc.json")
+check(export_companion_memory(learn_path, base_dir=learn_root).get("ok") is True, "the daily model exports with memory")
+with open(learn_path, "r", encoding="utf-8") as handle:
+    exported_model = json.load(handle).get("learning_model") or {}
+check(exported_model.get("date") == "2026-09-24", "export keeps the latest learning day")
+other_learn = _fresh_dir()
+update_daily_model(now=learn_day, base_dir=other_learn)
+check(import_companion_memory(learn_path, mode="merge", base_dir=other_learn).get("ok") is True, "the daily model imports")
+check(load_daily_model(other_learn).get("date") == "2026-09-24", "merge keeps the newer snapshot")
+check(load_daily_model(other_learn).get("summary_vi") == next_model.get("summary_vi"), "merge does not add the two snapshots together")
+older = dict(exported_model)
+older["date"] = "2026-09-20"
+older["summary_vi"] = "Hôm nay học được: bản cũ."
+check(merge_learning_models(exported_model, older).get("date") == "2026-09-24", "an older file does not replace today's model")
+kept_local = _fresh_dir()
+update_daily_model(now=learn_day, base_dir=kept_local)
+legacy_learn = {
+    "kind": "pc_cleaner_companion_memory",
+    "version": 1,
+    "profile": {},
+    "diary": [],
+}
+legacy_learn_path = os.path.join(kept_local, "legacy.json")
+with open(legacy_learn_path, "w", encoding="utf-8") as handle:
+    json.dump(legacy_learn, handle)
+check(import_companion_memory(legacy_learn_path, mode="replace", base_dir=kept_local).get("ok") is True, "an older backup without the model still imports")
+check(load_daily_model(kept_local).get("date") == "2026-09-23", "a missing model key leaves the local snapshot")
+poison = dict(exported_model)
+poison["skill_candidates"] = [{"issue_class": "winsxs", "action_key": "winsxs_cleanup", "weight": 9, "title_vi": "no"}]
+poison_path = os.path.join(learn_root, "poison.json")
+with open(poison_path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "kind": "pc_cleaner_companion_memory",
+        "version": 1,
+        "learning_model": poison,
+    }, handle)
+poison_root = _fresh_dir()
+check(import_companion_memory(poison_path, mode="replace", base_dir=poison_root).get("ok") is True, "a model file with a blocked key still imports")
+imported_candidates = load_daily_model(poison_root).get("skill_candidates") or []
+check(all("winsxs" not in json.dumps(item) for item in imported_candidates), "import drops a blocked skill candidate")
+check(ExamMeetingFocus.is_active() is False, "importing the model does not enable Trước thi / họp")
+learn_bar = CompanionInsightBar(config_manager=_Cfg())
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = learn_root
+learn_bar.refresh()
+check("không phải AGI" in learn_bar.lbl_learned_today.text(), "the companion card shows the local learning line")
+check("Ollama" not in learn_bar.lbl_learned_today.text(), "the learning line does not mention Ollama")
+learn_bar.deleteLater()
+print(" [PASS] mô hình học mỗi ngày")
+
 print(" [PASS] companion AI suite")
