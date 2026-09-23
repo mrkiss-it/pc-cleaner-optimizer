@@ -219,11 +219,52 @@ def event_weight(event: Optional[Dict[str, Any]]) -> int:
     return max(1, weight)
 
 
+_secret_value_cache: Dict[str, Any] = {"sig": None, "values": ()}
+
+
+def configured_secret_values() -> Tuple[str, ...]:
+    """Secret strings already stored on this PC. Never logged."""
+    try:
+        from config_manager import SECRET_KEYS, secrets_file_path
+        path = secrets_file_path()
+        if not path or not os.path.exists(path):
+            sig = ("missing", path or "")
+            if _secret_value_cache.get("sig") == sig:
+                return _secret_value_cache.get("values") or ()
+            _secret_value_cache["sig"] = sig
+            _secret_value_cache["values"] = ()
+            return ()
+        st = os.stat(path)
+        sig = (path, getattr(st, "st_mtime_ns", st.st_mtime), st.st_size)
+        if _secret_value_cache.get("sig") == sig:
+            return _secret_value_cache.get("values") or ()
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        found = []
+        if isinstance(data, dict):
+            for key, val in data.items():
+                if key not in SECRET_KEYS:
+                    continue
+                text = str(val or "").strip()
+                if len(text) >= 8:
+                    found.append(text)
+        found.sort(key=len, reverse=True)
+        packed = tuple(found)
+        _secret_value_cache["sig"] = sig
+        _secret_value_cache["values"] = packed
+        return packed
+    except Exception:
+        return ()
+
+
 def redact_sensitive(text: Any) -> str:
     """Strip secrets and paths. Does not clip length."""
     raw = str(text or "")
     raw = raw.replace("\x00", "")
     raw = _SECRET_RE.sub("[redacted]", raw)
+    for secret in configured_secret_values():
+        if secret and secret in raw:
+            raw = raw.replace(secret, "[redacted]")
     raw = _WIN_PATH_RE.sub("[path]", raw)
     raw = _POSIX_PATH_RE.sub("[path]", raw)
     raw = _UNC_PATH_RE.sub("[path]", raw)

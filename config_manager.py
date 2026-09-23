@@ -74,6 +74,21 @@ DEFAULT_CONFIG = {
     "run_on_startup": False,
     "minimize_to_tray_on_close": True,
     "show_notifications": True,
+    "email_report_enabled": False,
+    "email_report_to": "",
+    "email_report_frequency": "weekly",
+    "email_report_send_hour": 8,
+    "email_report_send_minute": 0,
+    "email_report_smtp_host": "",
+    "email_report_smtp_port": 587,
+    "email_report_smtp_username": "",
+    "email_report_smtp_use_tls": True,
+    "email_report_smtp_use_ssl": False,
+    "email_report_from_name": "",
+    "email_report_from_address": "",
+    "email_report_last_sent_at": "",
+    "email_report_last_attempt_at": "",
+    "email_report_last_error": "",
     "instant_screen_notifications_enabled": True,
     "notification_sound_enabled": False,
     "notification_duration_ms": 4500,
@@ -145,7 +160,10 @@ DEFAULT_CONFIG = {
 EULA_VERSION = 1
 
 # Keys that must never be written to tracked/shared config.json
-SECRET_KEYS = frozenset({"ai_copilot_gemini_api_key"})
+SECRET_KEYS = frozenset({
+    "ai_copilot_gemini_api_key",
+    "email_report_smtp_password",
+})
 
 
 def _user_data_dir() -> str:

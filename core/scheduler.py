@@ -194,6 +194,35 @@ class BackgroundScheduler(QObject):
         # 7. Companion diary snapshots + evening sổ tay (local, optional LLM)
         self._maybe_companion_tick(now, config, wifi_snap, ping)
 
+        # 8. Email report — quiet unless the user enabled SMTP on this PC.
+        self._maybe_send_email_report(now)
+
+    def _maybe_send_email_report(self, now):
+        """At most one successful send per frequency window. Skip if unconfigured."""
+        if getattr(self, "_email_report_busy", False):
+            return
+        try:
+            from core.email_report import scheduled_report_due
+            if not scheduled_report_due(self.config_manager, now=now):
+                return
+        except Exception:
+            return
+        self._email_report_busy = True
+        cfg_mgr = self.config_manager
+        stamp = now
+
+        def _run():
+            try:
+                from core.email_report import send_scheduled_report
+                send_scheduled_report(cfg_mgr, now=stamp)
+            except Exception:
+                pass
+            finally:
+                self._email_report_busy = False
+
+        import threading
+        threading.Thread(target=_run, daemon=True, name="EmailReport").start()
+
     def run_scheduled_clean(self):
         """
         Dọn dẹp định kỳ theo lịch
