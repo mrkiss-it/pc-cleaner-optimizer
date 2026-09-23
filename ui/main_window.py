@@ -66,6 +66,7 @@ class CleanWorker(QThread):
         deep_user_safe: bool = False,
         downloads_min_age_days: int = 30,
         deep_preview: bool = False,
+        deep_admin: bool = False,
     ):
         super().__init__()
         self.targets = targets
@@ -74,6 +75,7 @@ class CleanWorker(QThread):
         self.deep_user_safe = bool(deep_user_safe)
         self.downloads_min_age_days = int(downloads_min_age_days or 30)
         self.deep_preview = bool(deep_preview)
+        self.deep_admin = bool(deep_admin)
 
     def run(self):
         if self.deep_preview:
@@ -81,6 +83,8 @@ class CleanWorker(QThread):
             data = JunkCleaner.estimate_deep(
                 self.targets,
                 downloads_min_age_days=self.downloads_min_age_days,
+                deep_user_safe=self.deep_user_safe,
+                deep_admin=self.deep_admin,
             )
             self.progress.emit("Quét ổ C xong.", 100)
             self.finished.emit({
@@ -88,6 +92,8 @@ class CleanWorker(QThread):
                 "data": data,
                 "targets": dict(self.targets),
                 "downloads_min_age_days": self.downloads_min_age_days,
+                "deep_admin": self.deep_admin,
+                "deep_user_safe": self.deep_user_safe,
             })
             return
         if self.is_scan_only:
@@ -104,11 +110,12 @@ class CleanWorker(QThread):
                 self.targets,
                 progress_callback=lambda msg, pct: self.progress.emit(msg, pct),
                 deep_user_safe=self.deep_user_safe,
+                deep_admin=self.deep_admin,
                 downloads_min_age_days=self.downloads_min_age_days,
             )
 
             ram_res = {}
-            if not self.deep_user_safe and self.targets.get("ram_optimize", True):
+            if not self.deep_user_safe and not self.deep_admin and self.targets.get("ram_optimize", True):
                 self.progress.emit("Đang tối ưu hóa bộ nhớ RAM...", 90)
                 ram_res = MemoryOptimizer.optimize_ram(whitelist=self.whitelist)
 
@@ -118,6 +125,7 @@ class CleanWorker(QThread):
                 "clean_res": clean_res,
                 "ram_res": ram_res,
                 "deep_user_safe": self.deep_user_safe,
+                "deep_admin": self.deep_admin,
             })
 
 
@@ -718,8 +726,9 @@ class MainWindow(QMainWindow):
         self.btn_deep_c.setCursor(Qt.PointingHandCursor)
         self.btn_deep_c.setToolTip(
             "Quét trước, hiện dung lượng từng mục, chỉ xóa sau khi bạn bấm «Dọn ngay». "
-            "Gồm temp, cache trình duyệt, WebView2, thumbnail, shader, crash dump "
-            "và cache ứng dụng của tài khoản này. Không cần quyền Administrator. "
+            "Gồm temp, cache trình duyệt, WebView2, thumbnail, shader, crash dump, "
+            "cache ứng dụng và cache công cụ build tạo lại được của tài khoản này. "
+            "Không cần quyền Administrator. "
             "Thùng rác và tệp cũ trong Downloads chỉ chạy khi bạn đang bật các mục đó. "
             "Mục «Cần Admin» bị bỏ qua và không được tính là đã giải phóng."
         )
@@ -737,9 +746,93 @@ class MainWindow(QMainWindow):
             QPushButton:disabled { background-color: #134e4a; color: #99f6e4; }
         """)
         self.btn_deep_c.clicked.connect(self.start_deep_c_clean)
+
+        self.btn_find_large = QPushButton("Tìm file lớn")
+        self.btn_find_large.setCursor(Qt.PointingHandCursor)
+        self.btn_find_large.setToolTip(
+            "Quét file lớn trong hồ sơ của bạn. Không xóa cho đến khi bạn chọn và xác nhận. "
+            "Không chạy cùng «Dọn ổ C»."
+        )
+        self.btn_find_large.setStyleSheet("""
+            QPushButton {
+                background-color: #334155;
+                color: #e2e8f0;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 10px 16px;
+                border-radius: 8px;
+                border: 1px solid #475569;
+            }
+            QPushButton:hover { background-color: #475569; }
+            QPushButton:disabled { background-color: #1e293b; color: #94a3b8; }
+        """)
+        self.btn_find_large.clicked.connect(self.open_large_file_finder)
         deep_row.addWidget(self.btn_scan_c, stretch=2)
         deep_row.addWidget(self.btn_deep_c, stretch=3)
+        deep_row.addWidget(self.btn_find_large, stretch=2)
         layout.addLayout(deep_row)
+
+        from core.c_drive_clean import ADMIN_DEEP_DISABLED_VI, ADMIN_DEEP_ENABLED_VI
+
+        self._admin_clean_elevated = bool(JunkCleaner.is_admin())
+        admin_note = ADMIN_DEEP_ENABLED_VI if self._admin_clean_elevated else ADMIN_DEEP_DISABLED_VI
+        admin_row = QHBoxLayout()
+        admin_row.setSpacing(12)
+        self.btn_admin_deep = QPushButton("Dọn sâu (cần Admin)")
+        self.btn_admin_deep.setCursor(Qt.PointingHandCursor)
+        self.btn_admin_deep.setToolTip(admin_note)
+        self.btn_admin_deep.setEnabled(self._admin_clean_elevated)
+        self.btn_admin_deep.setStyleSheet("""
+            QPushButton {
+                background-color: #9a3412;
+                color: #fff7ed;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 10px 16px;
+                border-radius: 8px;
+                border: 1px solid #fb923c;
+            }
+            QPushButton:hover { background-color: #c2410c; }
+            QPushButton:disabled { background-color: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+        """)
+        self.btn_admin_deep.clicked.connect(self.start_admin_deep_clean)
+        self.lbl_admin_deep = QLabel(admin_note)
+        self.lbl_admin_deep.setWordWrap(True)
+        self.lbl_admin_deep.setTextFormat(Qt.PlainText)
+        note_color = "#fdba74" if self._admin_clean_elevated else "#fbbf24"
+        self.lbl_admin_deep.setStyleSheet(
+            f"color: {note_color}; font-size: 12px; background: transparent; border: none;"
+        )
+        admin_row.addWidget(self.btn_admin_deep, stretch=2)
+        admin_row.addWidget(self.lbl_admin_deep, stretch=5)
+        layout.addLayout(admin_row)
+
+        self.c_history_card = QFrame()
+        self.c_history_card.setObjectName("CDriveHistoryCard")
+        self.c_history_card.setStyleSheet("""
+            QFrame#CDriveHistoryCard {
+                background-color: #0f172a;
+                border: 1px solid #334155;
+                border-radius: 10px;
+            }
+        """)
+        history_layout = QVBoxLayout(self.c_history_card)
+        history_layout.setContentsMargins(14, 10, 14, 10)
+        history_layout.setSpacing(4)
+        self.lbl_c_history_title = QLabel("Lần dọn gần đây")
+        self.lbl_c_history_title.setStyleSheet(
+            "color: #e2e8f0; font-size: 13px; font-weight: 700; background: transparent; border: none;"
+        )
+        self.lbl_c_history = QLabel("Chưa có lần dọn ổ C nào trên máy này.")
+        self.lbl_c_history.setWordWrap(True)
+        self.lbl_c_history.setTextFormat(Qt.PlainText)
+        self.lbl_c_history.setStyleSheet(
+            "color: #94a3b8; font-size: 12px; background: transparent; border: none;"
+        )
+        history_layout.addWidget(self.lbl_c_history_title)
+        history_layout.addWidget(self.lbl_c_history)
+        layout.addWidget(self.c_history_card)
+        self._refresh_c_drive_history()
 
         # Row 3: Specialized Utility & Optimization Tools
         btn_row2 = QHBoxLayout()
@@ -2474,17 +2567,45 @@ class MainWindow(QMainWindow):
         """Dọn ổ C: quét trước, hỏi xác nhận, rồi mới xóa. Không tối ưu RAM."""
         self.start_deep_c_preview()
 
-    def _start_deep_c_clean_confirmed(self, targets: dict, downloads_min_age_days: int):
+    def start_admin_deep_clean(self):
+        """Dọn sâu chỉ khi tiến trình đã elevated. Không tự gọi UAC."""
+        from core.c_drive_clean import ADMIN_DEEP_DISABLED_VI
+        if not getattr(self, "_admin_clean_elevated", False):
+            self.lbl_status.setText(ADMIN_DEEP_DISABLED_VI)
+            return
+        targets = {k: r.is_checked() for k, r in self.target_rows.items()}
+        self._set_buttons_enabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(8)
+        self.lbl_status.setText("Đang quét dọn sâu (chưa xóa)...")
+        self.worker = CleanWorker(
+            targets,
+            is_scan_only=False,
+            whitelist=set(),
+            deep_user_safe=True,
+            deep_admin=True,
+            deep_preview=True,
+            downloads_min_age_days=self._downloads_min_age_days(),
+        )
+        self.worker.progress.connect(self._on_worker_progress)
+        self.worker.finished.connect(self._on_worker_finished)
+        self.worker.start()
+
+    def _start_deep_c_clean_confirmed(self, targets: dict, downloads_min_age_days: int, deep_admin: bool = False):
         self._set_buttons_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(5)
-        self.lbl_status.setText("Đang dọn ổ C (không cần Admin)...")
+        if deep_admin:
+            self.lbl_status.setText("Đang dọn sâu (cần Admin)...")
+        else:
+            self.lbl_status.setText("Đang dọn ổ C (không cần Admin)...")
 
         self.worker = CleanWorker(
             targets,
             is_scan_only=False,
             whitelist=set(),
             deep_user_safe=True,
+            deep_admin=bool(deep_admin),
             downloads_min_age_days=int(downloads_min_age_days or 30),
         )
         self.worker.progress.connect(self._on_worker_progress)
@@ -2500,9 +2621,27 @@ class MainWindow(QMainWindow):
         if dialog.exec_() != dialog.Accepted:
             self.lbl_status.setText("Đã đóng xem trước ổ C. Chưa xóa tệp nào.")
             return
+        rows = data.get("targets") or []
+        old_ready = any(
+            isinstance(row, dict) and row.get("key") == "windows_old" and row.get("status") == "ready"
+            for row in rows
+        )
+        if old_ready:
+            answer = QMessageBox.warning(
+                self,
+                "Xóa Windows.old?",
+                "Thư mục Windows.old sẽ bị xóa. Đây là bản Windows cũ sau nâng cấp "
+                "và không khôi phục được. Tiếp tục?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                self.lbl_status.setText("Đã hủy. Chưa xóa Windows.old hay các mục khác.")
+                return
         targets = result.get("targets") or {}
         days = int(result.get("downloads_min_age_days") or self._downloads_min_age_days())
-        self._start_deep_c_clean_confirmed(targets, days)
+        deep_admin = bool(result.get("deep_admin") or data.get("deep_admin"))
+        self._start_deep_c_clean_confirmed(targets, days, deep_admin=deep_admin)
 
     def optimize_ram_only(self):
         self.lbl_status.setText("Đang giải phóng bộ nhớ RAM...")
@@ -2600,6 +2739,8 @@ class MainWindow(QMainWindow):
             clean_res = result.get("clean_res", {})
             ram_res = result.get("ram_res", {})
             deep = bool(result.get("deep_user_safe") or clean_res.get("deep_user_safe"))
+            deep_admin = bool(result.get("deep_admin") or clean_res.get("deep_admin"))
+            deep = deep or deep_admin
 
             freed_junk_mb = clean_res.get("total_freed_mb", 0.0)
             freed_label = str(clean_res.get("freed_label_vi") or f"{float(freed_junk_mb):.1f} MB")
@@ -2610,7 +2751,7 @@ class MainWindow(QMainWindow):
             self.config_manager.add_history(
                 freed_junk_mb,
                 freed_ram_mb,
-                trigger_type="deep_c_user" if deep else "manual",
+                trigger_type="deep_c_admin" if deep_admin else ("deep_c_user" if deep else "manual"),
             )
             try:
                 from core.companion import observe_clean
@@ -2623,6 +2764,13 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self.refresh_history_table()
+            if deep:
+                try:
+                    from core.c_drive_clean import append_clean_history
+                    append_clean_history(clean_res)
+                    self._refresh_c_drive_history()
+                except Exception:
+                    pass
             if hasattr(self, "_ai_advisor"):
                 self._ai_advisor.invalidate_cache()
                 self._update_ai_badge()
@@ -2639,7 +2787,9 @@ class MainWindow(QMainWindow):
             if not deep:
                 report += f"\n\nBộ nhớ RAM đã giải phóng: {freed_ram_mb:.1f} MB"
             msg = report
-            if deep:
+            if deep_admin:
+                self.lbl_status.setText(f"Dọn sâu (cần Admin) xong: giải phóng thực sự {freed_label}")
+            elif deep:
                 self.lbl_status.setText(f"Dọn ổ C xong: giải phóng thực sự {freed_label}")
             else:
                 self.lbl_status.setText(
@@ -2647,7 +2797,11 @@ class MainWindow(QMainWindow):
                 )
             
             if self.tray_manager and (self.config_manager.get("show_notifications", True) or self.config_manager.get("instant_screen_notifications_enabled", True)):
-                tray_title = "Dọn ổ C xong" if deep else "PC Cleaner: Hoàn Tất Dọn Dẹp"
+                tray_title = (
+                    "Dọn sâu (cần Admin) xong" if deep_admin
+                    else "Dọn ổ C xong" if deep
+                    else "PC Cleaner: Hoàn Tất Dọn Dẹp"
+                )
                 tray_body = f"Đã giải phóng thực sự {freed_label}."
                 if not deep:
                     tray_body += f" RAM: {freed_ram_mb:.1f} MB."
@@ -2660,7 +2814,11 @@ class MainWindow(QMainWindow):
                     action_callback=lambda: self.tabs.setCurrentIndex(1)
                 )
             
-            QMessageBox.information(self, "Dọn ổ C xong" if deep else "Thành Công", msg)
+            QMessageBox.information(
+                self,
+                "Dọn sâu (cần Admin) xong" if deep_admin else ("Dọn ổ C xong" if deep else "Thành Công"),
+                msg,
+            )
 
     def _set_buttons_enabled(self, enabled: bool):
         self.btn_boost_now.setEnabled(enabled)
@@ -2670,6 +2828,12 @@ class MainWindow(QMainWindow):
             self.btn_deep_c.setEnabled(enabled)
         if hasattr(self, "btn_scan_c"):
             self.btn_scan_c.setEnabled(enabled)
+        if hasattr(self, "btn_find_large"):
+            self.btn_find_large.setEnabled(enabled)
+        if hasattr(self, "btn_admin_deep"):
+            self.btn_admin_deep.setEnabled(
+                enabled and bool(getattr(self, "_admin_clean_elevated", False))
+            )
         if hasattr(self, "btn_disk_low_clean"):
             self.btn_disk_low_clean.setEnabled(enabled)
         if hasattr(self, "btn_large_files"):
@@ -2689,6 +2853,20 @@ class MainWindow(QMainWindow):
         if hasattr(self, "btn_tweaks"):
             self.btn_tweaks.setEnabled(enabled)
 
+
+    def _refresh_c_drive_history(self):
+        if not hasattr(self, "lbl_c_history"):
+            return
+        try:
+            from core.c_drive_clean import format_clean_history_vi, load_clean_history
+            self.lbl_c_history.setText(format_clean_history_vi(load_clean_history()))
+        except Exception:
+            self.lbl_c_history.setText("Chưa có lần dọn ổ C nào trên máy này.")
+
+    def open_large_file_finder(self):
+        from ui.large_file_finder_dialog import LargeFileFinderDialog
+        dialog = LargeFileFinderDialog(self)
+        dialog.exec_()
 
     def open_large_files_dialog(self):
         dialog = LargeFilesDialog(self)

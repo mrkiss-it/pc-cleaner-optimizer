@@ -16,12 +16,15 @@ from core.c_drive_clean import (
     TOO_BROAD_REASON_VI,
     build_target_paths,
     clean_one_path,
+    default_component_cleanup,
+    default_hibernate_off,
     empty_detail,
     estimate_reclaimable,
     format_clean_report_vi,
     format_freed_vi,
     is_process_elevated,
     normalize_downloads_min_age_days,
+    prune_nested_target_paths,
     read_c_drive_free_bytes,
     resolve_clean_plan,
     scan_old_files,
@@ -222,14 +225,16 @@ class JunkCleaner:
         now_ts: Optional[float] = None,
         recycle_query: Optional[Callable[[], Dict[str, Any]]] = None,
         deep_user_safe: bool = True,
+        deep_admin: bool = False,
     ) -> Dict[str, Any]:
-        """Quét xem trước cho «Dọn ổ C». Không xóa tệp."""
+        """Quét xem trước cho «Dọn ổ C» hoặc «Dọn sâu (cần Admin)». Không xóa tệp."""
         if is_admin is None:
             is_admin = cls.is_admin()
         plan = resolve_clean_plan(
             enabled_targets,
             is_admin=bool(is_admin),
             deep_user_safe=bool(deep_user_safe),
+            deep_admin=bool(deep_admin),
         )
         recycle_info = None
         if plan["to_run"].get("recycle_bin"):
@@ -242,6 +247,7 @@ class JunkCleaner:
             enabled_targets,
             is_admin=bool(is_admin),
             deep_user_safe=bool(deep_user_safe),
+            deep_admin=bool(deep_admin),
             environ=environ,
             downloads_min_age_days=downloads_min_age_days,
             now_ts=now_ts,
@@ -271,6 +277,28 @@ class JunkCleaner:
             deleted_files=0,
         )
 
+    @staticmethod
+    def _apply_special_clean(key: str, raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """DISM và ngủ đông không đi qua xóa tệp. DISM luôn tính 0 B."""
+        payload = raw or {}
+        skipped = bool(payload.get("skipped"))
+        success = bool(payload.get("success"))
+        reason = str(payload.get("reason") or "")
+        if key == "component_cleanup":
+            freed = 0
+        else:
+            freed = max(0, int(payload.get("freed_bytes") or 0))
+        if skipped or not success:
+            freed = 0
+            status = "skipped" if skipped else "error"
+            if not reason:
+                reason = ADMIN_SKIP_REASON_VI if skipped else "Không chạy được. Không tính dung lượng."
+        elif key == "component_cleanup":
+            status = "cleaned"
+        else:
+            status = "cleaned" if freed else "empty"
+        return empty_detail(key, status=status, reason=reason, freed_bytes=freed)
+
     @classmethod
     def clean(
         cls,
@@ -279,11 +307,14 @@ class JunkCleaner:
         *,
         is_admin: Optional[bool] = None,
         deep_user_safe: bool = False,
+        deep_admin: bool = False,
         downloads_min_age_days: Optional[int] = None,
         environ: Optional[Dict[str, str]] = None,
         now_ts: Optional[float] = None,
         recycle_empty: Optional[Callable[[], Dict[str, Any]]] = None,
         disk_free_bytes: Optional[Callable[[], Optional[int]]] = None,
+        component_cleanup: Optional[Callable[[], Dict[str, Any]]] = None,
+        hibernate_off: Optional[Callable[..., Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Dọn các mục được chọn. Mục cần Admin bị bỏ qua khi chưa elevated.
@@ -291,7 +322,12 @@ class JunkCleaner:
         """
         if is_admin is None:
             is_admin = cls.is_admin()
-        plan = resolve_clean_plan(enabled_targets, is_admin=bool(is_admin), deep_user_safe=deep_user_safe)
+        plan = resolve_clean_plan(
+            enabled_targets,
+            is_admin=bool(is_admin),
+            deep_user_safe=deep_user_safe,
+            deep_admin=deep_admin,
+        )
         target_paths = cls.get_target_paths(environ)
         env = os.environ if environ is None else environ
         user_profile = str(env.get("USERPROFILE", "") or "")
@@ -306,7 +342,8 @@ class JunkCleaner:
         total_freed_bytes = 0
         total_deleted_files = 0
         free_before = None
-        if deep_user_safe:
+        track_free = bool(deep_user_safe or deep_admin)
+        if track_free:
             reader = disk_free_bytes or read_c_drive_free_bytes
             try:
                 free_before = reader()
@@ -319,6 +356,7 @@ class JunkCleaner:
             detail_order.append(key)
 
         runnable = [key for key in TARGET_ORDER if plan["to_run"].get(key)]
+        pruned_paths = prune_nested_target_paths(target_paths, runnable)
         pct_step = 80 // max(1, len(runnable))
         current_pct = 8
 
@@ -331,6 +369,16 @@ class JunkCleaner:
                     runner = recycle_empty or cls.empty_recycle_bin
                     raw = runner() or {}
                     detail = cls._apply_recycle_result(raw)
+                elif meta["clean_mode"] == "component_cleanup":
+                    runner = component_cleanup or default_component_cleanup
+                    detail = cls._apply_special_clean(cat_key, runner() or {})
+                elif meta["clean_mode"] == "hibernate":
+                    runner = hibernate_off or default_hibernate_off
+                    try:
+                        raw = runner(environ)
+                    except TypeError:
+                        raw = runner()
+                    detail = cls._apply_special_clean(cat_key, raw or {})
                 else:
                     agg = {
                         "freed_bytes": 0,
@@ -341,7 +389,7 @@ class JunkCleaner:
                         "too_broad": 0,
                         "sync_root": 0,
                     }
-                    for path in target_paths.get(cat_key, []):
+                    for path in pruned_paths.get(cat_key, []):
                         part = clean_one_path(
                             path,
                             clean_mode=meta["clean_mode"],
@@ -394,7 +442,7 @@ class JunkCleaner:
             progress_callback("Hoàn tất dọn dẹp!", 100)
 
         free_after = None
-        if deep_user_safe:
+        if track_free:
             reader = disk_free_bytes or read_c_drive_free_bytes
             try:
                 free_after = reader()
@@ -418,6 +466,7 @@ class JunkCleaner:
             "skipped": plan["skipped"],
             "is_admin": bool(is_admin),
             "deep_user_safe": bool(deep_user_safe),
+            "deep_admin": bool(deep_admin),
             "free_bytes_before": free_before,
             "free_bytes_after": free_after,
             "free_bytes_delta": (
