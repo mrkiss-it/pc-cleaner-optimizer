@@ -125,7 +125,7 @@ def _plain_label(text_color: str) -> QLabel:
 
 
 class CompanionInsightBar(QFrame):
-    """Calm local lines: stage-up, morning check-in, and «Hôm nay: …». Never blocks startup."""
+    """Calm local lines: stage-up, check-in, follow-up, end of day, and «Hôm nay: …»."""
 
     dismissed = pyqtSignal()
     action_requested = pyqtSignal(str)
@@ -139,6 +139,7 @@ class CompanionInsightBar(QFrame):
         self._skill_id = ""
         self._checkin_action = ""
         self._checkin_skill_id = ""
+        self._follow_topic = ""
         self.setObjectName("CompanionInsightBar")
         self.setStyleSheet(
             "QFrame#CompanionInsightBar { background-color: #1e1b4b; border: 1px solid #4338ca; "
@@ -180,6 +181,42 @@ class CompanionInsightBar(QFrame):
         check_row.addWidget(self.btn_checkin_hide)
         self.row_checkin.hide()
 
+        self.row_follow = QWidget()
+        follow_row = QHBoxLayout(self.row_follow)
+        follow_row.setContentsMargins(0, 0, 0, 0)
+        follow_row.setSpacing(8)
+        self.lbl_follow = _plain_label("#ddd6fe")
+        self.btn_follow_yes = QPushButton("Có ích")
+        self.btn_follow_yes.setStyleSheet(_BTN_STYLE)
+        self.btn_follow_yes.setToolTip("Ghi lại là việc vừa rồi có giúp máy này.")
+        self.btn_follow_yes.clicked.connect(lambda: self._answer_followup(True))
+        self.btn_follow_no = QPushButton("Chưa")
+        self.btn_follow_no.setStyleSheet(_BTN_STYLE)
+        self.btn_follow_no.setToolTip("Ghi lại là việc vừa rồi chưa giúp. Mình sẽ đề xuất ít hơn.")
+        self.btn_follow_no.clicked.connect(lambda: self._answer_followup(False))
+        self.btn_follow_hide = QPushButton("Ẩn")
+        self.btn_follow_hide.setStyleSheet(_BTN_STYLE)
+        self.btn_follow_hide.setToolTip("Ẩn câu hỏi này. Không tính là từ chối.")
+        self.btn_follow_hide.clicked.connect(self._dismiss_followup)
+        follow_row.addWidget(self.lbl_follow, stretch=1)
+        follow_row.addWidget(self.btn_follow_yes)
+        follow_row.addWidget(self.btn_follow_no)
+        follow_row.addWidget(self.btn_follow_hide)
+        self.row_follow.hide()
+
+        self.row_eod = QWidget()
+        eod_row = QHBoxLayout(self.row_eod)
+        eod_row.setContentsMargins(0, 0, 0, 0)
+        eod_row.setSpacing(8)
+        self.lbl_eod = _plain_label("#e9d5ff")
+        self.btn_eod_hide = QPushButton("Ẩn")
+        self.btn_eod_hide.setStyleSheet(_BTN_STYLE)
+        self.btn_eod_hide.setToolTip("Ẩn lời cuối ngày.")
+        self.btn_eod_hide.clicked.connect(self._dismiss_eod)
+        eod_row.addWidget(self.lbl_eod, stretch=1)
+        eod_row.addWidget(self.btn_eod_hide)
+        self.row_eod.hide()
+
         self.row_insight = QWidget()
         row = QHBoxLayout(self.row_insight)
         row.setContentsMargins(0, 0, 0, 0)
@@ -207,6 +244,8 @@ class CompanionInsightBar(QFrame):
 
         root.addWidget(self.row_stage)
         root.addWidget(self.row_checkin)
+        root.addWidget(self.row_follow)
+        root.addWidget(self.row_eod)
         root.addWidget(self.row_insight)
         self.hide()
 
@@ -223,9 +262,12 @@ class CompanionInsightBar(QFrame):
                 pass
         self._show_stage(enabled)
         self._show_checkin(enabled)
+        self._show_followup(enabled)
+        self._show_eod(enabled)
         self._show_insight(enabled)
         # isVisible() is false while this frame is hidden, so decide from the text.
-        if any(label.text().strip() for label in (self.lbl_stage, self.lbl_checkin, self.lbl_insight)):
+        labels = (self.lbl_stage, self.lbl_checkin, self.lbl_follow, self.lbl_eod, self.lbl_insight)
+        if any(label.text().strip() for label in labels):
             self.show()
         else:
             self.hide()
@@ -279,6 +321,40 @@ class CompanionInsightBar(QFrame):
                 self.btn_checkin_action.show()
         self.row_checkin.show()
 
+    def _show_followup(self, enabled: bool):
+        self.lbl_follow.setText("")
+        self._follow_topic = ""
+        self.row_follow.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_moment import due_action_followup
+            payload = due_action_followup(config_manager=self.config_manager)
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("question_vi") or "").strip()
+        if not text:
+            return
+        self._follow_topic = str((payload or {}).get("topic") or "")
+        self.lbl_follow.setText(text)
+        self.row_follow.show()
+
+    def _show_eod(self, enabled: bool):
+        self.lbl_eod.setText("")
+        self.row_eod.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_moment import sync_eod_wrap
+            payload = sync_eod_wrap(config_manager=self.config_manager)
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("text") or "").strip()
+        if not text:
+            return
+        self.lbl_eod.setText(text)
+        self.row_eod.show()
+
     def _show_insight(self, enabled: bool):
         self._insight_id = ""
         self._insight_topic = ""
@@ -308,6 +384,14 @@ class CompanionInsightBar(QFrame):
         if self._insight_topic:
             self.btn_mute.show()
         self.lbl_insight.setText(str(insight.get("text") or ""))
+        if insight.get("quiet"):
+            self.lbl_insight.setStyleSheet(
+                "color: #a5b4fc; font-size: 12px; background: transparent; border: none;"
+            )
+        else:
+            self.lbl_insight.setStyleSheet(
+                "color: #e0e7ff; font-size: 12px; background: transparent; border: none;"
+            )
         self.row_insight.show()
 
     def _emit_allowed(self, key: str, skill_id: str):
@@ -325,6 +409,11 @@ class CompanionInsightBar(QFrame):
                 bump_skill_hit(skill_id=skill_id)
             except Exception:
                 pass
+        try:
+            from core.companion_moment import schedule_action_followup
+            schedule_action_followup(key, skill_id=skill_id, config_manager=self.config_manager)
+        except Exception:
+            pass
         self.action_requested.emit(key)
 
     def _activate(self):
@@ -349,12 +438,41 @@ class CompanionInsightBar(QFrame):
             pass
         self.refresh()
 
+    def _answer_followup(self, helpful: bool):
+        try:
+            from core.companion_moment import answer_action_followup
+            answer_action_followup(helpful, config_manager=self.config_manager)
+        except Exception:
+            pass
+        self.refresh()
+
+    def _dismiss_followup(self):
+        try:
+            from core.companion_moment import dismiss_action_followup
+            dismiss_action_followup()
+        except Exception:
+            pass
+        self.refresh()
+
+    def _dismiss_eod(self):
+        try:
+            from core.companion_moment import dismiss_eod_wrap
+            dismiss_eod_wrap()
+        except Exception:
+            pass
+        self.refresh()
+
     def _mute_topic(self):
         topic = str(self._insight_topic or "")
         if topic:
             try:
                 from core.companion_profile import MUTE_DAYS, mute_topic
                 mute_topic(topic, days=MUTE_DAYS, reason="user")
+            except Exception:
+                pass
+            try:
+                from core.companion_moment import note_mute_after_action
+                note_mute_after_action(topic)
             except Exception:
                 pass
         self.refresh()
@@ -561,10 +679,22 @@ class CompanionCard(QFrame):
                 "Gợi ý nhẹ khi đã học thói quen máy (không liên tục)"
             )
             self.chk_nudges.setStyleSheet("font-size: 12px; color: #cbd5e1;")
+            self.chk_quiet = QCheckBox("Giờ yên lặng 23:00–07:00 (không nhắc, không thông báo)")
+            self.chk_quiet.setStyleSheet("font-size: 12px; color: #cbd5e1;")
+            self.chk_quiet.setToolTip(
+                "Mặc định tắt. Bật để mình im từ 23:00 đến 07:00: không thông báo nổi, "
+                "không chào buổi sáng giữa đêm. Dòng hôm nay vẫn hiện, nhẹ hơn."
+            )
+            self.chk_quiet_actions = QCheckBox("Vẫn hiện nút đề xuất trong giờ yên lặng")
+            self.chk_quiet_actions.setStyleSheet("font-size: 12px; color: #cbd5e1;")
+            self.chk_quiet_actions.setToolTip("Chỉ khi bạn muốn. Mặc định giờ yên lặng không có nút đề xuất.")
             layout.addWidget(self.chk_enabled)
             layout.addWidget(self.chk_reflect)
             layout.addWidget(self.chk_propose)
             layout.addWidget(self.chk_nudges)
+            layout.addWidget(self.chk_quiet)
+            layout.addWidget(self.chk_quiet_actions)
+            self._refresh_quiet_controls()
             if self.config_manager:
                 self.chk_enabled.setChecked(bool(self.config_manager.get("companion_enabled", True)))
                 self.chk_reflect.setChecked(bool(self.config_manager.get("companion_reflection_enabled", True)))
@@ -574,6 +704,8 @@ class CompanionCard(QFrame):
             self.chk_reflect.toggled.connect(self._persist_toggles)
             self.chk_propose.toggled.connect(self._persist_toggles)
             self.chk_nudges.toggled.connect(self._persist_toggles)
+            self.chk_quiet.toggled.connect(self._persist_quiet)
+            self.chk_quiet_actions.toggled.connect(self._persist_quiet)
 
         offer_row = QHBoxLayout()
         self.lbl_offer = QLabel("")
@@ -644,6 +776,37 @@ class CompanionCard(QFrame):
         if hasattr(self, "chk_nudges"):
             self.config_manager.set("companion_nudges_enabled", self.chk_nudges.isChecked())
         self.refresh()
+
+    def _persist_quiet(self, *_args):
+        if not hasattr(self, "chk_quiet"):
+            return
+        try:
+            from core.companion_profile import set_quiet_hours
+            set_quiet_hours(
+                self.chk_quiet.isChecked(),
+                allow_actions=self.chk_quiet_actions.isChecked(),
+            )
+        except Exception:
+            return
+        self.chk_quiet_actions.setEnabled(self.chk_quiet.isChecked())
+        if hasattr(self, "insight_bar"):
+            self.insight_bar.refresh()
+
+    def _refresh_quiet_controls(self):
+        if not hasattr(self, "chk_quiet"):
+            return
+        try:
+            from core.companion_profile import quiet_hours_settings
+            settings = quiet_hours_settings()
+        except Exception:
+            settings = {"enabled": False, "allow_actions": False}
+        self.chk_quiet.blockSignals(True)
+        self.chk_quiet_actions.blockSignals(True)
+        self.chk_quiet.setChecked(bool(settings.get("enabled")))
+        self.chk_quiet_actions.setChecked(bool(settings.get("allow_actions")))
+        self.chk_quiet_actions.setEnabled(bool(settings.get("enabled")))
+        self.chk_quiet.blockSignals(False)
+        self.chk_quiet_actions.blockSignals(False)
 
     def _set_reflect_status(self, text: str, status: str = ""):
         colors = {
@@ -734,6 +897,7 @@ class CompanionCard(QFrame):
             self.lbl_note.setText(prefix + preview)
         if hasattr(self, "insight_bar"):
             self.insight_bar.refresh()
+        self._refresh_quiet_controls()
         self._refresh_goal()
         self._refresh_correction()
         self.stage_changed.emit()

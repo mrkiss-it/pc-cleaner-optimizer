@@ -177,10 +177,13 @@ def bump_skill_hit(
     skill_id: str = "",
     issue_class: str = "",
     base_dir: Optional[str] = None,
+    delta: int = 1,
 ) -> Optional[CompanionSkill]:
-    """+1 hit_count when the user taps a skill-backed insight or check-in button.
+    """Adjust hit_count for a skill-backed tap, a helpful outcome, or a rejection.
 
-    Showing the line does not count. If this stage cannot run the skill's own
+    Showing the line does not count. A tap uses +1. A later recovery may add
+    one more. «Chưa» or muting that topic after the action uses -1, and the
+    count never drops below zero. If this stage cannot run the skill's own
     action, the nearest allowlisted button still counts — the tap came from
     that skill.
     """
@@ -188,6 +191,10 @@ def bump_skill_hit(
     wanted_issue = str(issue_class or "").strip().lower()
     if not wanted_id and not wanted_issue:
         return None
+    try:
+        step = int(delta)
+    except (TypeError, ValueError):
+        step = 1
     skills = load_skills(base_dir)
     found: Optional[CompanionSkill] = None
     for skill in skills:
@@ -199,7 +206,7 @@ def bump_skill_hit(
             break
     if found is None:
         return None
-    found.hit_count = int(found.hit_count or 0) + 1
+    found.hit_count = max(0, int(found.hit_count or 0) + step)
     save_skills(skills, base_dir=base_dir)
     return found
 

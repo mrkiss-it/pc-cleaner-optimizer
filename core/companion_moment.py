@@ -596,6 +596,17 @@ def attach_insight_action(
         if skill is not None:
             out["skill_id"] = str(getattr(skill, "id", "") or "")
             out["skill_issue"] = str(getattr(skill, "issue_class", "") or "")
+    try:
+        from core.companion_profile import in_quiet_hours, quiet_hours_allow_actions
+        stamp = now or datetime.now()
+        if in_quiet_hours(stamp, base_dir=base_dir) and not quiet_hours_allow_actions(
+            stamp, base_dir=base_dir
+        ):
+            for extra in ("action_key", "action_label_vi", "skill_id", "skill_issue"):
+                out.pop(extra, None)
+            out["quiet"] = True
+    except Exception:
+        pass
     return out
 
 
@@ -1072,6 +1083,12 @@ def sync_daily_checkin(
     if not _cfg_enabled(config_manager):
         return None
     stamp = now or datetime.now()
+    try:
+        from core.companion_profile import in_quiet_hours
+        if in_quiet_hours(stamp, base_dir=base_dir):
+            return None
+    except Exception:
+        pass
     today = stamp.strftime("%Y-%m-%d")
     state = load_state(base_dir)
     if str(state.get("last_checkin_date") or "") == today:
@@ -1095,4 +1112,448 @@ def dismiss_daily_checkin(
     state = load_state(base_dir)
     state["last_checkin_date"] = stamp.strftime("%Y-%m-%d")
     state["pending_checkin"] = None
+    save_state(state, base_dir=base_dir)
+
+
+# One local yes/no after an allowlisted tap. No second question while one is open.
+FOLLOWUP_DELAY_MIN = {
+    "wifi": 60,
+    "ram": 30,
+    "disk": 45,
+    "focus": 90,
+    "thermal": 40,
+}
+_FOLLOWUP_QUESTION = {
+    "wifi": "Việc Wi-Fi vừa rồi có giúp máy này không?",
+    "ram": "Thu hồi RAM vừa rồi có giúp máy này không?",
+    "focus": "Trước thi / họp vừa rồi có giúp bạn không?",
+    "disk": "Dọn nhẹ vừa rồi có giúp máy này không?",
+    "thermal": "Việc xem nhiệt vừa rồi có giúp bạn không?",
+}
+_RECOVERY_KINDS = {
+    "wifi": ("wifi_repaired", "ping_repaired"),
+    "ram": ("ram_optimized",),
+    "disk": ("clean_light", "clean_freed"),
+    "focus": ("focus_mode",),
+    "thermal": (),
+}
+EOD_HOUR = 18
+_EOD_SKIP = frozenset({
+    "session_day",
+    "reflection",
+    "stage_up",
+    "skill_saved",
+    "user_feedback",
+    "suggestion_accepted",
+    "suggestion_rejected",
+})
+_EOD_LABEL = (
+    ("wifi_weak", "Wi-Fi chưa ổn"),
+    ("ping_high", "ping cao"),
+    ("wifi_repaired", "Wi-Fi ổn lại"),
+    ("ping_repaired", "ping đo lại được"),
+    ("thermal_warn", "nhiệt cao"),
+    ("high_ram", "RAM cao"),
+    ("ram_optimized", "đã thu hồi RAM"),
+    ("clean_light", "đã dọn nhẹ"),
+    ("clean_freed", "đã dọn rác"),
+    ("focus_mode", "đã bật Trước thi / họp"),
+    ("chat_note", "bạn đã hỏi mình"),
+    ("update_fail", "cập nhật chưa xong"),
+    ("update_ok", "cập nhật xong"),
+)
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", ""))
+    except Exception:
+        return None
+
+
+def _topic_for_allowlisted(action_key: str) -> str:
+    spec = INSIGHT_ACTION_ALLOWLIST.get(str(action_key or "")) or {}
+    topics = [str(item) for item in (spec.get("topics") or []) if str(item)]
+    if len(topics) == 1 and topics[0] in _FOLLOWUP_QUESTION:
+        return topics[0]
+    return ""
+
+
+def schedule_action_followup(
+    action_key: str,
+    *,
+    skill_id: str = "",
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Remember one yes/no for later. A second tap does not replace the open one.
+
+    Only allowlisted Wi-Fi / RAM / focus / clean / thermal actions. Destructive
+    keys stay out. The question is fixed Vietnamese — no model call.
+    """
+    if not _cfg_enabled(config_manager):
+        return None
+    key = str(action_key or "").strip()
+    if not is_allowed_insight_action(key):
+        return None
+    try:
+        from core.companion_skills import BLOCKED_ACTION_KEYS
+        if key in BLOCKED_ACTION_KEYS:
+            return None
+    except Exception:
+        return None
+    topic = _topic_for_allowlisted(key)
+    if not topic:
+        return None
+    state = load_state(base_dir)
+    existing = state.get("pending_followup")
+    if isinstance(existing, dict) and str(existing.get("question_vi") or "").strip():
+        return None
+    stamp = now or datetime.now()
+    try:
+        delay = int(FOLLOWUP_DELAY_MIN.get(topic) or 45)
+    except (TypeError, ValueError):
+        delay = 45
+    delay = max(30, min(120, delay))
+    due = stamp + timedelta(minutes=delay)
+    since = stamp.replace(microsecond=0).isoformat(timespec="seconds")
+    payload = {
+        "action_key": key,
+        "topic": topic,
+        "skill_id": str(skill_id or "")[:40],
+        "since": since,
+        "due_at": due.replace(microsecond=0).isoformat(timespec="seconds"),
+        "question_vi": _FOLLOWUP_QUESTION[topic],
+    }
+    state["pending_followup"] = payload
+    expect = [item for item in (_RECOVERY_KINDS.get(topic) or ()) if item]
+    if expect:
+        state["pending_outcome"] = {
+            "action_key": key,
+            "topic": topic,
+            "skill_id": payload["skill_id"],
+            "since": since,
+            "expect": expect,
+            "credited": False,
+        }
+    save_state(state, base_dir=base_dir)
+    return payload
+
+
+def due_action_followup(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, str]]:
+    """The open question once it is due. Hidden during quiet hours, not dropped."""
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    try:
+        from core.companion_profile import in_quiet_hours
+        if in_quiet_hours(stamp, base_dir=base_dir):
+            return None
+    except Exception:
+        pass
+    pending = load_state(base_dir).get("pending_followup")
+    if not isinstance(pending, dict):
+        return None
+    question = str(pending.get("question_vi") or "").strip()
+    if not question:
+        return None
+    due = _parse_iso(pending.get("due_at"))
+    if due is not None and stamp < due:
+        return None
+    return {
+        "question_vi": question,
+        "topic": str(pending.get("topic") or ""),
+        "action_key": str(pending.get("action_key") or ""),
+        "skill_id": str(pending.get("skill_id") or ""),
+    }
+
+
+def answer_action_followup(
+    helpful: bool,
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Có ích / Chưa. Writes the diary, feeds trust, and nudges skill quality.
+
+    «Chưa» reuses the soft-mute / ask-more path. It does not invent a second mute.
+    """
+    state = load_state(base_dir)
+    pending = state.get("pending_followup")
+    if not isinstance(pending, dict) or not str(pending.get("question_vi") or "").strip():
+        return None
+    topic = str(pending.get("topic") or "")
+    skill_id = str(pending.get("skill_id") or "")
+    action_key = str(pending.get("action_key") or "")
+    state["pending_followup"] = None
+    save_state(state, base_dir=base_dir)
+    stamp = now or datetime.now()
+    try:
+        from core.companion import note_user_feedback
+        note_user_feedback(
+            bool(helpful),
+            note="Có ích." if helpful else "Chưa giúp.",
+            base_dir=base_dir,
+            now=stamp,
+            config_manager=config_manager,
+            topic=topic,
+        )
+    except Exception:
+        pass
+    try:
+        from core.companion_profile import topic_issue
+        from core.companion_skills import bump_skill_hit
+        bump_skill_hit(
+            skill_id=skill_id,
+            issue_class=topic_issue(topic) if topic else "",
+            delta=1 if helpful else -1,
+            base_dir=base_dir,
+        )
+    except Exception:
+        pass
+    return {"helpful": bool(helpful), "topic": topic, "action_key": action_key}
+
+
+def dismiss_action_followup(base_dir: Optional[str] = None) -> None:
+    """Hide the question without treating it as «Chưa»."""
+    state = load_state(base_dir)
+    state["pending_followup"] = None
+    save_state(state, base_dir=base_dir)
+
+
+def note_mute_after_action(
+    topic: str,
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> bool:
+    """A mute right after a companion action weakens that skill. The mute itself is unchanged.
+
+    Boldness still comes from the existing mute / ask-more rules, not a new flag.
+    """
+    del now  # the mute timestamp is stored by mute_topic; this only retires the open action
+    key = str(topic or "").strip()
+    if key not in TOPIC_META:
+        return False
+    state = load_state(base_dir)
+    follow = state.get("pending_followup") if isinstance(state.get("pending_followup"), dict) else {}
+    outcome = state.get("pending_outcome") if isinstance(state.get("pending_outcome"), dict) else {}
+    if str(follow.get("topic") or "") != key and str(outcome.get("topic") or "") != key:
+        return False
+    skill_id = str(outcome.get("skill_id") or follow.get("skill_id") or "")
+    try:
+        from core.companion_profile import topic_issue
+        from core.companion_skills import bump_skill_hit
+        bump_skill_hit(
+            skill_id=skill_id,
+            issue_class=topic_issue(key),
+            delta=-1,
+            base_dir=base_dir,
+        )
+    except Exception:
+        pass
+    state = load_state(base_dir)
+    state["pending_followup"] = None
+    state["pending_outcome"] = None
+    save_state(state, base_dir=base_dir)
+    return True
+
+
+def maybe_credit_action_outcome(
+    event: Optional[Dict[str, Any]],
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    config_manager: Optional[Any] = None,
+) -> bool:
+    """When the diary later shows recovery, strengthen that skill and trust once.
+
+    Trust uses the existing user_feedback accept count. This does not clear a mute
+    and does not add a stage point — the bump stays small.
+    """
+    if not isinstance(event, dict):
+        return False
+    kind = str(event.get("kind") or "")
+    if str(event.get("outcome") or "") not in ("ok", "accepted"):
+        return False
+    state = load_state(base_dir)
+    pending = state.get("pending_outcome")
+    if not isinstance(pending, dict) or pending.get("credited"):
+        return False
+    expect = {str(item) for item in (pending.get("expect") or []) if str(item)}
+    if kind not in expect:
+        return False
+    since = _parse_iso(pending.get("since"))
+    stamp = now or _parse_iso(event.get("ts")) or datetime.now()
+    if since is not None and stamp < since:
+        return False
+    topic = str(pending.get("topic") or "")
+    skill_id = str(pending.get("skill_id") or "")
+    pending = dict(pending)
+    pending["credited"] = True
+    state["pending_outcome"] = pending
+    save_state(state, base_dir=base_dir)
+    name = _topic_name(topic) if topic else "việc vừa rồi"
+    try:
+        from core.companion import record_app_event
+        record_app_event(
+            "user_feedback",
+            f"Nhật ký cho thấy {name} khá hơn sau gợi ý trên máy này.",
+            metrics={"helpful": 1},
+            source="companion",
+            now=stamp,
+            base_dir=base_dir,
+            config_manager=config_manager,
+            outcome="accepted",
+            tags=["outcome", topic] if topic else ["outcome"],
+            coalesce=False,
+        )
+    except Exception:
+        pass
+    try:
+        from core.companion_profile import topic_issue
+        from core.companion_skills import bump_skill_hit
+        bump_skill_hit(
+            skill_id=skill_id,
+            issue_class=topic_issue(topic) if topic else "",
+            delta=1,
+            base_dir=base_dir,
+        )
+    except Exception:
+        pass
+    return True
+
+
+def _eod_counts(
+    events: List[Dict[str, Any]],
+    day: str,
+    muted: set,
+) -> Dict[str, int]:
+    labels = {kind for kind, _label in _EOD_LABEL}
+    counts: Dict[str, int] = {}
+    for event in events:
+        if str(event.get("ts") or "")[:10] != day:
+            continue
+        kind = str(event.get("kind") or "")
+        if kind in _EOD_SKIP or kind not in labels:
+            continue
+        topic = event_topic(event)
+        if topic and topic in muted:
+            continue
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def compose_eod_wrap(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """One local evening line from today's diary, the goal, and one matching note."""
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    if stamp.hour < EOD_HOUR:
+        return None
+    try:
+        from core.companion_profile import (
+            active_muted_topics,
+            annotate_learned_line,
+            load_profile,
+        )
+        profile = load_profile(base_dir)
+        events = recent_events(days=2, limit=0, base_dir=base_dir, now=stamp)
+        muted = set(active_muted_topics(now=stamp, profile=profile))
+    except Exception:
+        return None
+    day = stamp.strftime("%Y-%m-%d")
+    counts = _eod_counts(events, day, muted)
+    if not counts:
+        return None
+    bits: List[str] = []
+    lead = ""
+    lead_n = 0
+    for kind, label in _EOD_LABEL:
+        n = int(counts.get(kind) or 0)
+        if n <= 0:
+            continue
+        bits.append(f"{label} ({n})" if n > 1 else label)
+        topic = event_topic({"kind": kind})
+        if n > lead_n and topic:
+            lead = topic
+            lead_n = n
+    if not bits:
+        return None
+    parts = ["Cuối ngày: hôm nay " + ", ".join(bits) + "."]
+    goal = profile.get("goal") if isinstance(profile.get("goal"), dict) else None
+    goal_text = str((goal or {}).get("text") or "").strip()
+    goal_topic = str((goal or {}).get("topic") or "")
+    if goal_text and goal_topic not in muted:
+        parts.append(f"Mục tiêu «{goal_text}» vẫn để đó.")
+        if not lead:
+            lead = goal_topic
+    text = " ".join(parts)
+    if lead:
+        text = annotate_learned_line(text, lead, profile)
+    text = _clip_checkin(redact_sensitive(text))
+    if not text or text == "Cuối ngày:":
+        return None
+    return {"date": day, "text": text, "topic": lead}
+
+
+def sync_eod_wrap(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """First open after 18:00. Empty days and quiet hours stay quiet and do not consume the slot."""
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    today = stamp.strftime("%Y-%m-%d")
+    try:
+        from core.companion_profile import in_quiet_hours
+        quiet = in_quiet_hours(stamp, base_dir=base_dir)
+    except Exception:
+        quiet = False
+    state = load_state(base_dir)
+    if str(state.get("last_eod_date") or "") == today:
+        if quiet:
+            return None
+        pending = state.get("pending_eod")
+        if isinstance(pending, dict) and str(pending.get("text") or "").strip():
+            return pending
+        return None
+    if stamp.hour < EOD_HOUR or quiet:
+        return None
+    payload = compose_eod_wrap(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    if not payload:
+        return None
+    state = load_state(base_dir)
+    state["last_eod_date"] = today
+    state["pending_eod"] = payload
+    save_state(state, base_dir=base_dir)
+    return payload
+
+
+def dismiss_eod_wrap(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    stamp = now or datetime.now()
+    state = load_state(base_dir)
+    state["last_eod_date"] = stamp.strftime("%Y-%m-%d")
+    state["pending_eod"] = None
     save_state(state, base_dir=base_dir)

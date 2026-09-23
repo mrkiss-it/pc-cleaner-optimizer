@@ -173,6 +173,17 @@ def record_app_event(
                     maybe_note_stage_up(config_manager=config_manager, base_dir=base_dir, now=now)
                 except Exception:
                     pass
+            if str(kind or "") not in ("user_feedback", "stage_up"):
+                try:
+                    from core.companion_moment import maybe_credit_action_outcome
+                    maybe_credit_action_outcome(
+                        event,
+                        base_dir=base_dir,
+                        now=now,
+                        config_manager=config_manager,
+                    )
+                except Exception:
+                    pass
         return event
     except Exception:
         return None
@@ -647,6 +658,14 @@ def clear_local_memory(
         counts["reflection"] = 1 if clear_reflection_memory(base_dir=base_dir) else 0
     if profile:
         counts["profile"] = clear_profile_memory(base_dir=base_dir)
+    try:
+        state = load_state(base_dir)
+        state["pending_followup"] = None
+        state["pending_outcome"] = None
+        state["pending_eod"] = None
+        save_state(state, base_dir=base_dir)
+    except Exception:
+        pass
     return counts
 
 
@@ -1554,6 +1573,12 @@ def plan_companion_nudge(
     if not _notifications_allowed(config_manager):
         return None
     stamp = now or datetime.now()
+    try:
+        from core.companion_profile import in_quiet_hours
+        if in_quiet_hours(stamp, base_dir=base_dir):
+            return None
+    except Exception:
+        pass
     events = recent_events(days=21, limit=0, base_dir=base_dir, now=stamp)
     if not events:
         return None

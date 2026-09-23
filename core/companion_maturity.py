@@ -100,6 +100,10 @@ def default_state() -> Dict[str, Any]:
         "pending_stage_up": None,
         "last_checkin_date": "",
         "pending_checkin": None,
+        "pending_followup": None,
+        "pending_outcome": None,
+        "last_eod_date": "",
+        "pending_eod": None,
     }
 
 
