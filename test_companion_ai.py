@@ -1337,6 +1337,241 @@ print(" [PASS] morning check-in")
 
 
 # ---------------------------------------------------------------------------
+# Sticky corrections, trust, time windows, growth timeline
+# ---------------------------------------------------------------------------
+
+from core.companion_profile import (
+    GROWTH_EMPTY_VI,
+    WINDOW_PHRASE,
+    active_time_windows,
+    add_user_note,
+    build_growth_timeline,
+    clear_habits,
+    delete_user_note,
+    effective_coaching,
+    list_user_notes,
+    score_trust,
+)
+from core.companion_moment import action_cap_for_stage, stage_voice
+from core.companion_skills import BLOCKED_ACTION_KEYS
+
+root = _fresh_dir()
+blank = add_user_note("   ", base_dir=root)
+check(blank is None, "blank note is not stored")
+secret = add_user_note(
+    "sai rồi, Wi-Fi yếu vì kênh DFS, key AIzaSyTESTKEY1234567890",
+    source="user",
+    base_dir=root,
+    now=datetime(2026, 9, 23, 9, 0, 0),
+)
+check(secret and secret.get("topic") == "wifi", "explicit note tags Wi-Fi")
+check(secret.get("kind") == "correction", "a hardware fact is a correction")
+check("AIza" not in secret.get("text", ""), "note redacts secrets")
+check("DFS" in secret.get("text", ""), "note keeps the short fact")
+style = add_user_note("gọi ngắn gọn", source="user", base_dir=root, now=datetime(2026, 9, 23, 9, 1, 0))
+check(style and style.get("kind") == "preference" and not style.get("topic"), "style note has no fake topic")
+avoid = add_user_note("đừng đề xuất dọn nặng", source="user", base_dir=root, now=datetime(2026, 9, 23, 9, 2, 0))
+check(avoid and avoid.get("kind") == "preference" and avoid.get("topic") == "disk", "don't-clean note is a disk preference")
+again = add_user_note(secret.get("text") or "", source="user", base_dir=root, now=datetime(2026, 9, 23, 9, 3, 0))
+check(again and again.get("id") == secret.get("id"), "the same fact updates instead of duplicating")
+check(len(list_user_notes(base_dir=root)) == 3, "three distinct notes stay under the cap")
+
+for i in range(22):
+    add_user_note(f"ghi chú riêng số {i:02d} cho máy này", base_dir=root, now=datetime(2026, 9, 23, 10, 0, 0) + timedelta(minutes=i))
+check(len(list_user_notes(base_dir=root)) == 20, "notes cap at 20")
+blob = " ".join(item.get("text") or "" for item in list_user_notes(base_dir=root))
+check("số 00" not in blob and "số 21" in blob, "the cap drops the oldest note")
+dropped = delete_user_note(list_user_notes(base_dir=root)[-1]["id"], base_dir=root)
+check(dropped and len(list_user_notes(base_dir=root)) == 19, "memory screen can delete one note")
+
+chat_root = _fresh_dir()
+reply = "Đây là câu trả lời dài của Copilot, không được lưu nguyên transcript. " + ("x" * 80)
+learned = learn_from_chat(
+    "sai rồi, Wi-Fi yếu vì kênh DFS",
+    reply,
+    now=datetime(2026, 9, 23, 11, 0, 0),
+    base_dir=chat_root,
+)
+check(learned and learned.get("kind") == "chat_note", "a correction can still be a short chat note")
+stored = list_user_notes(base_dir=chat_root)
+check(len(stored) == 1, "chat correction stores one line")
+check("transcript" not in stored[0]["text"] and "xxxx" not in stored[0]["text"], "assistant reply is not stored")
+check(stored[0]["source"] == "chat" and "DFS" in stored[0]["text"], "chat line is sanitized and tagged")
+check(stored[0]["text"].count(" ") < 40, "stored correction is one short line")
+quiet_chat = learn_from_chat(
+    "Wifi nhà mình chậm",
+    "Mình xem nhật ký Wi-Fi giúp bạn.",
+    now=datetime(2026, 9, 23, 11, 5, 0),
+    base_dir=chat_root,
+)
+check(quiet_chat and len(list_user_notes(base_dir=chat_root)) == 1, "a normal question is not a correction")
+
+ctx_fact = build_prompt_context("wifi chậm", base_dir=chat_root, now=datetime(2026, 9, 23, 11, 6, 0))
+check("DFS" in ctx_fact and "Lời bạn đã dạy" in ctx_fact, "Copilot context quotes the matching correction")
+check("transcript" not in ctx_fact, "context does not include the assistant reply")
+ctx_heat = build_prompt_context("máy nóng", base_dir=chat_root, now=datetime(2026, 9, 23, 11, 6, 0))
+check("DFS" not in ctx_heat and "kênh" not in ctx_heat, "a heat question does not invent the Wi-Fi cause")
+ground_fact = local_grounding_text("wifi chậm", base_dir=chat_root, now=datetime(2026, 9, 23, 11, 6, 0))
+check("DFS" in ground_fact, "offline grounding quotes the stored Wi-Fi fact")
+for i in range(2):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu",
+        now=datetime(2026, 9, 20 + i, 21, 0, 0),
+        base_dir=chat_root,
+        coalesce=False,
+    )
+seen = current_insight(base_dir=chat_root, now=datetime(2026, 9, 23, 8, 0, 0))
+check(seen and seen.get("topic") == "wifi" and "DFS" in seen.get("text", ""), "morning insight quotes the Wi-Fi correction")
+check_in_fact = compose_daily_checkin(
+    now=datetime(2026, 9, 23, 8, 0, 0),
+    base_dir=chat_root,
+    config_manager=_Cfg(),
+)
+check(check_in_fact and "DFS" in check_in_fact.get("text", ""), "check-in quotes the matching correction")
+kept = add_user_note("gọi ngắn gọn", base_dir=chat_root, now=datetime(2026, 9, 23, 12, 0, 0))
+clear_habits(base_dir=chat_root, now=datetime(2026, 9, 23, 12, 1, 0))
+after_clear = list_user_notes(base_dir=chat_root)
+check(any("DFS" in item.get("text", "") for item in after_clear), "clearing habits keeps taught notes")
+check(kept and any(item.get("id") == kept.get("id") for item in after_clear), "style note stays with the goal")
+print(" [PASS] sticky corrections")
+
+trust_root = _fresh_dir()
+for i in range(3):
+    observe_suggestion(
+        False,
+        action_key="clean_light",
+        base_dir=trust_root,
+        now=datetime(2026, 9, 10 + i, 18, 0, 0),
+        coalesce=False,
+    )
+low = score_trust(base_dir=trust_root)
+check(low["level"] == "low" and low["rejected"] >= 2, "three rejects is low trust")
+check(effective_coaching(base_dir=trust_root) == "ask_more", "low trust asks more without editing the coaching flag")
+check(load_profile(trust_root).get("coaching") == "steady", "global coaching flag stays steady")
+check(action_cap_for_stage(3, trust="low") == 0, "low trust hides action buttons")
+check(stage_voice(3, trust="low")["boldness"] == "ask", "low trust uses the ask voice")
+shy_focus = resolve_insight_action("focus", stage=3, may_propose=True, coaching=effective_coaching(base_dir=trust_root))
+check(shy_focus and shy_focus["key"] != "enable_exam_focus", "low trust does not start focus mode")
+soft = compose_daily_checkin(now=datetime(2026, 9, 23, 8, 0, 0), base_dir=trust_root, config_manager=_Cfg())
+check(soft is None or "hỏi thêm" in soft.get("text", "") or not soft.get("action_key"), "low trust check-in stays soft")
+
+high_root = _fresh_dir()
+for i in range(3):
+    observe_suggestion(
+        True,
+        action_key="optimize_ram",
+        base_dir=high_root,
+        now=datetime(2026, 9, 10 + i, 18, 0, 0),
+        coalesce=False,
+    )
+high = score_trust(base_dir=high_root)
+check(high["level"] == "high" and high["accepted"] >= 2, "repeated accepts build high trust")
+check(effective_coaching(base_dir=high_root) == "steady", "high trust does not force ask-more")
+check(action_cap_for_stage(2, trust="high", may_propose=True) == 1, "high trust at stage 2 may propose one action")
+check(action_cap_for_stage(1, trust="high", may_propose=True) == 0, "high trust does not skip the stage gate")
+check(action_cap_for_stage(3, trust="high", may_propose=False) == 0, "high trust still honors the propose switch")
+blocked = resolve_insight_action("disk", stage=3, may_propose=True, coaching="steady", prefer_key="clean_junk")
+check(blocked and blocked["key"] not in BLOCKED_ACTION_KEYS, "trust never offers a blocked action")
+mute_topic("wifi", days=7, reason="user", base_dir=high_root, now=datetime(2026, 9, 20, 8, 0, 0))
+check(
+    effective_coaching(base_dir=high_root, topic="wifi", now=datetime(2026, 9, 20, 9, 0, 0)) == "ask_more",
+    "a mute still wins when trust is high",
+)
+note_user_feedback(False, base_dir=high_root, now=datetime(2026, 9, 20, 9, 5, 0), topic="thermal")
+check(topic_is_muted("thermal", base_dir=high_root, now=datetime(2026, 9, 20, 9, 6, 0)), "unhelpful feedback still soft-mutes")
+check(
+    effective_coaching(base_dir=high_root, topic="thermal", now=datetime(2026, 9, 20, 9, 6, 0)) == "ask_more",
+    "soft mute is not cleared by older accepts",
+)
+print(" [PASS] trust adjusts boldness")
+
+window_root = _fresh_dir()
+for i in range(3):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=datetime(2026, 9, 20 + i, 20, 30, 0),
+        base_dir=window_root,
+        coalesce=False,
+    )
+record_app_event(
+    "wifi_weak",
+    "Wi-Fi yếu buổi tối",
+    now=datetime(2026, 9, 23, 19, 0, 0),
+    base_dir=window_root,
+    coalesce=False,
+)
+for i in range(2):
+    record_app_event(
+        "high_ram",
+        "RAM cao 88%",
+        metrics={"ram_percent": 88},
+        now=datetime(2026, 9, 20 + i, 16, 0, 0),
+        base_dir=window_root,
+        coalesce=False,
+    )
+evening = datetime(2026, 9, 23, 20, 0, 0)
+afternoon = datetime(2026, 9, 23, 16, 0, 0)
+morning_quiet = datetime(2026, 9, 23, 8, 0, 0)
+windows = active_time_windows(read_events(base_dir=window_root), now=evening, profile=load_profile(window_root))
+check(any(item.get("topic") == "wifi" for item in windows), "evening Wi-Fi is a recurring window")
+check(all(item.get("topic") != "ram" for item in windows), "afternoon RAM is not an evening window")
+wifi_line = current_insight(base_dir=window_root, now=evening)
+check(wifi_line and WINDOW_PHRASE in wifi_line.get("text", "") and wifi_line.get("topic") == "wifi", "evening insight names this hour")
+ram_line = current_insight(base_dir=window_root, now=afternoon)
+check(ram_line and ram_line.get("topic") == "ram" and WINDOW_PHRASE in ram_line.get("text", ""), "afternoon insight names the RAM window")
+morning_line = current_insight(base_dir=window_root, now=morning_quiet)
+check(WINDOW_PHRASE not in (morning_line or {}).get("text", ""), "morning does not claim the evening window")
+nudge = plan_companion_nudge(now=evening, base_dir=window_root, config_manager=_Cfg(), commit=False)
+check(nudge and nudge.get("issue_class") == "wifi_weak", "window nudge reuses the calm wifi tip")
+check(WINDOW_PHRASE in nudge.get("message", ""), "nudge mentions the usual hour")
+check("tiết kiệm" in nudge["message"] or "DNS" in nudge["message"], "window nudge stays the safe wifi tip")
+mute_topic("wifi", days=7, base_dir=window_root, now=evening)
+muted_hour = current_insight(base_dir=window_root, now=evening)
+check(muted_hour is None or muted_hour.get("topic") != "wifi", "muted topic is not a time-of-day insight")
+muted_nudge = plan_companion_nudge(now=evening + timedelta(hours=1), base_dir=window_root, config_manager=_Cfg(), commit=False)
+check(muted_nudge is None or muted_nudge.get("issue_class") != "wifi_weak", "muted topic is not a time-of-day toast")
+print(" [PASS] time-of-day habit hints")
+
+growth_root = _fresh_dir()
+check(build_growth_timeline(base_dir=growth_root) == [], "empty disk has no growth rows")
+check("mốc" in GROWTH_EMPTY_VI, "empty growth copy is humble")
+add_user_note("Wi-Fi yếu vì kênh DFS", base_dir=growth_root, now=datetime(2026, 9, 18, 9, 0, 0))
+save_skill("wifi_weak", hit_count=3, base_dir=growth_root)
+record_app_event(
+    "stage_up",
+    "Mình vừa lên giai đoạn 2 · Lớn dần. Lớn dần vì 7 ngày dùng.",
+    metrics={"stage": 2},
+    now=datetime(2026, 9, 19, 8, 0, 0),
+    base_dir=growth_root,
+    coalesce=False,
+)
+record_app_event(
+    "skill_saved",
+    "Đã kết tinh kỹ năng: Wi-Fi yếu / ping lỗi trên máy này",
+    now=datetime(2026, 9, 19, 8, 5, 0),
+    base_dir=growth_root,
+    coalesce=False,
+)
+record_app_event(
+    "reflection",
+    "Đã ghi tóm tắt tuần",
+    now=datetime(2026, 9, 21, 20, 0, 0),
+    base_dir=growth_root,
+    coalesce=False,
+)
+timeline = build_growth_timeline(base_dir=growth_root)
+texts = " ".join(item.get("text") or "" for item in timeline)
+check("giai đoạn 2" in texts or "Lớn dần" in texts, "timeline lists the stage-up")
+check("kỹ năng" in texts.lower(), "timeline lists a saved skill")
+check("DFS" in texts, "timeline lists the correction")
+check("tuần" in texts.lower(), "timeline lists the weekly marker")
+check(timeline[0]["ts"] <= timeline[-1]["ts"], "timeline is chronological")
+print(" [PASS] growth timeline")
+
+
+# ---------------------------------------------------------------------------
 # Qt smoke: Settings card + memory dialog
 # ---------------------------------------------------------------------------
 
@@ -1353,6 +1588,8 @@ check(hasattr(card, "lbl_legend") and "Mới gặp" in card.lbl_legend.text(), "
 check(hasattr(card, "lbl_reason") and "ngày dùng" in card.lbl_reason.text(), "card explains why the stage is what it is")
 check(hasattr(card, "chk_nudges") and "thói quen" in card.chk_nudges.text(), "card can turn calm nudges off")
 check(hasattr(card, "txt_goal") and "Wi-Fi" in card.txt_goal.placeholderText(), "card has one optional goal field")
+check(hasattr(card, "txt_correction") and "Sửa cho mình" in card.txt_correction.placeholderText(), "card can teach a short correction")
+check("Chưa có lời sửa" in card.lbl_correction.text(), "empty correction stays quiet")
 check("tuỳ chọn" in card.lbl_goal.text(), "empty goal stays quiet")
 check(card.insight_bar.isHidden(), "fresh card hides the insight strip")
 check(card.insight_bar.btn_action.isHidden(), "fresh insight has no action button")
@@ -1368,6 +1605,11 @@ check(hasattr(dlg, "btn_clear_all") and "bộ nhớ" in dlg.btn_clear_all.text()
 check(hasattr(dlg, "lbl_profile") and "hồ sơ" in dlg.lbl_profile.text().lower(), "dialog shows the habit profile")
 check(hasattr(dlg, "btn_clear_profile"), "dialog can clear the habit profile")
 check(hasattr(dlg, "list_muted") and hasattr(dlg, "btn_unmute_all"), "dialog can clear muted topics")
+check(hasattr(dlg, "list_corrections") and hasattr(dlg, "btn_delete_correction"), "dialog lists and deletes corrections")
+check(hasattr(dlg, "list_growth") and hasattr(dlg, "lbl_growth_empty"), "dialog has a growth timeline")
+check("mốc" in dlg.lbl_growth_empty.text(), "empty growth timeline is dismissible copy")
+dlg.btn_growth_hide.click()
+check(dlg.lbl_growth_empty.isHidden(), "empty growth line can be hidden")
 check("im" in dlg.lbl_muted.text().lower(), "dialog says when nothing is muted")
 check("vài ngày" in dlg.lbl_diary_empty.text(), "dialog empty diary copy")
 check(dlg.list_diary.count() == 0, "new install diary list empty")

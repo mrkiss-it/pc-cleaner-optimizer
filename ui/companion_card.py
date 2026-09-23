@@ -524,6 +524,28 @@ class CompanionCard(QFrame):
         self.lbl_goal.setStyleSheet("color: #fde68a; font-size: 11px; background: transparent; border: none;")
         layout.addWidget(self.lbl_goal)
 
+        self.txt_correction = QLineEdit()
+        self.txt_correction.setPlaceholderText("Sửa cho mình — ví dụ: Wi-Fi yếu vì kênh DFS, gọi ngắn gọn")
+        self.txt_correction.setMaxLength(120)
+        self.txt_correction.setStyleSheet(
+            "QLineEdit { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; "
+            "border-radius: 6px; padding: 6px 8px; font-size: 12px; }"
+        )
+        layout.addWidget(self.txt_correction)
+        note_btns = QHBoxLayout()
+        self.btn_correction_save = QPushButton("Nhớ giúp mình")
+        self.btn_correction_save.setStyleSheet(_BTN_STYLE)
+        self.btn_correction_save.setToolTip("Một câu ngắn về máy này hoặc cách bạn muốn được nói chuyện. Không gửi đi đâu.")
+        self.btn_correction_save.clicked.connect(self._save_correction)
+        note_btns.addWidget(self.btn_correction_save)
+        note_btns.addStretch()
+        layout.addLayout(note_btns)
+        self.lbl_correction = QLabel("")
+        self.lbl_correction.setWordWrap(True)
+        self.lbl_correction.setTextFormat(Qt.PlainText)
+        self.lbl_correction.setStyleSheet("color: #c4b5fd; font-size: 11px; background: transparent; border: none;")
+        layout.addWidget(self.lbl_correction)
+
         if not self.compact:
             self.chk_enabled = QCheckBox("Ghi nhật ký máy (local, không gửi đám mây)")
             self.chk_enabled.setStyleSheet("font-weight: bold; font-size: 13px; color: #c4b5fd;")
@@ -713,6 +735,7 @@ class CompanionCard(QFrame):
         if hasattr(self, "insight_bar"):
             self.insight_bar.refresh()
         self._refresh_goal()
+        self._refresh_correction()
         self.stage_changed.emit()
 
     def _refresh_goal(self):
@@ -742,6 +765,31 @@ class CompanionCard(QFrame):
         except Exception:
             pass
         self.txt_goal.clear()
+        self.refresh()
+
+    def _refresh_correction(self):
+        try:
+            from core.companion_profile import list_user_notes
+            notes = list_user_notes()
+        except Exception:
+            notes = []
+        if not notes:
+            self.lbl_correction.setText("Chưa có lời sửa — gõ một câu ngắn nếu mình nhớ nhầm.")
+            return
+        latest = notes[-1]
+        text = str(latest.get("text") or "").strip()
+        self.lbl_correction.setText(f"Mình nhớ: {text}" if text else "")
+
+    def _save_correction(self):
+        raw = self.txt_correction.text() if hasattr(self, "txt_correction") else ""
+        if not str(raw or "").strip():
+            return
+        try:
+            from core.companion_profile import add_user_note
+            add_user_note(raw, source="user")
+        except Exception:
+            pass
+        self.txt_correction.clear()
         self.refresh()
 
     def _feedback(self, helpful: bool):
@@ -834,7 +882,8 @@ class CompanionDialog(QDialog):
         self.config_manager = config_manager
         self._reflect_worker: Optional[CompanionReflectWorker] = None
         self.setWindowTitle(f"AI đồng hành — {APP_NAME}")
-        self.resize(560, 800)
+        self.resize(560, 920)
+        self._growth_dismissed = False
         self.setStyleSheet("QDialog { background: #0f172a; color: #e2e8f0; }")
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -866,6 +915,52 @@ class CompanionDialog(QDialog):
         profile_btns.addWidget(self.btn_clear_profile)
         profile_btns.addStretch()
         root.addLayout(profile_btns)
+
+        root.addWidget(QLabel("Lời bạn đã sửa"))
+        self.lbl_corrections_empty = QLabel("Chưa có lời sửa. Gõ một câu ngắn nếu mình nhớ nhầm.")
+        self.lbl_corrections_empty.setWordWrap(True)
+        self.lbl_corrections_empty.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        root.addWidget(self.lbl_corrections_empty)
+        self.txt_correction = QLineEdit()
+        self.txt_correction.setPlaceholderText("Sửa cho mình — ví dụ: đừng đề xuất dọn nặng")
+        self.txt_correction.setMaxLength(120)
+        self.txt_correction.setStyleSheet(
+            "QLineEdit { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; "
+            "border-radius: 6px; padding: 6px 8px; font-size: 12px; }"
+        )
+        root.addWidget(self.txt_correction)
+        self.list_corrections = QListWidget()
+        self.list_corrections.setStyleSheet(_LIST_STYLE)
+        self.list_corrections.setMaximumHeight(88)
+        root.addWidget(self.list_corrections)
+        corr_btns = QHBoxLayout()
+        self.btn_add_correction = QPushButton("Nhớ giúp mình")
+        self.btn_add_correction.setStyleSheet(_BTN_STYLE)
+        self.btn_add_correction.clicked.connect(self._add_correction)
+        self.btn_delete_correction = QPushButton("Xóa lời đã chọn")
+        self.btn_delete_correction.setStyleSheet(_BTN_STYLE)
+        self.btn_delete_correction.clicked.connect(self._delete_correction)
+        corr_btns.addWidget(self.btn_add_correction)
+        corr_btns.addWidget(self.btn_delete_correction)
+        corr_btns.addStretch()
+        root.addLayout(corr_btns)
+
+        root.addWidget(QLabel("Mình đã lớn thế nào"))
+        growth_head = QHBoxLayout()
+        self.lbl_growth_empty = QLabel("")
+        self.lbl_growth_empty.setWordWrap(True)
+        self.lbl_growth_empty.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        self.btn_growth_hide = QPushButton("Ẩn")
+        self.btn_growth_hide.setStyleSheet(_BTN_STYLE)
+        self.btn_growth_hide.setToolTip("Ẩn dòng trống. Mốc lớn sẽ hiện lại khi có.")
+        self.btn_growth_hide.clicked.connect(self._hide_growth_empty)
+        growth_head.addWidget(self.lbl_growth_empty, stretch=1)
+        growth_head.addWidget(self.btn_growth_hide)
+        root.addLayout(growth_head)
+        self.list_growth = QListWidget()
+        self.list_growth.setStyleSheet(_LIST_STYLE)
+        self.list_growth.setMaximumHeight(96)
+        root.addWidget(self.list_growth)
 
         root.addWidget(QLabel("Chủ đề đang im"))
         self.lbl_muted = QLabel("")
@@ -990,6 +1085,8 @@ class CompanionDialog(QDialog):
         if learned:
             self.lbl_legend.setText(self.lbl_legend.text() + "\n" + learned)
         self.lbl_profile.setText(format_profile_browse() or empty["profile"])
+        self._fill_corrections()
+        self._fill_growth()
         self._fill_muted()
 
         diary_rows = list_diary_rows(limit=20, days=30)
@@ -1074,6 +1171,78 @@ class CompanionDialog(QDialog):
             return
         clear_skills_memory()
         self.refresh()
+
+    def _add_correction(self):
+        raw = self.txt_correction.text() if hasattr(self, "txt_correction") else ""
+        if not str(raw or "").strip():
+            return
+        try:
+            from core.companion_profile import add_user_note
+            add_user_note(raw, source="user")
+        except Exception:
+            pass
+        self.txt_correction.clear()
+        self.refresh()
+
+    def _delete_correction(self):
+        item = self.list_corrections.currentItem()
+        if item is None:
+            QMessageBox.information(self, "Lời đã sửa", "Chọn một câu để xóa.")
+            return
+        note_id = item.data(Qt.UserRole)
+        if not note_id:
+            return
+        if not _confirm(self, confirm_clear_prompt("correction")):
+            return
+        try:
+            from core.companion_profile import delete_user_note
+            delete_user_note(str(note_id))
+        except Exception:
+            pass
+        self.refresh()
+
+    def _fill_corrections(self):
+        from core.companion_profile import format_user_note_line, list_user_notes
+        notes = list_user_notes()
+        self.list_corrections.clear()
+        if not notes:
+            self.lbl_corrections_empty.setText("Chưa có lời sửa. Gõ một câu ngắn nếu mình nhớ nhầm.")
+            self.lbl_corrections_empty.show()
+            self.list_corrections.hide()
+            return
+        self.lbl_corrections_empty.hide()
+        self.list_corrections.show()
+        for note in notes:
+            item = QListWidgetItem(format_user_note_line(note))
+            item.setData(Qt.UserRole, str(note.get("id") or ""))
+            self.list_corrections.addItem(item)
+
+    def _hide_growth_empty(self):
+        self._growth_dismissed = True
+        self.lbl_growth_empty.hide()
+        self.btn_growth_hide.hide()
+
+    def _fill_growth(self):
+        from core.companion_profile import GROWTH_EMPTY_VI, build_growth_timeline, format_growth_row
+        rows = build_growth_timeline()
+        self.list_growth.clear()
+        if not rows:
+            self.list_growth.hide()
+            if self._growth_dismissed:
+                self.lbl_growth_empty.hide()
+                self.btn_growth_hide.hide()
+                return
+            self.lbl_growth_empty.setText(GROWTH_EMPTY_VI)
+            self.lbl_growth_empty.show()
+            self.btn_growth_hide.show()
+            return
+        self.lbl_growth_empty.hide()
+        self.btn_growth_hide.hide()
+        self.list_growth.show()
+        for row in rows:
+            text = format_growth_row(row)
+            if text:
+                self.list_growth.addItem(QListWidgetItem(text))
 
     def _fill_muted(self):
         from core.companion_profile import active_muted_topics, format_muted_browse
