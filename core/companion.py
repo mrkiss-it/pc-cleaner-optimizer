@@ -260,6 +260,16 @@ def note_user_feedback(
         config_manager=config_manager,
         outcome="accepted" if helpful else "rejected",
     )
+    try:
+        from core.companion_moment import learn_from_feedback
+        learn_from_feedback(
+            helpful,
+            base_dir=base_dir,
+            now=now,
+            config_manager=config_manager,
+        )
+    except Exception:
+        pass
     return current_stage(config_manager=config_manager, base_dir=base_dir)
 
 
@@ -816,13 +826,22 @@ def build_prompt_context(
         hints = [item for item in hints if _hint_matches_topics(item, parts["topics"])]
     hint_text = "\n".join(f"- {item['text']}" for item in hints[:2]) or "Chưa đủ mẫu lặp để gợi ý riêng máy này."
     note = _clip(latest_reflection(base_dir) or "Chưa có sổ tay (chưa phản tỉnh hoặc cài mới).", 160)
-    policy = (
-        "Hỏi nhiều, đề xuất ít."
-        if stage.ask_more
-        else "Có thể đề xuất dọn nhẹ / Trước thi / thu hồi RAM — không tự chạy, không WinSxS/registry."
-    )
-    if not stage.may_propose_actions:
-        policy += " Người dùng chưa bật quyền đề xuất hành động."
+    try:
+        from core.companion_moment import stage_voice
+        voice = stage_voice(
+            stage.stage,
+            coaching=str((parts.get("profile") or {}).get("coaching") or "steady"),
+            may_propose=bool(stage.may_propose_actions),
+        )
+        policy = voice["policy_vi"]
+    except Exception:
+        policy = (
+            "Hỏi nhiều, đề xuất ít."
+            if stage.ask_more
+            else "Có thể đề xuất dọn nhẹ / Trước thi / thu hồi RAM — không tự chạy, không WinSxS/registry."
+        )
+        if not stage.may_propose_actions:
+            policy += " Người dùng chưa bật quyền đề xuất hành động."
     profile_lines = parts["profile_lines"]
     profile_text = "\n".join(f"- {line}" for line in profile_lines) or "Chưa đủ mẫu để ghi thói quen máy này."
     goal_text = parts["goal_text"] or "Không đặt mục tiêu."
@@ -890,6 +909,14 @@ def local_grounding_text(
     except Exception:
         return ""
     bits = [f"🌱 {stage.badge_vi()}"]
+    if stage.stage <= 0:
+        try:
+            from core.companion_moment import stage_voice
+            aside = stage_voice(0).get("aside_vi") or ""
+        except Exception:
+            aside = ""
+        if aside:
+            bits.append(aside)
     if stage.empty and not parts["picked"]:
         bits.append("Nhật ký máy còn trống — mình chưa có kỷ niệm trên máy này.")
         return " ".join(bits)
@@ -965,11 +992,24 @@ def companion_actions(
     stage = current_stage(config_manager=config_manager, base_dir=base_dir)
     if not stage.may_propose_actions:
         return []
+    try:
+        from core.companion_moment import action_cap_for_stage
+        from core.companion_profile import load_profile
+        coaching = str(load_profile(base_dir).get("coaching") or "steady")
+        cap = action_cap_for_stage(
+            stage.stage,
+            coaching=coaching,
+            may_propose=True,
+        )
+    except Exception:
+        cap = 2
+    if cap <= 0:
+        return []
     actions: List[Tuple[str, str]] = []
-    for skill in match_skills(user_text=user_text, base_dir=base_dir, limit=2):
+    for skill in match_skills(user_text=user_text, base_dir=base_dir, limit=cap):
         if skill.action_key:
             actions.append((skill.action_key, skill.suggest[:48]))
-    return actions
+    return actions[:cap]
 
 
 def maybe_run_reflection(
