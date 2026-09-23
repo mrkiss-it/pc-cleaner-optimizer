@@ -6,6 +6,7 @@ a small JSON file the companion can show, clear, and inject into Copilot context
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -13,16 +14,23 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from config_manager import companion_dir
-from core.companion_diary import event_weight, recent_events, sanitize_summary, time_band
+from core.companion_diary import event_weight, read_events, recent_events, sanitize_summary, time_band
 from core.companion_skills import fold_vi
 
 PROFILE_FILENAME = "profile.json"
 MAX_HABITS = 6
 MAX_GOAL_LEN = 80
 MAX_DISMISSED = 24
+MAX_NOTES = 20
+MAX_NOTE_LEN = 120
 PROFILE_VERSION = 1
 MUTE_DAYS = 7
 SOFT_MUTE_DAYS = 2
+# Trust is computed, not trained. Fewer than this many accept/reject rows stays "steady".
+TRUST_MIN_SAMPLE = 3
+WINDOW_PHRASE = "Thường vào khung giờ này trên máy này"
+GROWTH_EMPTY_VI = "Chưa có mốc lớn — mình mới gặp máy này. Dùng thêm rồi xem lại."
+GROWTH_LIMIT = 12
 
 TOPIC_META: Dict[str, Dict[str, Any]] = {
     "wifi": {
@@ -148,6 +156,8 @@ def default_profile() -> Dict[str, Any]:
         "last_chat": None,
         "muted_topics": {},
         "topic_coaching": {},
+        "corrections": [],
+        "preferences": [],
     }
 
 
@@ -198,6 +208,9 @@ def load_profile(base_dir: Optional[str] = None) -> Dict[str, Any]:
         merged["last_chat"] = None
     merged["muted_topics"] = _clean_muted(merged.get("muted_topics"))
     merged["topic_coaching"] = _clean_topic_coaching(merged.get("topic_coaching"))
+    corrections, preferences = _split_notes(merged.get("corrections"), merged.get("preferences"))
+    merged["corrections"] = corrections
+    merged["preferences"] = preferences
     return merged
 
 
@@ -211,6 +224,9 @@ def save_profile(profile: Dict[str, Any], base_dir: Optional[str] = None) -> Dic
     ][-MAX_DISMISSED:]
     payload["muted_topics"] = _clean_muted(payload.get("muted_topics"))
     payload["topic_coaching"] = _clean_topic_coaching(payload.get("topic_coaching"))
+    corrections, preferences = _split_notes(payload.get("corrections"), payload.get("preferences"))
+    payload["corrections"] = corrections
+    payload["preferences"] = preferences
     _atomic_write_json(profile_path(base_dir), payload)
     return payload
 
@@ -488,6 +504,336 @@ def format_muted_browse(
         why = "bạn bảo đừng nhắc" if meta.get("reason") == "user" else "phản hồi chưa khớp"
         bits.append(f"{name} đến {day} ({why})" if day else f"{name} ({why})")
     return "Đang im: " + "; ".join(bits) + "."
+
+
+# Clear correction cues. Matched on the raw line so "đừng" is not confused with "đúng"
+# after accent folding ("đ" and "d" both become "d").
+_CORRECTION_CUES_RAW = (
+    "không phải",
+    "khong phai",
+    "sai rồi",
+    "sai roi",
+    "đừng",
+    "nhầm rồi",
+    "nham roi",
+    "không đúng",
+)
+_PREFERENCE_CUES_RAW = (
+    "đừng",
+    "ngắn gọn",
+    "ngan gon",
+    "gọi ngắn",
+    "goi ngan",
+    "phong cách",
+    "phong cach",
+    "đừng đề xuất",
+    "dung de xuat",
+)
+
+
+def _note_fold(text: str) -> str:
+    return fold_vi(sanitize_summary(text))
+
+
+def is_clear_correction(text: str) -> bool:
+    """True when the user is correcting the companion, not asking a normal question."""
+    raw = str(text or "").lower()
+    if not raw.strip():
+        return False
+    return any(cue in raw for cue in _CORRECTION_CUES_RAW)
+
+
+def classify_note_kind(text: str) -> str:
+    raw = str(text or "").lower()
+    folded = fold_vi(text)
+    for cue in _PREFERENCE_CUES_RAW:
+        if cue in raw or cue in folded:
+            return "preference"
+    return "correction"
+
+
+def _clean_one_note(item: Any, default_kind: str) -> Optional[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+    text = sanitize_summary(item.get("text") or "")
+    if len(text) > MAX_NOTE_LEN:
+        text = text[: MAX_NOTE_LEN - 1].rstrip() + "…"
+    if len(text) < 4 or text == "[redacted]":
+        return None
+    topic = str(item.get("topic") or "").strip()
+    if topic not in TOPIC_META:
+        topic = ""
+    kind = str(item.get("kind") or default_kind)
+    if kind not in ("correction", "preference"):
+        kind = default_kind
+    source = str(item.get("source") or "user")
+    if source not in ("user", "chat"):
+        source = "user"
+    note_id = str(item.get("id") or "").strip()[:16]
+    if not note_id:
+        return None
+    return {
+        "id": note_id,
+        "text": text,
+        "topic": topic,
+        "kind": kind,
+        "at": str(item.get("at") or "")[:32],
+        "source": source,
+    }
+
+
+def _split_notes(corrections: Any, preferences: Any) -> tuple:
+    """Keep the newest MAX_NOTES facts and style notes. Drop secrets and dupes."""
+    rows: List[Dict[str, Any]] = []
+    seen = set()
+    for default_kind, raw in (("correction", corrections), ("preference", preferences)):
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            note = _clean_one_note(item, default_kind)
+            if note is None:
+                continue
+            key = _note_fold(note["text"])
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            rows.append(note)
+    rows.sort(key=lambda item: str(item.get("at") or ""))
+    rows = rows[-MAX_NOTES:]
+    facts = [item for item in rows if item.get("kind") != "preference"]
+    prefs = [item for item in rows if item.get("kind") == "preference"]
+    return facts, prefs
+
+
+def list_user_notes(
+    profile: Optional[Dict[str, Any]] = None,
+    base_dir: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    data = profile if isinstance(profile, dict) else load_profile(base_dir)
+    rows = list(data.get("corrections") or []) + list(data.get("preferences") or [])
+    rows = [item for item in rows if isinstance(item, dict)]
+    rows.sort(key=lambda item: str(item.get("at") or ""))
+    return rows
+
+
+def add_user_note(
+    text: str,
+    *,
+    kind: str = "",
+    topic: str = "",
+    source: str = "user",
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """Remember one short fact or preference. Never stores a chat transcript."""
+    clean = sanitize_summary(text)
+    if len(clean) > MAX_NOTE_LEN:
+        clean = clean[: MAX_NOTE_LEN - 1].rstrip() + "…"
+    if len(clean) < 4 or clean == "[redacted]":
+        return None
+    note_kind = kind if kind in ("correction", "preference") else classify_note_kind(clean)
+    topics = infer_topics(clean)
+    primary = str(topic or "").strip()
+    if primary not in TOPIC_META:
+        primary = topics[0] if topics else ""
+    stamp = (now or datetime.now()).replace(microsecond=0).isoformat(timespec="seconds")
+    src = "chat" if str(source or "") == "chat" else "user"
+    profile = load_profile(base_dir)
+    rows = list_user_notes(profile)
+    folded = _note_fold(clean)
+    kept = [item for item in rows if _note_fold(str(item.get("text") or "")) != folded]
+    note_id = hashlib.sha1(folded.encode("utf-8")).hexdigest()[:12]
+    note = {
+        "id": note_id,
+        "text": clean,
+        "topic": primary,
+        "kind": note_kind,
+        "at": stamp,
+        "source": src,
+    }
+    kept.append(note)
+    facts = [item for item in kept if item.get("kind") != "preference"]
+    prefs = [item for item in kept if item.get("kind") == "preference"]
+    profile["corrections"] = facts
+    profile["preferences"] = prefs
+    save_profile(profile, base_dir=base_dir)
+    return note
+
+
+def delete_user_note(note_id: str, base_dir: Optional[str] = None) -> bool:
+    wanted = str(note_id or "").strip()
+    if not wanted:
+        return False
+    profile = load_profile(base_dir)
+    before = list_user_notes(profile)
+    facts = [item for item in (profile.get("corrections") or []) if str(item.get("id") or "") != wanted]
+    prefs = [item for item in (profile.get("preferences") or []) if str(item.get("id") or "") != wanted]
+    if len(facts) + len(prefs) == len(before):
+        return False
+    profile["corrections"] = facts
+    profile["preferences"] = prefs
+    save_profile(profile, base_dir=base_dir)
+    return True
+
+
+def matching_user_notes(
+    profile: Optional[Dict[str, Any]],
+    topics: Optional[Iterable[str]] = None,
+    *,
+    limit: int = 2,
+    include_style: bool = True,
+) -> List[Dict[str, Any]]:
+    """Topic matches first, then one untagged style preference. Nothing is invented."""
+    rows = list(reversed(list_user_notes(profile)))
+    cap = max(1, int(limit))
+    wanted = [str(topic) for topic in (topics or []) if str(topic)]
+    picked: List[Dict[str, Any]] = []
+    if wanted:
+        for note in rows:
+            if str(note.get("topic") or "") in wanted:
+                picked.append(note)
+            if len(picked) >= cap:
+                break
+        if include_style and len(picked) < cap:
+            for note in rows:
+                if note in picked:
+                    continue
+                if note.get("kind") == "preference" and not str(note.get("topic") or ""):
+                    picked.append(note)
+                    break
+    else:
+        picked = rows[:cap]
+    return picked
+
+
+def format_user_note_line(note: Dict[str, Any]) -> str:
+    text = str(note.get("text") or "").strip()
+    if not text:
+        return ""
+    if note.get("kind") == "preference":
+        return f"Bạn muốn: {text}"
+    topic = str(note.get("topic") or "")
+    name = str((TOPIC_META.get(topic) or {}).get("name") or "")
+    if name:
+        return f"Bạn đã sửa ({name}): {text}"
+    return f"Bạn đã sửa: {text}"
+
+
+def format_user_note_lines(
+    profile: Optional[Dict[str, Any]],
+    topics: Optional[Iterable[str]] = None,
+    *,
+    limit: int = 2,
+    include_style: bool = True,
+) -> List[str]:
+    lines = [
+        format_user_note_line(item)
+        for item in matching_user_notes(profile, topics, limit=limit, include_style=include_style)
+    ]
+    return [line for line in lines if line]
+
+
+def annotate_learned_line(text: str, topic: str, profile: Optional[Dict[str, Any]]) -> str:
+    """Append one stored note when the topic matches. Does not add hardware facts."""
+    body = str(text or "").strip()
+    if not body or not topic:
+        return body
+    notes = matching_user_notes(profile, [topic], limit=1, include_style=False)
+    if not notes:
+        return body
+    extra = str(notes[0].get("text") or "").strip()
+    if not extra or extra in body:
+        return body
+    suffix = f" Bạn đã nói: {extra}."
+    if len(body) + len(suffix) > 320:
+        return body
+    return body.rstrip() + suffix
+
+
+def score_trust(
+    events: Optional[Sequence[Dict[str, Any]]] = None,
+    profile: Optional[Dict[str, Any]] = None,
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Accept vs reject on this PC. Not a model, and not the global coaching flag.
+
+    Count one point per diary row (coalesced bursts are not extra trust):
+      accept — suggestion_accepted, or user_feedback / chat rating marked accepted
+               (insight and check-in taps already write suggestion_accepted)
+      reject — suggestion_rejected, or user_feedback marked rejected
+               plus one point per explicit «đừng nhắc» mute still active
+    A soft mute from «Chưa khớp» is already the user_feedback row, so it is not
+    counted again. Topic mute and topic ask-more still win for that topic even
+    when trust is high — see effective_coaching.
+
+    low    — at least 2 rejects and rejects outnumber accepts
+    high   — at least TRUST_MIN_SAMPLE rows, at least 2 accepts, accept rate
+             ≥ 2/3, and accepts outnumber rejects
+    steady — too little evidence, or a mixed record
+
+    High trust does not by itself set may_propose_actions. Stage ≥ 2 and the
+    consent flag still gate proposals, and BLOCKED_ACTION_KEYS stay blocked.
+    Low trust only forces the ask-more voice (fewer buttons, softer check-ins).
+    """
+    data = profile if isinstance(profile, dict) else load_profile(base_dir)
+    if events is None:
+        rows = recent_events(days=30, limit=0, base_dir=base_dir, now=now)
+    else:
+        rows = list(events)
+    accepted = 0
+    rejected = 0
+    for event in rows:
+        if not isinstance(event, dict):
+            continue
+        kind = str(event.get("kind") or "")
+        outcome = str(event.get("outcome") or "")
+        if kind == "suggestion_accepted" or (kind == "user_feedback" and outcome == "accepted"):
+            accepted += 1
+        elif kind == "suggestion_rejected" or (kind == "user_feedback" and outcome == "rejected"):
+            rejected += 1
+    for _topic, meta in active_muted_topics(now=now, profile=data).items():
+        if str(meta.get("reason") or "") == "user":
+            rejected += 1
+    sample = accepted + rejected
+    if rejected >= 2 and rejected > accepted:
+        level = "low"
+    elif (
+        sample >= TRUST_MIN_SAMPLE
+        and accepted >= 2
+        and rejected < accepted
+        and accepted / float(sample) >= (2.0 / 3.0)
+    ):
+        level = "high"
+    else:
+        level = "steady"
+    return {"level": level, "accepted": accepted, "rejected": rejected, "sample": sample}
+
+
+def effective_coaching(
+    profile: Optional[Dict[str, Any]] = None,
+    *,
+    topic: str = "",
+    events: Optional[Sequence[Dict[str, Any]]] = None,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> str:
+    """Global coaching, else low trust. A muted topic or topic ask-more always wins.
+
+    High trust returns "steady" and does not clear a mute or an ask-more flag.
+    Callers still honor may_propose_actions and the insight allowlist.
+    """
+    data = profile if isinstance(profile, dict) else load_profile(base_dir)
+    key = str(topic or "").strip()
+    if key and (topic_is_muted(key, now=now, profile=data) or topic_asks_more(key, profile=data)):
+        return "ask_more"
+    if str(data.get("coaching") or "") == "ask_more":
+        return "ask_more"
+    trust = score_trust(events, data, base_dir=base_dir, now=now)
+    if trust.get("level") == "low":
+        return "ask_more"
+    return "steady"
 
 
 def issues_for_topics(topics: Sequence[str]) -> List[str]:
@@ -794,7 +1140,7 @@ def clear_profile(base_dir: Optional[str] = None) -> int:
 
 
 def clear_habits(base_dir: Optional[str] = None, now: Optional[datetime] = None) -> int:
-    """Clear learned habits. The goal the user typed stays.
+    """Clear learned habits. The goal and the notes the user typed stay.
 
     Episodes from before this moment do not rebuild the same habits on the next refresh.
     """
@@ -876,6 +1222,10 @@ def format_profile_browse(profile: Optional[Dict[str, Any]] = None, base_dir: Op
         lines.append(_EMPTY_PROFILE_VI)
     if str(data.get("coaching") or "") == "ask_more":
         lines.append("Phản hồi: gợi ý gần đây chưa khớp — hỏi thêm trước khi đề xuất.")
+    taught = format_user_note_lines(data, limit=4, include_style=True)
+    if taught:
+        lines.append("Lời bạn đã dạy:")
+        lines.extend(f"• {line}" for line in taught)
     muted_line = format_muted_browse(data, base_dir=base_dir)
     if muted_line and not muted_line.startswith("Không có"):
         lines.append(muted_line)
@@ -1068,6 +1418,138 @@ def rank_events(
     return picked
 
 
+def active_time_windows(
+    events: Optional[Sequence[Dict[str, Any]]] = None,
+    now: Optional[datetime] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Recurring topic windows from diary timestamps. No LLM and no invented causes.
+
+    A window counts when the same topic falls in one time band on at least two
+    different days, and that band is the majority of the topic's dated rows.
+    Only the band that contains ``now`` is returned, and muted topics are left out.
+    """
+    stamp = now or datetime.now()
+    band_now = time_band(stamp)
+    muted = set(active_muted_topics(now=stamp, profile=profile)) if profile is not None else set()
+    days_by_topic: Dict[str, Dict[str, set]] = {}
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        topic = event_topic(event)
+        if not topic or topic in muted:
+            continue
+        meta = TOPIC_META.get(topic) or {}
+        if str(event.get("kind") or "") not in (meta.get("kinds") or set()):
+            continue
+        moment = _event_dt(event)
+        if moment is None:
+            continue
+        band = time_band(moment)
+        days_by_topic.setdefault(topic, {}).setdefault(band, set()).add(moment.strftime("%Y-%m-%d"))
+    found: List[Dict[str, Any]] = []
+    for topic, bands in days_by_topic.items():
+        counts = {band: len(days) for band, days in bands.items()}
+        if not counts:
+            continue
+        best = max(counts, key=lambda band: (counts[band], band))
+        best_days = counts[best]
+        total_days = sum(counts.values())
+        if best_days < 2 or best != band_now:
+            continue
+        # Majority of the topic's dated rows, so one odd evening is not a habit.
+        if total_days and best_days * 5 < total_days * 3:
+            continue
+        name = str((TOPIC_META.get(topic) or {}).get("name") or topic)
+        when = _BAND_VI.get(best, best)
+        found.append({
+            "topic": topic,
+            "band": best,
+            "evidence": best_days,
+            "text": f"{WINDOW_PHRASE}: {name} {when} ({best_days} ngày).",
+        })
+    found.sort(key=lambda item: (-int(item.get("evidence") or 0), str(item.get("topic") or "")))
+    return found
+
+
+def build_growth_timeline(
+    base_dir: Optional[str] = None,
+    *,
+    limit: int = GROWTH_LIMIT,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, str]]:
+    """Read-only moments already on disk: stage-ups, skills, notes, weekly markers."""
+    items: List[Dict[str, str]] = []
+    try:
+        rows = read_events(base_dir=base_dir, limit=0)
+    except Exception:
+        rows = []
+    for event in rows:
+        if not isinstance(event, dict):
+            continue
+        kind = str(event.get("kind") or "")
+        ts = str(event.get("ts") or "")
+        summary = str(event.get("summary") or "").strip()
+        if kind == "stage_up" and summary:
+            items.append({"ts": ts, "kind": "stage_up", "text": summary})
+        elif kind == "skill_saved" and summary:
+            items.append({"ts": ts, "kind": "skill", "text": summary})
+        elif kind == "reflection" and "tuần" in summary.lower():
+            items.append({"ts": ts, "kind": "weekly", "text": "Đã ghi tóm tắt tuần."})
+    try:
+        from core.companion_skills import load_skills
+        skills = load_skills(base_dir)
+    except Exception:
+        skills = []
+    skill_blob = " ".join(item.get("text") or "" for item in items if item.get("kind") == "skill")
+    for skill in skills:
+        title = str(getattr(skill, "title", "") or "").strip()
+        if not title or title in skill_blob:
+            continue
+        items.append({
+            "ts": str(getattr(skill, "created_at", "") or ""),
+            "kind": "skill",
+            "text": f"Đã lưu kỹ năng: {title}",
+        })
+    if not any(item.get("kind") == "weekly" for item in items):
+        try:
+            from core.companion_reflection import WEEKLY_MARKER, load_reflection, load_reflection_meta
+            note = load_reflection(base_dir)
+            if WEEKLY_MARKER in note:
+                meta = load_reflection_meta(base_dir)
+                items.append({
+                    "ts": str(meta.get("updated_at") or ""),
+                    "kind": "weekly",
+                    "text": "Đã ghi tóm tắt tuần.",
+                })
+        except Exception:
+            pass
+    for note in list_user_notes(base_dir=base_dir):
+        line = format_user_note_line(note)
+        if not line:
+            continue
+        items.append({
+            "ts": str(note.get("at") or ""),
+            "kind": str(note.get("kind") or "correction"),
+            "text": line,
+        })
+    items.sort(key=lambda item: (str(item.get("ts") or "9999"), str(item.get("kind") or "")))
+    cap = max(1, int(limit or GROWTH_LIMIT))
+    return items[-cap:]
+
+
+def format_growth_row(item: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(item, dict):
+        return ""
+    text = str(item.get("text") or "").strip()
+    if not text:
+        return ""
+    ts = str(item.get("ts") or "")
+    if len(ts) >= 10:
+        return f"{ts[8:10]}/{ts[5:7]} · {text}"
+    return text
+
+
 def _insight(insight_id: str, text: str, topic: str = "") -> Dict[str, str]:
     body = str(text or "").strip()
     if body and not body.startswith("Hôm nay:"):
@@ -1083,6 +1565,12 @@ def build_insight_candidates(
     data = profile or {}
     stamp = now or datetime.now()
     items: List[Dict[str, str]] = []
+    for window in active_time_windows(events, now=stamp, profile=data):
+        items.append(_insight(
+            f"window:{window.get('topic')}:{window.get('band')}",
+            str(window.get("text") or ""),
+            str(window.get("topic") or ""),
+        ))
     status = goal_status(profile=data, events=events, now=stamp)
     if status and int(status.get("related_count") or 0) > 0:
         items.append(_insight(
@@ -1144,8 +1632,13 @@ def current_insight(
     ]
     if not visible:
         return None
-    index = stamp.toordinal() % len(visible)
-    return visible[index]
+    windows = [item for item in visible if str(item.get("id") or "").startswith("window:")]
+    if windows:
+        chosen = dict(windows[0])
+    else:
+        chosen = dict(visible[stamp.toordinal() % len(visible)])
+    chosen["text"] = annotate_learned_line(str(chosen.get("text") or ""), str(chosen.get("topic") or ""), data)
+    return chosen
 
 
 def dismiss_insight(

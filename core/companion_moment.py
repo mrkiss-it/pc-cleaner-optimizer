@@ -258,7 +258,21 @@ def learn_from_chat(
         return None
     question = str(user_text or "").strip()
     answer = str(assistant_text or "").strip()
-    if len(question) < _MIN_USER_CHARS or len(answer) < _MIN_ANSWER_CHARS:
+    if len(question) < _MIN_USER_CHARS:
+        return None
+    stamp = now or datetime.now()
+    # A clear correction is one short line in the profile, even when the
+    # question is not a tracked topic. The assistant reply is never stored.
+    try:
+        _maybe_learn_correction(
+            question,
+            config_manager=config_manager,
+            base_dir=base_dir,
+            now=stamp,
+        )
+    except Exception:
+        pass
+    if len(answer) < _MIN_ANSWER_CHARS:
         return None
     topics = relevant_chat_topics(question, base_dir=base_dir)
     if not topics:
@@ -267,7 +281,6 @@ def learn_from_chat(
     clipped = _clip_question(question)
     if not clipped or clipped == "[redacted]":
         return None
-    stamp = now or datetime.now()
     summary = f"Bạn hỏi về {_topic_name(topic)}: {clipped}"
     try:
         from core.companion import record_app_event
@@ -290,6 +303,33 @@ def learn_from_chat(
         except Exception:
             pass
     return event
+
+
+def _maybe_learn_correction(
+    user_text: str,
+    *,
+    config_manager: Optional[Any] = None,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """Store a sanitized correction. Full transcripts and the assistant reply stay out."""
+    if not _cfg_enabled(config_manager):
+        return None
+    try:
+        from core.companion_profile import add_user_note, is_clear_correction
+    except Exception:
+        return None
+    if not is_clear_correction(user_text):
+        return None
+    # Ignore a bare "đừng" / "sai rồi". Keep one short sentence, not a transcript.
+    if len(sanitize_summary(user_text)) < 8:
+        return None
+    return add_user_note(
+        user_text,
+        source="chat",
+        base_dir=base_dir,
+        now=now,
+    )
 
 
 def learn_from_feedback(
@@ -528,13 +568,13 @@ def attach_insight_action(
     skill = None
     try:
         from core.companion import current_stage
-        from core.companion_profile import topic_asks_more
+        from core.companion_profile import effective_coaching
         stage = current_stage(config_manager=config_manager, base_dir=base_dir)
         profile = load_profile(base_dir)
         topic = str(insight.get("topic") or "")
-        coaching = str(profile.get("coaching") or "steady")
-        if topic_asks_more(topic, profile=profile):
-            coaching = "ask_more"
+        # Low trust and a muted / ask-more topic both land on ask_more here.
+        # High trust does not skip the stage gate inside resolve_insight_action.
+        coaching = effective_coaching(profile, topic=topic, base_dir=base_dir, now=now)
         skill = skill_for_insight(topic, base_dir=base_dir, now=now)
         action = resolve_insight_action(
             topic,
@@ -564,14 +604,28 @@ def stage_voice(
     *,
     coaching: str = "steady",
     may_propose: bool = True,
+    trust: str = "steady",
 ) -> Dict[str, str]:
-    """Short tone cue. Stage 0 stays shy; stage 3 may cite this machine."""
+    """Short tone cue. Stage 0 stays shy; stage 3 may cite this machine.
+
+    Trust sits on top of the global coaching flag and does not replace it:
+    low trust (accept/reject, see score_trust) uses the ask-more voice, so
+    action_cap_for_stage returns 0 and check-ins stay soft. High trust does
+    not raise the cap and does not set may_propose — stage ≥ 2 plus the
+    consent flag still decide, and BLOCKED_ACTION_KEYS stay out of the
+    allowlist. A topic mute is applied by the caller as coaching="ask_more"
+    and is not undone when trust is high.
+    """
     try:
         stage_n = max(0, min(3, int(stage)))
     except (TypeError, ValueError):
         stage_n = 0
     boldness, tone = _STAGE_VOICE[stage_n]
-    if coaching == "ask_more" and stage_n >= 1:
+    trust_level = str(trust or "steady")
+    if trust_level == "low" and stage_n >= 1:
+        boldness = "ask"
+        tone = "Bạn hay từ chối hoặc tắt gợi ý — hỏi thêm, đề xuất ít. " + tone
+    elif coaching == "ask_more" and stage_n >= 1:
         boldness = "ask"
         tone = "Phản hồi gần đây chưa khớp — hỏi thêm, đề xuất ít. " + tone
     elif stage_n >= 2 and not may_propose:
@@ -585,8 +639,14 @@ def stage_voice(
     return {"boldness": boldness, "tone_vi": tone, "policy_vi": tone, "aside_vi": aside}
 
 
-def action_cap_for_stage(stage: int, *, coaching: str = "steady", may_propose: bool = True) -> int:
-    voice = stage_voice(stage, coaching=coaching, may_propose=may_propose)
+def action_cap_for_stage(
+    stage: int,
+    *,
+    coaching: str = "steady",
+    may_propose: bool = True,
+    trust: str = "steady",
+) -> int:
+    voice = stage_voice(stage, coaching=coaching, may_propose=may_propose, trust=trust)
     if voice["boldness"] in ("shy", "ask"):
         return 0
     if voice["boldness"] == "suggest":
@@ -865,12 +925,21 @@ def compose_daily_checkin(
     stamp = now or datetime.now()
     try:
         from core.companion import current_stage
-        from core.companion_profile import active_muted_topics, topic_asks_more, topic_for_issue
+        from core.companion_profile import (
+            active_muted_topics,
+            active_time_windows,
+            annotate_learned_line,
+            effective_coaching,
+            score_trust,
+            topic_asks_more,
+            topic_for_issue,
+        )
         from core.companion_skills import load_skills
         stage = current_stage(config_manager=config_manager, base_dir=base_dir)
         profile = load_profile(base_dir)
         skills = load_skills(base_dir)
         events = recent_events(days=2, limit=0, base_dir=base_dir, now=stamp)
+        wider = recent_events(days=21, limit=0, base_dir=base_dir, now=stamp)
     except Exception:
         return None
     muted = set(active_muted_topics(now=stamp, profile=profile))
@@ -883,10 +952,13 @@ def compose_daily_checkin(
     has_local = bool(counts or (goal_text and goal_topic not in muted) or habits or skills)
     if stage.stage <= 0 and not has_local:
         return None
+    trust = score_trust(profile=profile, base_dir=base_dir, now=stamp)
+    coaching = effective_coaching(profile, base_dir=base_dir, now=stamp)
     voice = stage_voice(
         stage.stage,
-        coaching=str(profile.get("coaching") or "steady"),
+        coaching=coaching,
         may_propose=bool(stage.may_propose_actions),
+        trust=str(trust.get("level") or "steady"),
     )
     shy = voice.get("boldness") in ("shy", "ask")
     parts: List[str] = []
@@ -936,6 +1008,16 @@ def compose_daily_checkin(
             parts.append("Hôm qua máy này yên. Mình đang làm quen, chưa có gì mới để kể.")
         else:
             parts.append("Hôm qua máy này yên — mình chưa có gì mới để kể.")
+    if lead and lead not in muted:
+        for window in active_time_windows(wider, now=stamp, profile=profile):
+            if str(window.get("topic") or "") != lead:
+                continue
+            phrase = str(window.get("text") or "").strip()
+            if phrase and phrase not in " ".join(parts):
+                parts.append(phrase)
+            break
+    if str(trust.get("level") or "") == "low" and parts:
+        parts.append("Mình hỏi thêm, chưa đề xuất việc cần làm.")
     action = None
     skill_id = ""
     if (
@@ -952,7 +1034,7 @@ def compose_daily_checkin(
                 lead,
                 stage=stage.stage,
                 may_propose=True,
-                coaching=str(profile.get("coaching") or "steady"),
+                coaching=effective_coaching(profile, topic=lead, base_dir=base_dir, now=stamp),
                 prefer_key=str(getattr(skill, "action_key", "") or ""),
             )
         except Exception:
@@ -963,7 +1045,8 @@ def compose_daily_checkin(
             skill_id = str(getattr(skill, "id", "") or "")
         if action:
             parts.append("Có một việc an toàn nếu bạn muốn — mình không tự chạy.")
-    text = _clip_checkin(redact_sensitive(" ".join(parts)))
+    text = annotate_learned_line(" ".join(parts), lead, profile)
+    text = _clip_checkin(redact_sensitive(text))
     if not text:
         return None
     payload: Dict[str, Any] = {

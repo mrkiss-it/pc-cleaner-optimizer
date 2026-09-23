@@ -554,9 +554,15 @@ def confirm_clear_prompt(target: str) -> Dict[str, str]:
             "title": "Xóa hồ sơ thói quen?",
             "body": (
                 "Xóa hồ sơ thói quen local (điều AI nhớ về máy này). "
-                "Mục tiêu bạn đã gõ và nhật ký vẫn giữ. Không thể hoàn tác."
+                "Mục tiêu, lời bạn đã sửa và nhật ký vẫn giữ. Không thể hoàn tác."
             ),
             "ok": "Xóa hồ sơ",
+        }
+    if kind == "correction":
+        return {
+            "title": "Xóa lời đã sửa?",
+            "body": "Xóa câu bạn đã dạy mình. Mình sẽ không nhắc câu đó nữa. Không thể hoàn tác.",
+            "ok": "Xóa câu",
         }
     return {
         "title": "Xóa hết bộ nhớ local?",
@@ -953,10 +959,21 @@ def build_prompt_context(
     note = _clip(latest_reflection(base_dir) or "Chưa có sổ tay (chưa phản tỉnh hoặc cài mới).", 160)
     try:
         from core.companion_moment import stage_voice
+        from core.companion_profile import effective_coaching, score_trust
+        profile = parts.get("profile") or {}
+        asked = parts.get("topics") or []
+        voice_topic = asked[0] if len(asked) == 1 else ""
+        trust = score_trust(profile=profile, base_dir=base_dir, now=now)
         voice = stage_voice(
             stage.stage,
-            coaching=str((parts.get("profile") or {}).get("coaching") or "steady"),
+            coaching=effective_coaching(
+                profile,
+                topic=voice_topic,
+                base_dir=base_dir,
+                now=now,
+            ),
             may_propose=bool(stage.may_propose_actions),
+            trust=str(trust.get("level") or "steady"),
         )
         policy = voice["policy_vi"]
     except Exception:
@@ -983,9 +1000,19 @@ def build_prompt_context(
         muted_line = ""
     if muted_line:
         lines.append(muted_line)
+    try:
+        from core.companion_profile import format_user_note_lines
+        taught = format_user_note_lines(parts.get("profile"), parts.get("topics") or None, limit=2)
+    except Exception:
+        taught = []
     lines.extend([
         "Về máy này:",
         profile_text,
+    ])
+    if taught:
+        lines.append("Lời bạn đã dạy (chỉ nhắc đúng câu này, không bịa thêm phần cứng):")
+        lines.extend(f"- {line}" for line in taught)
+    lines.extend([
         "Mục tiêu:",
         goal_text,
         "Gợi ý máy này:",
@@ -1056,6 +1083,18 @@ def local_grounding_text(
         return " ".join(bits)
     if parts["profile_lines"]:
         bits.append("Về máy này: " + parts["profile_lines"][0])
+    try:
+        from core.companion_profile import format_user_note_lines
+        taught = format_user_note_lines(
+            parts.get("profile"),
+            parts.get("topics") or None,
+            limit=1,
+            include_style=not parts.get("topics"),
+        )
+    except Exception:
+        taught = []
+    if taught:
+        bits.append(taught[0])
     goal = parts.get("goal")
     topics = parts.get("topics") or []
     if goal and (not topics or goal.get("topic") in topics or set(goal.get("topics") or []) & set(topics)):
@@ -1128,20 +1167,26 @@ def companion_actions(
         return []
     try:
         from core.companion_moment import action_cap_for_stage
-        from core.companion_profile import load_profile
-        coaching = str(load_profile(base_dir).get("coaching") or "steady")
+        from core.companion_profile import effective_coaching, load_profile, score_trust
+        from core.companion_skills import BLOCKED_ACTION_KEYS
+        profile = load_profile(base_dir)
+        trust = score_trust(profile=profile, base_dir=base_dir)
+        # Low trust narrows the cap. High trust still needs stage.may_propose_actions
+        # above, and blocked keys are dropped below.
         cap = action_cap_for_stage(
             stage.stage,
-            coaching=coaching,
+            coaching=effective_coaching(profile, base_dir=base_dir),
             may_propose=True,
+            trust=str(trust.get("level") or "steady"),
         )
     except Exception:
         cap = 2
+        BLOCKED_ACTION_KEYS = frozenset()
     if cap <= 0:
         return []
     actions: List[Tuple[str, str]] = []
     for skill in match_skills(user_text=user_text, base_dir=base_dir, limit=cap):
-        if skill.action_key:
+        if skill.action_key and skill.action_key not in BLOCKED_ACTION_KEYS:
             actions.append((skill.action_key, skill.suggest[:48]))
     return actions[:cap]
 
@@ -1528,7 +1573,18 @@ def plan_companion_nudge(
     hints = [item for item in hints if not _nudge_topic_blocked(str(item.get("issue_class") or ""), base_dir, stamp)]
     if not hints:
         return None
-    chosen = hints[0]
+    chosen = dict(hints[0])
+    try:
+        from core.companion_profile import WINDOW_PHRASE, active_time_windows, load_profile, topic_for_issue
+        topic = topic_for_issue(str(chosen.get("issue_class") or ""))
+        windows = active_time_windows(events, now=stamp, profile=load_profile(base_dir))
+        if topic and any(str(item.get("topic") or "") == topic for item in windows):
+            message = str(chosen.get("text") or "").rstrip()
+            if WINDOW_PHRASE not in message:
+                message = f"{message} {WINDOW_PHRASE}."
+            chosen["text"] = _clip(message, 220)
+    except Exception:
+        pass
     state = load_state(base_dir)
     now_ts = stamp.timestamp()
     try:
