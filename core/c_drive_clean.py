@@ -7,10 +7,11 @@ Chỉ cộng byte đã xóa thật — không cộng ước lượng của mục
 """
 from __future__ import annotations
 
+import json
 import os
 import stat
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 ADMIN_SKIP_REASON_VI = (
     "Cần quyền Administrator — đã bỏ qua, không giải phóng và không tính dung lượng."
@@ -34,6 +35,13 @@ DEFAULT_LOW_DISK_FREE_PERCENT = 10.0
 DEFAULT_LOW_DISK_THRESHOLD_MODE = "gb"
 DEFAULT_LOW_DISK_TOAST_COOLDOWN_SEC = 1800
 DEFAULT_DOWNLOADS_MIN_AGE_DAYS = 30
+DEFAULT_LARGE_FILE_MIN_BYTES = 100 * 1024 * 1024
+DEFAULT_LARGE_FILE_MAX_DEPTH = 8
+DEFAULT_LARGE_FILE_MAX_RESULTS = 300
+DEFAULT_LARGE_FILE_MAX_VISITED = 20000
+DEFAULT_LARGE_FILE_MAX_SECONDS = 12.0
+CLEAN_HISTORY_KEEP = 8
+CLEAN_HISTORY_ENV = "PCAUTOCLEANER_C_DRIVE_HISTORY_PATH"
 
 # Tên thư mục không bao giờ được dọn, dù nằm sâu bên trong một mục cache.
 _BLOCKED_DIR_NAMES = frozenset({
@@ -153,6 +161,59 @@ _SENSITIVE_DIR_NAMES = frozenset({
     "local extension settings",
     "unsavedfiles",
 })
+_VS_TEMP_DIR_NAMES = frozenset({
+    "componentmodelcache",
+    "cache",
+    "temporary",
+    "temp",
+})
+_LARGE_SKIP_DIR_NAMES = frozenset({
+    "node_modules",
+    ".git",
+    ".svn",
+    "pnpm",
+    "pnpm-store",
+    ".pnpm-store",
+    "appdata",
+    "application data",
+})
+_BROWSER_DB_FILENAMES = frozenset({
+    "cookies",
+    "cookies-journal",
+    "login data",
+    "login data-journal",
+    "login data for account",
+    "login data for account-journal",
+    "web data",
+    "web data-journal",
+    "history",
+    "history-journal",
+    "history provider cache",
+    "favicons",
+    "favicons-journal",
+    "top sites",
+    "top sites-journal",
+    "shortcuts",
+    "shortcuts-journal",
+    "network action predictor",
+    "places.sqlite",
+    "places.sqlite-wal",
+    "places.sqlite-shm",
+    "cookies.sqlite",
+    "cookies.sqlite-wal",
+    "cookies.sqlite-shm",
+    "formhistory.sqlite",
+    "formhistory.sqlite-wal",
+    "webappsstore.sqlite",
+    "webappsstore.sqlite-wal",
+    "permissions.sqlite",
+    "cert9.db",
+    "key4.db",
+    "logins.json",
+    "logins-backup.json",
+    "signons.sqlite",
+    "sessionstore.jsonlz4",
+})
 _EBWEBVIEW_SKIP = frozenset({
     "temp",
     "tmp",
@@ -205,6 +266,10 @@ TARGET_ORDER: Sequence[str] = (
     "shader_cache",
     "crash_dumps",
     "app_caches",
+    "toolchain_caches",
+    "nuget_packages",
+    "gradle_caches",
+    "cargo_cache",
     "office_cache",
     "office_file_cache",
     "store_cache",
@@ -294,6 +359,60 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
         scope="user",
         risk="safe",
         default_enabled=True,
+        clean_mode="contents",
+    ),
+    "toolchain_caches": _meta(
+        label_vi="Cache công cụ build (Yarn, NuGet HTTP, Gradle tạm, Scoop, VS)",
+        description_vi=(
+            "Chỉ cache tạo lại được: Yarn Cache, cache HTTP của NuGet (v3-cache), "
+            "pip trong .cache\\pip, npm _cacache, thư mục caches\\tmp của Gradle, "
+            "cache tải về của Scoop và Chocolatey trong hồ sơ của bạn, cùng "
+            "ComponentModelCache / Cache / Temporary / Temp ngay trong thư mục phiên bản "
+            "Visual Studio. Không xóa kho pnpm, không xóa .nuget\\packages, không xóa cả "
+            ".gradle\\caches và không xóa registry index của Cargo."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "nuget_packages": _meta(
+        label_vi="Gói NuGet đã tải (tắt mặc định)",
+        description_vi=(
+            "Chỉ %USERPROFILE%\\.nuget\\packages. Restore có thể tải lại, nhưng sẽ chậm "
+            "hoặc thất bại khi không có mạng. Tắt mặc định. Cache HTTP của NuGet nằm ở mục "
+            "cache công cụ, không phải mục này."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+    ),
+    "gradle_caches": _meta(
+        label_vi="Cache Gradle đầy đủ (tắt mặc định)",
+        description_vi=(
+            "Cả %USERPROFILE%\\.gradle\\caches. Lần build sau sẽ tải lại phần đã xóa. "
+            "Tắt mặc định vì thư mục thường rất lớn. Riêng caches\\tmp đã được dọn ở mục "
+            "cache công cụ khi mục này đang tắt."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+    ),
+    "cargo_cache": _meta(
+        label_vi="Cache crate Cargo (tắt mặc định)",
+        description_vi=(
+            "Chỉ %USERPROFILE%\\.cargo\\registry\\cache. Không xóa registry\\index, "
+            "thư mục git hay bin. Tắt mặc định vì bản đã tải giúp build khi không có mạng."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
         clean_mode="contents",
     ),
     "shell_font_cache": _meta(
@@ -758,6 +877,73 @@ def _app_cache_paths(local_app_data: str, app_data: str) -> List[str]:
     return found
 
 
+def _list_child_dirs(parent: str) -> List[str]:
+    if not parent or not _exists(parent) or os.path.islink(parent) or not os.path.isdir(parent):
+        return []
+    if path_is_forbidden(parent):
+        return []
+    try:
+        names = list(os.listdir(parent))
+    except OSError:
+        return []
+    found: List[str] = []
+    for name in names:
+        child = os.path.join(parent, name)
+        if os.path.isdir(child) and not os.path.islink(child) and not path_is_forbidden(child):
+            found.append(child)
+    return found
+
+
+def _visual_studio_temp_dirs(local_app_data: str) -> List[str]:
+    """Chỉ thư mục tạm/cache ngay dưới từng phiên bản Visual Studio. Không đụng Extensions."""
+    root = os.path.join(local_app_data, "Microsoft", "VisualStudio")
+    found: List[str] = []
+    for version_dir in _list_child_dirs(root):
+        if path_has_sensitive_data(version_dir):
+            continue
+        try:
+            names = list(os.listdir(version_dir))
+        except OSError:
+            continue
+        for name in names:
+            if name.lower() not in _VS_TEMP_DIR_NAMES:
+                continue
+            _append_if_dir(found, os.path.join(version_dir, name))
+    return found
+
+
+def _gradle_tmp_dirs(user_profile: str) -> List[str]:
+    caches = os.path.join(user_profile, ".gradle", "caches")
+    found: List[str] = []
+    _append_if_dir(found, os.path.join(caches, "tmp"))
+    for child in _list_child_dirs(caches):
+        _append_if_dir(found, os.path.join(child, "tmp"))
+    return found
+
+
+def _toolchain_cache_paths(local_app_data: str, app_data: str, user_profile: str) -> List[str]:
+    """
+    Cache tạo lại được. Không gồm kho pnpm, .nuget\\packages, cả .gradle\\caches
+    hay registry index của Cargo — các mục đó có khóa riêng (mặc định tắt) hoặc bị bỏ.
+    """
+    found: List[str] = []
+    if local_app_data and not path_is_forbidden(local_app_data):
+        _append_if_dir(found, os.path.join(local_app_data, "Yarn", "Cache"))
+        _append_if_dir(found, os.path.join(local_app_data, "NuGet", "v3-cache"))
+        _append_if_dir(found, os.path.join(local_app_data, "NuGet", "Cache"))
+        _append_if_dir(found, os.path.join(local_app_data, "Chocolatey", "cache"))
+        _append_if_dir(found, os.path.join(local_app_data, "scoop", "cache"))
+        found.extend(_visual_studio_temp_dirs(local_app_data))
+    if app_data and not path_is_forbidden(app_data):
+        _append_if_dir(found, os.path.join(app_data, "Yarn", "Cache"))
+    if user_profile and not path_is_forbidden(user_profile):
+        _append_if_dir(found, os.path.join(user_profile, ".cache", "pip"))
+        _append_if_dir(found, os.path.join(user_profile, ".npm", "_cacache"))
+        _append_if_dir(found, os.path.join(user_profile, "scoop", "cache"))
+        found.extend(_gradle_tmp_dirs(user_profile))
+    return found
+
+
 def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, List[str]]:
     """
     Tập đường dẫn có thể dọn. environ=None dùng môi trường thật.
@@ -862,8 +1048,17 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
             targets["browser_cache"].extend(_chromium_caches(root))
 
     targets["app_caches"].extend(_app_cache_paths(local_app_data, app_data))
+    targets["toolchain_caches"].extend(
+        _toolchain_cache_paths(local_app_data, app_data, user_profile)
+    )
 
     if user_profile and not path_is_forbidden(user_profile):
+        _append_if_dir(targets["nuget_packages"], os.path.join(user_profile, ".nuget", "packages"))
+        _append_if_dir(targets["gradle_caches"], os.path.join(user_profile, ".gradle", "caches"))
+        _append_if_dir(
+            targets["cargo_cache"],
+            os.path.join(user_profile, ".cargo", "registry", "cache"),
+        )
         downloads = os.path.join(user_profile, "Downloads")
         if (
             _exists(downloads)
@@ -1427,6 +1622,40 @@ def _estimate_target_size(
     return {"size_bytes": total, "file_count": count}
 
 
+def prune_nested_target_paths(
+    target_paths: Dict[str, List[str]],
+    active_keys: Sequence[str],
+) -> Dict[str, List[str]]:
+    """Bỏ đường dẫn nằm trong đường dẫn khác để không cộng byte hai lần."""
+    entries: List[tuple] = []
+    for key in active_keys:
+        for path in target_paths.get(key, []) or []:
+            if not path:
+                continue
+            try:
+                abs_path = os.path.normcase(os.path.abspath(path))
+            except (OSError, ValueError):
+                continue
+            entries.append((key, path, abs_path))
+    drop = set()
+    for index, (_key, _path, abs_path) in enumerate(entries):
+        for other, (_other_key, _other_path, other_abs) in enumerate(entries):
+            if index == other:
+                continue
+            if abs_path == other_abs:
+                if index > other:
+                    drop.add(index)
+                continue
+            if _within_root(abs_path, other_abs):
+                drop.add(index)
+                break
+    pruned: Dict[str, List[str]] = {key: [] for key in active_keys}
+    for index, (key, path, _abs_path) in enumerate(entries):
+        if index not in drop:
+            pruned[key].append(path)
+    return pruned
+
+
 def estimate_reclaimable(
     enabled_targets: Optional[Dict[str, bool]],
     *,
@@ -1453,6 +1682,8 @@ def estimate_reclaimable(
     )
     moment = time.time() if now_ts is None else float(now_ts)
     skipped_by_key = {item["key"]: item for item in plan["skipped"]}
+    active_keys = [key for key in TARGET_ORDER if plan["to_run"].get(key)]
+    pruned_paths = prune_nested_target_paths(target_paths, active_keys)
     rows: List[Dict[str, Any]] = []
     total_bytes = 0
     total_files = 0
@@ -1466,7 +1697,7 @@ def estimate_reclaimable(
         measured = _estimate_target_size(
             key,
             meta,
-            target_paths,
+            pruned_paths if will_run else target_paths,
             min_age_days=days,
             now_ts=moment,
             recycle_info=recycle_info,
@@ -1635,3 +1866,494 @@ def format_clean_report_vi(result: Dict[str, Any]) -> str:
             continue
         lines.append("• " + format_target_line_vi(item))
     return "\n".join(lines).strip()
+
+
+def path_is_browser_profile_db(path: str) -> bool:
+    """True nếu tệp là DB hồ sơ trình duyệt (cookie, đăng nhập, lịch sử)."""
+    if not path:
+        return False
+    return os.path.basename(path).lower() in _BROWSER_DB_FILENAMES
+
+
+def format_age_vi(age_days: int) -> str:
+    days = max(0, int(age_days or 0))
+    if days <= 0:
+        return "hôm nay"
+    if days == 1:
+        return "1 ngày"
+    return f"{days} ngày"
+
+
+def _large_file_skip_reason(
+    path: str,
+    *,
+    user_profile: str,
+    local_app_data: str,
+    system_root: str,
+) -> str:
+    """Lý do tiếng Việt nếu không được xóa. Chuỗi rỗng nghĩa là tệp được phép."""
+    if not path:
+        return "Đường dẫn trống — không xóa."
+    if os.path.islink(path):
+        return "Liên kết tượng trưng — không xóa."
+    if path_is_forbidden(path):
+        return PROTECTED_REASON_VI
+    if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
+        return TOO_BROAD_REASON_VI
+    if user_profile and _is_onedrive_sync_path(path, user_profile):
+        return SYNC_ROOT_REASON_VI
+    if path_has_sensitive_data(path) or path_is_browser_profile_db(path):
+        return "Cơ sở dữ liệu trình duyệt hoặc dữ liệu hồ sơ — không xóa."
+    if system_root and _within_root(path, system_root):
+        return PROTECTED_REASON_VI
+    under_profile = bool(user_profile) and _within_root(path, user_profile)
+    under_local = bool(local_app_data) and _within_root(path, local_app_data)
+    if not under_profile and not under_local:
+        return "Nằm ngoài hồ sơ người dùng — không xóa."
+    if os.path.isdir(path):
+        return "Chỉ xóa tệp, không xóa thư mục."
+    if not os.path.isfile(path):
+        return "Tệp không còn trên đĩa."
+    return ""
+
+
+def _large_scan_skip_dir(path: str, *, user_profile: str) -> bool:
+    name = os.path.basename(path).lower()
+    if name in _BLOCKED_DIR_NAMES or name in _LARGE_SKIP_DIR_NAMES:
+        return True
+    if path_is_forbidden(path) or path_has_sensitive_data(path):
+        return True
+    if user_profile and _is_onedrive_sync_path(path, user_profile):
+        return True
+    return False
+
+
+def large_file_scan_roots(
+    environ: Optional[Dict[str, str]] = None,
+    *,
+    include_local_appdata: bool = False,
+) -> List[str]:
+    """Hồ sơ người dùng, và LocalAppData khi người dùng bật thêm."""
+    user_profile = _env(environ, "USERPROFILE")
+    local_app_data = _env(environ, "LOCALAPPDATA")
+    roots: List[str] = []
+    if (
+        user_profile
+        and _exists(user_profile)
+        and os.path.isdir(user_profile)
+        and not os.path.islink(user_profile)
+        and not path_is_forbidden(user_profile)
+    ):
+        roots.append(user_profile)
+    if (
+        include_local_appdata
+        and local_app_data
+        and _exists(local_app_data)
+        and os.path.isdir(local_app_data)
+        and not os.path.islink(local_app_data)
+        and not path_is_forbidden(local_app_data)
+    ):
+        roots.append(local_app_data)
+    return _dedupe(roots)
+
+
+def scan_large_user_files(
+    *,
+    environ: Optional[Dict[str, str]] = None,
+    min_bytes: Optional[int] = None,
+    min_age_days: int = 0,
+    include_local_appdata: bool = False,
+    max_depth: int = DEFAULT_LARGE_FILE_MAX_DEPTH,
+    max_results: int = DEFAULT_LARGE_FILE_MAX_RESULTS,
+    max_visited: int = DEFAULT_LARGE_FILE_MAX_VISITED,
+    max_seconds: float = DEFAULT_LARGE_FILE_MAX_SECONDS,
+    now_ts: Optional[float] = None,
+    progress_callback: Optional[Callable[[str, int], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> Dict[str, Any]:
+    """
+    Tìm tệp lớn trong hồ sơ người dùng. Không xóa.
+    Mỗi dòng selected=False — người dùng phải chọn rồi xác nhận mới xóa.
+    """
+    try:
+        threshold = int(DEFAULT_LARGE_FILE_MIN_BYTES if min_bytes is None else min_bytes)
+    except (TypeError, ValueError):
+        threshold = DEFAULT_LARGE_FILE_MIN_BYTES
+    if threshold <= 0:
+        threshold = DEFAULT_LARGE_FILE_MIN_BYTES
+    try:
+        age_limit = int(min_age_days or 0)
+    except (TypeError, ValueError):
+        age_limit = 0
+    if age_limit < 0:
+        age_limit = 0
+    depth_cap = max(1, int(max_depth or DEFAULT_LARGE_FILE_MAX_DEPTH))
+    result_cap = max(1, int(max_results or DEFAULT_LARGE_FILE_MAX_RESULTS))
+    visit_cap = max(1, int(max_visited or DEFAULT_LARGE_FILE_MAX_VISITED))
+    try:
+        time_cap = float(max_seconds if max_seconds is not None else DEFAULT_LARGE_FILE_MAX_SECONDS)
+    except (TypeError, ValueError):
+        time_cap = DEFAULT_LARGE_FILE_MAX_SECONDS
+    if time_cap <= 0:
+        time_cap = DEFAULT_LARGE_FILE_MAX_SECONDS
+
+    user_profile = _env(environ, "USERPROFILE")
+    local_app_data = _env(environ, "LOCALAPPDATA")
+    system_root = _env(environ, "SystemRoot") or _env(environ, "SYSTEMROOT")
+    moment = time.time() if now_ts is None else float(now_ts)
+    roots = large_file_scan_roots(environ, include_local_appdata=include_local_appdata)
+    found: List[Dict[str, Any]] = []
+    visited = 0
+    truncated = False
+    truncate_reason = ""
+    started = time.monotonic()
+    seen_dirs = set()
+    cancelled = False
+
+    def _report(pct: int) -> None:
+        if not progress_callback:
+            return
+        try:
+            progress_callback(
+                f"Đang quét… đã xem {visited} tệp, thấy {len(found)} tệp lớn.",
+                max(0, min(99, int(pct))),
+            )
+        except Exception:
+            pass
+
+    for root in roots:
+        if cancelled or truncated:
+            break
+        try:
+            root_key = os.path.normcase(os.path.abspath(root))
+        except (OSError, ValueError):
+            continue
+        stack = [(root, 0)]
+        while stack:
+            if cancel_check and cancel_check():
+                cancelled = True
+                truncate_reason = "Đã dừng quét theo yêu cầu."
+                truncated = True
+                break
+            if time.monotonic() - started >= time_cap:
+                truncated = True
+                truncate_reason = "Đã dừng sớm để giao diện không bị đơ (hết thời gian quét)."
+                break
+            current, depth = stack.pop()
+            try:
+                current_key = os.path.normcase(os.path.abspath(current))
+            except (OSError, ValueError):
+                continue
+            if current_key in seen_dirs:
+                continue
+            seen_dirs.add(current_key)
+            if current != root and _large_scan_skip_dir(current, user_profile=user_profile):
+                continue
+            if path_is_forbidden(current) or (user_profile and _is_onedrive_sync_path(current, user_profile)):
+                continue
+            try:
+                names = list(os.listdir(current))
+            except OSError:
+                continue
+            for name in names:
+                child = os.path.join(current, name)
+                if os.path.islink(child):
+                    continue
+                try:
+                    is_dir = os.path.isdir(child)
+                except OSError:
+                    continue
+                if is_dir:
+                    if depth >= depth_cap:
+                        continue
+                    if _large_scan_skip_dir(child, user_profile=user_profile):
+                        continue
+                    stack.append((child, depth + 1))
+                    continue
+                if not os.path.isfile(child):
+                    continue
+                visited += 1
+                if visited > visit_cap:
+                    truncated = True
+                    truncate_reason = "Đã dừng sớm vì đã xem quá nhiều tệp."
+                    break
+                if visited % 250 == 0:
+                    _report(int(visited * 100 / visit_cap))
+                if _large_file_skip_reason(
+                    child,
+                    user_profile=user_profile,
+                    local_app_data=local_app_data,
+                    system_root=system_root,
+                ):
+                    continue
+                size = _file_size(child)
+                if size < threshold:
+                    continue
+                if age_limit > 0 and not file_is_old_enough(child, age_limit, moment):
+                    continue
+                try:
+                    mtime = float(os.path.getmtime(child))
+                except OSError:
+                    continue
+                age_days = max(0, int((moment - mtime) // 86400))
+                found.append({
+                    "path": child,
+                    "name": name,
+                    "size_bytes": size,
+                    "size_label_vi": format_freed_vi(size),
+                    "age_days": age_days,
+                    "age_label_vi": format_age_vi(age_days),
+                    "mtime": mtime,
+                    "selected": False,
+                })
+            if truncated:
+                break
+
+    found.sort(key=lambda row: (-int(row["size_bytes"]), str(row["path"]).lower()))
+    if len(found) > result_cap:
+        found = found[:result_cap]
+        truncated = True
+        if not truncate_reason:
+            truncate_reason = "Chỉ hiện các tệp lớn nhất trong giới hạn danh sách."
+    if progress_callback:
+        try:
+            progress_callback(f"Quét xong: {len(found)} tệp lớn. Chưa xóa tệp nào.", 100)
+        except Exception:
+            pass
+    return {
+        "files": found,
+        "truncated": truncated,
+        "cancelled": cancelled,
+        "truncate_reason_vi": truncate_reason,
+        "visited_files": visited,
+        "roots": roots,
+        "min_bytes": threshold,
+        "min_age_days": age_limit,
+        "include_local_appdata": bool(include_local_appdata),
+        "deleted": False,
+    }
+
+
+def delete_large_files(
+    paths: Sequence[str],
+    *,
+    environ: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Xóa đúng các tệp được truyền vào. Quét không gọi hàm này."""
+    user_profile = _env(environ, "USERPROFILE")
+    local_app_data = _env(environ, "LOCALAPPDATA")
+    system_root = _env(environ, "SystemRoot") or _env(environ, "SYSTEMROOT")
+    freed = 0
+    deleted_files = 0
+    skipped_locked = 0
+    deleted: List[str] = []
+    skipped: List[Dict[str, str]] = []
+    seen = set()
+    for raw in paths or []:
+        path = str(raw or "")
+        try:
+            key = os.path.normcase(os.path.abspath(path)) if path else ""
+        except (OSError, ValueError):
+            key = path
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        reason = _large_file_skip_reason(
+            path,
+            user_profile=user_profile,
+            local_app_data=local_app_data,
+            system_root=system_root,
+        )
+        if reason:
+            skipped.append({"path": path, "reason": reason})
+            continue
+        part = try_delete_file(path)
+        if int(part.get("deleted_files") or 0) and int(part.get("freed_bytes") or 0) >= 0 and not os.path.exists(path):
+            freed += int(part.get("freed_bytes") or 0)
+            deleted_files += 1
+            deleted.append(path)
+            continue
+        if int(part.get("skipped_locked") or 0):
+            skipped_locked += 1
+            skipped.append({"path": path, "reason": LOCKED_REASON_VI})
+            continue
+        skipped.append({"path": path, "reason": "Không xóa được tệp này. Không tính dung lượng."})
+    lines = [
+        f"Đã xóa {deleted_files} tệp ({format_freed_vi(freed)}).",
+    ]
+    if skipped_locked:
+        lines.append(f"Bỏ qua {skipped_locked} tệp đang khóa — không tính phần chưa xóa.")
+    other = len(skipped) - skipped_locked
+    if other > 0:
+        lines.append(f"Bỏ qua {other} tệp không an toàn hoặc không còn trên đĩa.")
+    if deleted_files == 0 and not skipped:
+        lines = ["Chưa chọn tệp nào. Không có gì bị xóa."]
+    return {
+        "freed_bytes": freed,
+        "deleted_files": deleted_files,
+        "skipped_locked": skipped_locked,
+        "deleted": deleted,
+        "skipped": skipped,
+        "report_vi": " ".join(lines),
+    }
+
+
+def _bytes_to_gb(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return round(int(value) / (1024 ** 3), 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def _history_timestamp(now_ts: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(float(now_ts)))
+
+
+def _display_history_timestamp(timestamp: str) -> str:
+    text = str(timestamp or "").strip()
+    try:
+        parsed = time.strptime(text, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return text or "không rõ thời điểm"
+    return time.strftime("%d/%m/%Y %H:%M", parsed)
+
+
+def _gb_label(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "?"
+    if number >= 10:
+        return f"{number:.1f}"
+    return f"{number:.2f}"
+
+
+def clean_history_file(path: Optional[str] = None) -> str:
+    if path:
+        return path
+    override = os.environ.get(CLEAN_HISTORY_ENV, "").strip()
+    if override:
+        return override
+    from config_manager import user_data_dir
+    return os.path.join(user_data_dir(), "c_drive_clean_history.json")
+
+
+def _skipped_admin_count(result: Dict[str, Any]) -> int:
+    skipped = result.get("skipped") or []
+    count = 0
+    if isinstance(skipped, list) and skipped:
+        for item in skipped:
+            if isinstance(item, dict) and item.get("needs_admin"):
+                count += 1
+        return count
+    details = result.get("details") or {}
+    if isinstance(details, dict):
+        for detail in details.values():
+            if (
+                isinstance(detail, dict)
+                and detail.get("status") == "skipped"
+                and detail.get("needs_admin")
+            ):
+                count += 1
+    return count
+
+
+def history_record_from_result(
+    result: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+) -> Dict[str, Any]:
+    moment = time.time() if now_ts is None else float(now_ts)
+    data = result if isinstance(result, dict) else {}
+    return {
+        "timestamp": _history_timestamp(moment),
+        "freed_bytes": max(0, int(data.get("total_freed_bytes") or 0)),
+        "free_gb_before": _bytes_to_gb(data.get("free_bytes_before")),
+        "free_gb_after": _bytes_to_gb(data.get("free_bytes_after")),
+        "skipped_admin_count": _skipped_admin_count(data),
+    }
+
+
+def load_clean_history(path: Optional[str] = None) -> List[Dict[str, Any]]:
+    file_path = clean_history_file(path)
+    if not file_path or not os.path.isfile(file_path):
+        return []
+    try:
+        with open(file_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    items = payload.get("items") if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        return []
+    rows: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            freed = max(0, int(item.get("freed_bytes") or 0))
+        except (TypeError, ValueError):
+            freed = 0
+        try:
+            skipped = max(0, int(item.get("skipped_admin_count") or 0))
+        except (TypeError, ValueError):
+            skipped = 0
+        rows.append({
+            "timestamp": str(item.get("timestamp") or ""),
+            "freed_bytes": freed,
+            "free_gb_before": item.get("free_gb_before"),
+            "free_gb_after": item.get("free_gb_after"),
+            "skipped_admin_count": skipped,
+        })
+    return rows[:CLEAN_HISTORY_KEEP]
+
+
+def append_clean_history(
+    result: Dict[str, Any],
+    *,
+    path: Optional[str] = None,
+    now_ts: Optional[float] = None,
+    limit: int = CLEAN_HISTORY_KEEP,
+) -> List[Dict[str, Any]]:
+    """Ghi một lần dọn ổ C vào JSON cục bộ. Giữ tối đa `limit` bản mới nhất."""
+    keep = max(1, int(limit or CLEAN_HISTORY_KEEP))
+    record = history_record_from_result(result, now_ts=now_ts)
+    rows = [record] + load_clean_history(path)
+    rows = rows[:keep]
+    file_path = clean_history_file(path)
+    payload = {"version": 1, "items": rows}
+    try:
+        parent = os.path.dirname(os.path.abspath(file_path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        temporary = file_path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        os.replace(temporary, file_path)
+    except OSError:
+        return rows
+    return rows
+
+
+def format_clean_history_line_vi(row: Dict[str, Any]) -> str:
+    freed = format_freed_vi(int(row.get("freed_bytes") or 0))
+    before = row.get("free_gb_before")
+    after = row.get("free_gb_after")
+    if before is not None and after is not None:
+        space = f"trống {_gb_label(before)} → {_gb_label(after)} GB"
+    else:
+        space = "không đọc được dung lượng trống"
+    skipped = int(row.get("skipped_admin_count") or 0)
+    return (
+        f"{_display_history_timestamp(str(row.get('timestamp') or ''))} — "
+        f"đã xóa {freed} — {space} — bỏ qua {skipped} mục cần Admin"
+    )
+
+
+def format_clean_history_vi(rows: Optional[Sequence[Dict[str, Any]]] = None) -> str:
+    items = list(rows or [])
+    if not items:
+        return "Chưa có lần dọn ổ C nào trên máy này."
+    return "\n".join("• " + format_clean_history_line_vi(row) for row in items[:CLEAN_HISTORY_KEEP])

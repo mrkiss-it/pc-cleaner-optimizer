@@ -22,6 +22,7 @@ from core.c_drive_clean import (
     format_freed_vi,
     is_process_elevated,
     normalize_downloads_min_age_days,
+    prune_nested_target_paths,
     read_c_drive_free_bytes,
     resolve_clean_plan,
     scan_old_files,
@@ -319,6 +320,7 @@ class JunkCleaner:
             detail_order.append(key)
 
         runnable = [key for key in TARGET_ORDER if plan["to_run"].get(key)]
+        pruned_paths = prune_nested_target_paths(target_paths, runnable)
         pct_step = 80 // max(1, len(runnable))
         current_pct = 8
 
@@ -341,7 +343,7 @@ class JunkCleaner:
                         "too_broad": 0,
                         "sync_root": 0,
                     }
-                    for path in target_paths.get(cat_key, []):
+                    for path in pruned_paths.get(cat_key, []):
                         part = clean_one_path(
                             path,
                             clean_mode=meta["clean_mode"],

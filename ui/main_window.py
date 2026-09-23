@@ -718,8 +718,9 @@ class MainWindow(QMainWindow):
         self.btn_deep_c.setCursor(Qt.PointingHandCursor)
         self.btn_deep_c.setToolTip(
             "Quét trước, hiện dung lượng từng mục, chỉ xóa sau khi bạn bấm «Dọn ngay». "
-            "Gồm temp, cache trình duyệt, WebView2, thumbnail, shader, crash dump "
-            "và cache ứng dụng của tài khoản này. Không cần quyền Administrator. "
+            "Gồm temp, cache trình duyệt, WebView2, thumbnail, shader, crash dump, "
+            "cache ứng dụng và cache công cụ build tạo lại được của tài khoản này. "
+            "Không cần quyền Administrator. "
             "Thùng rác và tệp cũ trong Downloads chỉ chạy khi bạn đang bật các mục đó. "
             "Mục «Cần Admin» bị bỏ qua và không được tính là đã giải phóng."
         )
@@ -737,9 +738,58 @@ class MainWindow(QMainWindow):
             QPushButton:disabled { background-color: #134e4a; color: #99f6e4; }
         """)
         self.btn_deep_c.clicked.connect(self.start_deep_c_clean)
+
+        self.btn_find_large = QPushButton("Tìm file lớn")
+        self.btn_find_large.setCursor(Qt.PointingHandCursor)
+        self.btn_find_large.setToolTip(
+            "Quét file lớn trong hồ sơ của bạn. Không xóa cho đến khi bạn chọn và xác nhận. "
+            "Không chạy cùng «Dọn ổ C»."
+        )
+        self.btn_find_large.setStyleSheet("""
+            QPushButton {
+                background-color: #334155;
+                color: #e2e8f0;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 10px 16px;
+                border-radius: 8px;
+                border: 1px solid #475569;
+            }
+            QPushButton:hover { background-color: #475569; }
+            QPushButton:disabled { background-color: #1e293b; color: #94a3b8; }
+        """)
+        self.btn_find_large.clicked.connect(self.open_large_file_finder)
         deep_row.addWidget(self.btn_scan_c, stretch=2)
         deep_row.addWidget(self.btn_deep_c, stretch=3)
+        deep_row.addWidget(self.btn_find_large, stretch=2)
         layout.addLayout(deep_row)
+
+        self.c_history_card = QFrame()
+        self.c_history_card.setObjectName("CDriveHistoryCard")
+        self.c_history_card.setStyleSheet("""
+            QFrame#CDriveHistoryCard {
+                background-color: #0f172a;
+                border: 1px solid #334155;
+                border-radius: 10px;
+            }
+        """)
+        history_layout = QVBoxLayout(self.c_history_card)
+        history_layout.setContentsMargins(14, 10, 14, 10)
+        history_layout.setSpacing(4)
+        self.lbl_c_history_title = QLabel("Lần dọn gần đây")
+        self.lbl_c_history_title.setStyleSheet(
+            "color: #e2e8f0; font-size: 13px; font-weight: 700; background: transparent; border: none;"
+        )
+        self.lbl_c_history = QLabel("Chưa có lần dọn ổ C nào trên máy này.")
+        self.lbl_c_history.setWordWrap(True)
+        self.lbl_c_history.setTextFormat(Qt.PlainText)
+        self.lbl_c_history.setStyleSheet(
+            "color: #94a3b8; font-size: 12px; background: transparent; border: none;"
+        )
+        history_layout.addWidget(self.lbl_c_history_title)
+        history_layout.addWidget(self.lbl_c_history)
+        layout.addWidget(self.c_history_card)
+        self._refresh_c_drive_history()
 
         # Row 3: Specialized Utility & Optimization Tools
         btn_row2 = QHBoxLayout()
@@ -2623,6 +2673,13 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self.refresh_history_table()
+            if deep:
+                try:
+                    from core.c_drive_clean import append_clean_history
+                    append_clean_history(clean_res)
+                    self._refresh_c_drive_history()
+                except Exception:
+                    pass
             if hasattr(self, "_ai_advisor"):
                 self._ai_advisor.invalidate_cache()
                 self._update_ai_badge()
@@ -2670,6 +2727,8 @@ class MainWindow(QMainWindow):
             self.btn_deep_c.setEnabled(enabled)
         if hasattr(self, "btn_scan_c"):
             self.btn_scan_c.setEnabled(enabled)
+        if hasattr(self, "btn_find_large"):
+            self.btn_find_large.setEnabled(enabled)
         if hasattr(self, "btn_disk_low_clean"):
             self.btn_disk_low_clean.setEnabled(enabled)
         if hasattr(self, "btn_large_files"):
@@ -2689,6 +2748,20 @@ class MainWindow(QMainWindow):
         if hasattr(self, "btn_tweaks"):
             self.btn_tweaks.setEnabled(enabled)
 
+
+    def _refresh_c_drive_history(self):
+        if not hasattr(self, "lbl_c_history"):
+            return
+        try:
+            from core.c_drive_clean import format_clean_history_vi, load_clean_history
+            self.lbl_c_history.setText(format_clean_history_vi(load_clean_history()))
+        except Exception:
+            self.lbl_c_history.setText("Chưa có lần dọn ổ C nào trên máy này.")
+
+    def open_large_file_finder(self):
+        from ui.large_file_finder_dialog import LargeFileFinderDialog
+        dialog = LargeFileFinderDialog(self)
+        dialog.exec_()
 
     def open_large_files_dialog(self):
         dialog = LargeFilesDialog(self)

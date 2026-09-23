@@ -36,14 +36,20 @@ from core.c_drive_clean import (
     SYNC_ROOT_REASON_VI,
     LowDiskToastGate,
     TARGET_CATALOG,
+    TARGET_ORDER,
+    append_clean_history,
     build_low_disk_notice,
     build_target_paths,
     clean_one_path,
     default_target_flags,
+    delete_large_files,
     estimate_reclaimable,
+    format_clean_history_vi,
     is_disk_space_low,
     is_process_elevated,
+    load_clean_history,
     path_is_forbidden,
+    scan_large_user_files,
 )
 from core.cleaner import JunkCleaner
 
@@ -107,6 +113,11 @@ def test_version_stays_386():
 def test_catalog_defaults_match_config():
     flags = default_target_flags()
     assert DEFAULT_CONFIG["targets"] == flags
+    assert "toolchain_caches" in TARGET_ORDER
+    assert flags["toolchain_caches"] is True
+    assert flags["nuget_packages"] is False
+    assert flags["gradle_caches"] is False
+    assert flags["cargo_cache"] is False
     assert flags["user_temp"] is True
     assert flags["thumbnail_cache"] is True
     assert flags["browser_cache"] is True
@@ -762,6 +773,328 @@ def test_deep_report_shows_free_space_delta_and_claimed_bytes():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def _toolchain_tree(root):
+    home = os.path.join(root, "Users", "alice")
+    local = os.path.join(home, "AppData", "Local")
+    roaming = os.path.join(home, "AppData", "Roaming")
+    windows = os.path.join(root, "Windows")
+
+    def put(parts, payload, base=local):
+        path = os.path.join(base, *parts)
+        _write(path, payload)
+        return path
+
+    files = {
+        "yarn": put(["Yarn", "Cache", "a.bin"], b"Y" * 21),
+        "yarn_poison": put(["Yarn", "Cache", "WinSxS", "poison.bin"], b"P" * 99),
+        "nuget_http": put(["NuGet", "v3-cache", "b.bin"], b"H" * 22),
+        "pip": put([".cache", "pip", "d.bin"], b"I" * 23, home),
+        "npm": put([".npm", "_cacache", "e.bin"], b"N" * 24, home),
+        "gradle_tmp": put([".gradle", "caches", "tmp", "f.bin"], b"T" * 25, home),
+        "gradle_modules": put([".gradle", "caches", "modules-2", "g.bin"], b"G" * 200, home),
+        "nuget_packages": put([".nuget", "packages", "h.bin"], b"U" * 300, home),
+        "cargo_cache": put([".cargo", "registry", "cache", "i.bin"], b"C" * 26, home),
+        "cargo_index": put([".cargo", "registry", "index", "j.bin"], b"X" * 400, home),
+        "scoop_cache": put(["scoop", "cache", "k.bin"], b"S" * 27, home),
+        "scoop_apps": put(["scoop", "apps", "app", "l.bin"], b"A" * 500, home),
+        "choco": put(["Chocolatey", "cache", "m.bin"], b"O" * 28),
+        "vs_component": put(
+            ["Microsoft", "VisualStudio", "17.0_abc", "ComponentModelCache", "n.bin"],
+            b"V" * 29,
+        ),
+        "vs_cache": put(["Microsoft", "VisualStudio", "17.0_abc", "Cache", "o.bin"], b"Q" * 7),
+        "vs_ext": put(["Microsoft", "VisualStudio", "17.0_abc", "Extensions", "ext.bin"], b"E" * 600),
+        "pnpm": put(["pnpm", "store", "p.bin"], b"M" * 700),
+        "pnpm_home": put([".pnpm-store", "q.bin"], b"R" * 701, home),
+        "desktop": put(["Desktop", "video.bin"], b"D" * 500, home),
+    }
+    env = {
+        "USERPROFILE": home,
+        "LOCALAPPDATA": local,
+        "APPDATA": roaming,
+        "TEMP": os.path.join(local, "Temp"),
+        "SystemRoot": windows,
+    }
+    os.makedirs(env["TEMP"], exist_ok=True)
+    return {"env": env, "home": home, "local": local, "windows": windows, "files": files}
+
+
+def test_toolchain_caches_use_safe_defaults_and_skip_package_stores():
+    root = tempfile.mkdtemp(prefix="pca-tool-")
+    try:
+        info = _toolchain_tree(root)
+        paths = build_target_paths(info["env"])
+        flat = [path for group in paths.values() for path in group]
+        joined = "\n".join(flat).lower()
+        assert any(path.endswith(os.path.join("Yarn", "Cache")) for path in paths["toolchain_caches"])
+        assert any(path.endswith(os.path.join("NuGet", "v3-cache")) for path in paths["toolchain_caches"])
+        assert any(path.endswith(os.path.join(".cache", "pip")) for path in paths["toolchain_caches"])
+        assert any(path.endswith("_cacache") for path in paths["toolchain_caches"])
+        assert any(path.endswith(os.path.join("caches", "tmp")) for path in paths["toolchain_caches"])
+        assert any(path.endswith(os.path.join("scoop", "cache")) for path in paths["toolchain_caches"])
+        assert any(path.endswith(os.path.join("Chocolatey", "cache")) for path in paths["toolchain_caches"])
+        assert any(path.endswith("ComponentModelCache") for path in paths["toolchain_caches"])
+        assert any(
+            path.endswith(os.path.join("17.0_abc", "Cache")) for path in paths["toolchain_caches"]
+        )
+        assert any(path.endswith(os.path.join(".nuget", "packages")) for path in paths["nuget_packages"])
+        assert not any("nuget" in path.lower() and path.endswith("packages") for path in paths["toolchain_caches"])
+        assert any(path.endswith(os.path.join(".gradle", "caches")) for path in paths["gradle_caches"])
+        assert any(path.endswith(os.path.join("registry", "cache")) for path in paths["cargo_cache"])
+        assert "pnpm" not in joined
+        assert "extensions" not in joined
+        assert not any(path.endswith(os.path.join("registry", "index")) for path in flat)
+        assert not any("scoop" in path.lower() and path.endswith("apps") for path in flat)
+        assert all(not path_is_forbidden(path) for path in flat)
+        assert TARGET_CATALOG["toolchain_caches"]["default_enabled"] is True
+        assert TARGET_CATALOG["toolchain_caches"]["needs_admin"] is False
+        assert TARGET_CATALOG["nuget_packages"]["default_enabled"] is False
+        assert TARGET_CATALOG["gradle_caches"]["default_enabled"] is False
+        assert TARGET_CATALOG["cargo_cache"]["default_enabled"] is False
+        assert TARGET_CATALOG["office_file_cache"]["default_enabled"] is False
+
+        flags = default_target_flags()
+        flags["recycle_bin"] = False
+        flags["downloads_old"] = False
+        before = {
+            os.path.join(dirpath, filename)
+            for dirpath, _dirs, filenames in os.walk(root)
+            for filename in filenames
+        }
+        scan = estimate_reclaimable(
+            flags,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=info["env"],
+        )
+        after = {
+            os.path.join(dirpath, filename)
+            for dirpath, _dirs, filenames in os.walk(root)
+            for filename in filenames
+        }
+        assert before == after
+        ready = {row["key"]: row for row in scan["targets"] if row["status"] == "ready"}
+        assert ready["toolchain_caches"]["reclaimable_bytes"] == 206
+        assert "nuget_packages" not in ready
+        assert "gradle_caches" not in ready
+        assert "cargo_cache" not in ready
+        assert scan["total_bytes"] == 206
+
+        opted = dict(flags)
+        opted["nuget_packages"] = True
+        opted["gradle_caches"] = True
+        opted["cargo_cache"] = True
+        opted_scan = estimate_reclaimable(
+            opted,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=info["env"],
+        )
+        # tmp nằm trong .gradle\\caches nên chỉ tính một lần.
+        assert opted_scan["total_bytes"] == 732
+        assert os.path.exists(info["files"]["gradle_tmp"])
+
+        result = JunkCleaner.clean(
+            flags,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=info["env"],
+            disk_free_bytes=lambda: None,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 1},
+        )
+        assert result["total_freed_bytes"] == 206
+        assert result["details"]["toolchain_caches"]["freed_bytes"] == 206
+        for key in (
+            "yarn", "nuget_http", "pip", "npm", "gradle_tmp", "scoop_cache",
+            "choco", "vs_component", "vs_cache",
+        ):
+            assert not os.path.exists(info["files"][key]), key
+        for key in (
+            "yarn_poison", "gradle_modules", "nuget_packages", "cargo_cache",
+            "cargo_index", "scoop_apps", "vs_ext", "pnpm", "pnpm_home", "desktop",
+        ):
+            assert os.path.exists(info["files"][key]), key
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_large_file_scan_does_not_delete_until_confirmed_paths():
+    root = tempfile.mkdtemp(prefix="pca-large-")
+    try:
+        home = os.path.join(root, "Users", "alice")
+        local = os.path.join(home, "AppData", "Local")
+        windows = os.path.join(root, "Windows")
+        now = 1_700_000_000
+        movie = os.path.join(home, "Desktop", "movie.bin")
+        keep = os.path.join(home, "Documents", "keep.bin")
+        fresh = os.path.join(home, "Desktop", "fresh.bin")
+        tiny = os.path.join(home, "Desktop", "tiny.bin")
+        cloud = os.path.join(home, "OneDrive", "cloud.bin")
+        blocked = os.path.join(home, "WinSxS", "sys.bin")
+        cookies = os.path.join(local, "Google", "Chrome", "User Data", "Default", "Cookies")
+        cache_file = os.path.join(local, "Google", "Chrome", "User Data", "Default", "Cache", "huge.bin")
+        outside = os.path.join(root, "outside.bin")
+        _write(movie, b"M" * 200)
+        _write(keep, b"K" * 180)
+        _write(fresh, b"F" * 200)
+        _write(tiny, b"t" * 10)
+        _write(cloud, b"C" * 500)
+        _write(blocked, b"B" * 500)
+        _write(cookies, b"S" * 400)
+        _write(cache_file, b"H" * 350)
+        _write(outside, b"O" * 900)
+        old = now - 40 * 86400
+        for path in (movie, keep, cloud, blocked, cookies, cache_file, outside):
+            os.utime(path, (old, old))
+        os.utime(fresh, (now - 86400, now - 86400))
+        env = {
+            "USERPROFILE": home,
+            "LOCALAPPDATA": local,
+            "SystemRoot": windows,
+        }
+        before = {
+            os.path.join(dirpath, filename)
+            for dirpath, _dirs, filenames in os.walk(root)
+            for filename in filenames
+        }
+        scan = scan_large_user_files(
+            environ=env,
+            min_bytes=100,
+            min_age_days=30,
+            include_local_appdata=False,
+            now_ts=now,
+        )
+        after = {
+            os.path.join(dirpath, filename)
+            for dirpath, _dirs, filenames in os.walk(root)
+            for filename in filenames
+        }
+        assert before == after
+        assert scan["deleted"] is False
+        found = {row["path"] for row in scan["files"]}
+        assert movie in found
+        assert keep in found
+        assert fresh not in found
+        assert tiny not in found
+        assert cloud not in found
+        assert blocked not in found
+        assert cookies not in found
+        assert cache_file not in found
+        assert outside not in found
+        assert all(row["selected"] is False for row in scan["files"])
+
+        with_local = scan_large_user_files(
+            environ=env,
+            min_bytes=100,
+            min_age_days=30,
+            include_local_appdata=True,
+            now_ts=now,
+        )
+        local_found = {row["path"] for row in with_local["files"]}
+        assert cache_file in local_found
+        assert cookies not in local_found
+        assert os.path.exists(cache_file)
+        assert os.path.exists(cookies)
+
+        removed = delete_large_files([movie], environ=env)
+        assert removed["freed_bytes"] == 200
+        assert removed["deleted_files"] == 1
+        assert not os.path.exists(movie)
+        assert os.path.exists(keep)
+
+        import core.c_drive_clean as clean_mod
+        original_unlink = clean_mod.os.unlink
+
+        def locked_unlink(path, *args, **kwargs):
+            if str(path).endswith("keep.bin"):
+                raise PermissionError("locked")
+            return original_unlink(path, *args, **kwargs)
+
+        clean_mod.os.unlink = locked_unlink
+        try:
+            locked = delete_large_files([keep], environ=env)
+        finally:
+            clean_mod.os.unlink = original_unlink
+        assert os.path.exists(keep)
+        assert locked["freed_bytes"] == 0
+        assert locked["skipped_locked"] == 1
+        assert "khóa" in locked["report_vi"].lower()
+
+        blocked_delete = delete_large_files(
+            [blocked, cloud, cookies, outside, home, windows],
+            environ=env,
+        )
+        assert blocked_delete["freed_bytes"] == 0
+        assert blocked_delete["deleted_files"] == 0
+        assert os.path.exists(blocked)
+        assert os.path.exists(cloud)
+        assert os.path.exists(cookies)
+        assert os.path.exists(outside)
+        assert os.path.isdir(home)
+
+        capped = scan_large_user_files(
+            environ=env,
+            min_bytes=100,
+            min_age_days=0,
+            include_local_appdata=False,
+            max_results=1,
+            now_ts=now,
+        )
+        assert capped["truncated"] is True
+        assert len(capped["files"]) == 1
+        assert capped["files"][0]["path"] == fresh
+        assert capped["files"][0]["selected"] is False
+        assert os.path.exists(fresh)
+        assert os.path.exists(keep)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_clean_history_round_trip():
+    root = tempfile.mkdtemp(prefix="pca-hist-")
+    try:
+        path = os.path.join(root, "c_drive_clean_history.json")
+        gb = 1024 ** 3
+        result = {
+            "total_freed_bytes": 4096,
+            "free_bytes_before": int(12.5 * gb),
+            "free_bytes_after": int(12.75 * gb),
+            "skipped": [
+                {"key": "system_temp", "needs_admin": True, "status": "skipped"},
+                {"key": "windows_update", "needs_admin": True, "status": "skipped"},
+                {"key": "user_temp", "needs_admin": False, "status": "cleaned"},
+            ],
+        }
+        rows = append_clean_history(result, path=path, now_ts=1_700_000_000)
+        loaded = load_clean_history(path)
+        assert loaded == rows
+        assert loaded[0]["freed_bytes"] == 4096
+        assert loaded[0]["skipped_admin_count"] == 2
+        assert loaded[0]["free_gb_before"] == round(12.5, 3)
+        assert loaded[0]["free_gb_after"] == round(12.75, 3)
+        text = format_clean_history_vi(loaded)
+        assert text.startswith("• ")
+        assert "đã xóa" in text
+        assert "bỏ qua 2 mục cần Admin" in text
+        assert "trống" in text
+        for index in range(10):
+            append_clean_history(
+                {"total_freed_bytes": index, "skipped": []},
+                path=path,
+                now_ts=1_700_000_000 + index + 1,
+            )
+        trimmed = load_clean_history(path)
+        assert len(trimmed) == 8
+        assert trimmed[0]["freed_bytes"] == 9
+        assert trimmed[-1]["freed_bytes"] == 2
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{")
+        assert load_clean_history(path) == []
+        assert format_clean_history_vi([]) == "Chưa có lần dọn ổ C nào trên máy này."
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_ui_exposes_deep_clean_and_admin_label():
     base = os.path.dirname(__file__)
     text = open(os.path.join(base, "ui", "main_window.py"), encoding="utf-8").read()
@@ -774,6 +1107,16 @@ def test_ui_exposes_deep_clean_and_admin_label():
     assert "deep_preview" in text
     assert "Dọn ngay" in preview
     assert "chưa xóa" in preview.lower() or "Chưa xóa" in preview
+    assert "Tìm file lớn" in text
+    assert "Lần dọn gần đây" in text
+    assert "open_large_file_finder" in text
+    assert "append_clean_history" in text
+    assert "scan_large_user_files" not in text
+    finder = open(os.path.join(base, "ui", "large_file_finder_dialog.py"), encoding="utf-8").read()
+    assert "Xác nhận xóa file lớn" in finder
+    assert "setChecked(False)" in finder
+    assert "Quét thêm LocalAppData" in finder
+    assert "delete_large_files" in finder
     scheduler = open(os.path.join(base, "core", "scheduler.py"), encoding="utf-8").read()
     assert "low_disk_warning" in scheduler
     assert "LowDiskToastGate" in scheduler
@@ -796,6 +1139,9 @@ def _run():
         test_expanded_user_safe_paths_scan_without_deleting,
         test_forbidden_and_sync_root_stay_blocked,
         test_deep_report_shows_free_space_delta_and_claimed_bytes,
+        test_toolchain_caches_use_safe_defaults_and_skip_package_stores,
+        test_large_file_scan_does_not_delete_until_confirmed_paths,
+        test_clean_history_round_trip,
         test_ui_exposes_deep_clean_and_admin_label,
     ]
     failed = 0
