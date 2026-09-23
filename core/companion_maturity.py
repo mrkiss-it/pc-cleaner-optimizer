@@ -104,6 +104,9 @@ def default_state() -> Dict[str, Any]:
         "pending_outcome": None,
         "last_eod_date": "",
         "pending_eod": None,
+        "focus_session": None,
+        "last_goal_conflict_date": "",
+        "pending_goal_conflict": None,
     }
 
 
@@ -159,7 +162,31 @@ def load_state(base_dir: Optional[str] = None) -> Dict[str, Any]:
     pending_checkin = merged.get("pending_checkin")
     merged["pending_checkin"] = pending_checkin if isinstance(pending_checkin, dict) and pending_checkin.get("text") else None
     merged["last_checkin_date"] = str(merged.get("last_checkin_date") or "")[:10]
+    merged["focus_session"] = _clean_focus_session(merged.get("focus_session"))
+    merged["last_goal_conflict_date"] = str(merged.get("last_goal_conflict_date") or "")[:10]
+    pending_conflict = merged.get("pending_goal_conflict")
+    merged["pending_goal_conflict"] = (
+        pending_conflict if isinstance(pending_conflict, dict) and pending_conflict.get("text") else None
+    )
     return merged
+
+
+def _clean_focus_session(raw: Any) -> Optional[Dict[str, Any]]:
+    """Keep a small session stamp. Never implies the mode should turn itself on."""
+    if not isinstance(raw, dict):
+        return None
+    started = str(raw.get("started_at") or "")[:32]
+    ended = str(raw.get("ended_at") or "")[:32]
+    follow = str(raw.get("followup_for") or "")[:32]
+    active = bool(raw.get("active"))
+    if not started and not ended and not active:
+        return None
+    return {
+        "active": active,
+        "started_at": started,
+        "ended_at": ended,
+        "followup_for": follow,
+    }
 
 
 def _optional_stage(value: Any) -> Optional[int]:

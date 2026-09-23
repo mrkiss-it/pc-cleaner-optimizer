@@ -977,7 +977,7 @@ def build_prompt_context(
     hint_text = "\n".join(f"- {item['text']}" for item in hints[:2]) or "Chưa đủ mẫu lặp để gợi ý riêng máy này."
     note = _clip(latest_reflection(base_dir) or "Chưa có sổ tay (chưa phản tỉnh hoặc cài mới).", 160)
     try:
-        from core.companion_moment import stage_voice
+        from core.companion_moment import exam_focus_is_live, machine_stress_active, stage_voice
         from core.companion_profile import effective_coaching, score_trust
         profile = parts.get("profile") or {}
         asked = parts.get("topics") or []
@@ -993,6 +993,8 @@ def build_prompt_context(
             ),
             may_propose=bool(stage.may_propose_actions),
             trust=str(trust.get("level") or "steady"),
+            focus_active=exam_focus_is_live(),
+            stressed=machine_stress_active(events, now),
         )
         policy = voice["policy_vi"]
     except Exception:
@@ -1445,16 +1447,45 @@ def observe_focus_enabled(result: Optional[Dict[str, Any]] = None, **kwargs) -> 
     junk = float(info.get("freed_junk_mb") or 0)
     ram = float(info.get("freed_ram_mb") or 0)
     source = str(kwargs.pop("source", "") or "focus")
-    return record_app_event(
+    event = record_app_event(
         "focus_mode",
         "Người dùng bật Trước thi / họp"
         + (f" (dọn nhẹ {junk:.0f} MB)" if junk else ""),
         metrics={"junk_freed_mb": junk, "ram_freed_mb": ram},
         source=source,
         outcome="ok",
-        tags=["focus"],
+        tags=["focus", "start"],
         **kwargs,
     )
+    if event:
+        try:
+            from core.companion_moment import note_focus_started
+            note_focus_started(
+                now=kwargs.get("now"),
+                base_dir=kwargs.get("base_dir"),
+                config_manager=kwargs.get("config_manager"),
+            )
+        except Exception:
+            pass
+    return event
+
+
+def observe_focus_disabled(result: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[Dict[str, Any]]:
+    """Diary line when the user turns Trước thi / họp off. Does not turn it on."""
+    info = result if isinstance(result, dict) else {}
+    if info.get("already_inactive"):
+        return None
+    try:
+        from core.companion_moment import note_focus_ended
+        event = note_focus_ended(
+            now=kwargs.get("now"),
+            base_dir=kwargs.get("base_dir"),
+            config_manager=kwargs.get("config_manager"),
+            write_diary=True,
+        )
+    except Exception:
+        return None
+    return event if isinstance(event, dict) else None
 
 
 def observe_wifi_repaired(recovered: bool = False, **kwargs) -> Optional[Dict[str, Any]]:
@@ -1579,6 +1610,12 @@ def plan_companion_nudge(
             return None
     except Exception:
         pass
+    try:
+        from core.companion_moment import exam_focus_is_live
+        if exam_focus_is_live():
+            return None
+    except Exception:
+        pass
     events = recent_events(days=21, limit=0, base_dir=base_dir, now=stamp)
     if not events:
         return None
@@ -1632,6 +1669,386 @@ def plan_companion_nudge(
         state["last_nudge_class"] = chosen["issue_class"]
         save_state(state, base_dir=base_dir)
     return payload
+
+
+MEMORY_EXPORT_KIND = "pc_cleaner_companion_memory"
+MEMORY_EXPORT_VERSION = 1
+_MEMORY_NOTE_VI = "Bản sao bộ nhớ trên một máy. Không phải đồng bộ đám mây."
+
+
+def _redact_tree(value: Any, depth: int = 0) -> Any:
+    from core.companion_diary import redact_sensitive
+    if depth > 8:
+        return None
+    if isinstance(value, str):
+        return redact_sensitive(value)
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if value != value or abs(value) == float("inf"):
+            return None
+        return value
+    if isinstance(value, list):
+        return [_redact_tree(item, depth + 1) for item in value[:500]]
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, item in list(value.items())[:80]:
+            name = redact_sensitive(str(key))[:64]
+            if not name or name == "[redacted]":
+                continue
+            out[name] = _redact_tree(item, depth + 1)
+        return out
+    return redact_sensitive(str(value))[:200]
+
+
+def _drop_blocked_actions(value: Any) -> Any:
+    """Strip destructive action keys so an imported file cannot run them."""
+    try:
+        from core.companion_skills import BLOCKED_ACTION_KEYS
+    except Exception:
+        BLOCKED_ACTION_KEYS = frozenset()
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key) == "action_key" and str(item or "") in BLOCKED_ACTION_KEYS:
+                continue
+            out[str(key)] = _drop_blocked_actions(item)
+        return out
+    if isinstance(value, list):
+        return [_drop_blocked_actions(item) for item in value]
+    return value
+
+
+def _scrub_maturity(raw: Any, *, importing: bool = False) -> Dict[str, Any]:
+    from core.companion_maturity import default_state
+    base = default_state()
+    if not isinstance(raw, dict):
+        return base if importing else {}
+    cleaned = _drop_blocked_actions(raw)
+    if not isinstance(cleaned, dict):
+        return base if importing else {}
+    payload = dict(base) if importing else {}
+    for key in base:
+        if key in cleaned:
+            payload[key] = cleaned[key]
+    session = payload.get("focus_session")
+    if importing and isinstance(session, dict):
+        session = dict(session)
+        session["active"] = False
+        payload["focus_session"] = session
+    return payload
+
+
+def _memory_error(message: str) -> Dict[str, Any]:
+    return {"ok": False, "message_vi": message}
+
+
+def export_companion_memory(
+    path: str,
+    base_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Write profile, maturity, skills, diary, and sổ tay already on this PC.
+
+    Secrets are redacted. Destructive action keys are removed. The file is a
+    backup for one computer, not a cloud sync.
+    """
+    import json
+    import os
+    target = str(path or "").strip()
+    if not target:
+        return _memory_error("Chưa chọn nơi lưu bản sao.")
+    try:
+        from core.companion_diary import read_events, redact_sensitive
+        from core.companion_profile import load_profile
+        from core.companion_reflection import load_reflection, load_reflection_meta
+        folder = os.path.dirname(os.path.abspath(target))
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        payload = {
+            "kind": MEMORY_EXPORT_KIND,
+            "version": MEMORY_EXPORT_VERSION,
+            "exported_at": datetime.now().replace(microsecond=0).isoformat(timespec="seconds"),
+            "note_vi": _MEMORY_NOTE_VI,
+            "profile": _redact_tree(load_profile(base_dir)),
+            "maturity": _scrub_maturity(load_state(base_dir)),
+            "skills": _drop_blocked_actions([
+                skill.to_dict() for skill in load_skills(base_dir)
+            ]),
+            "diary": _redact_tree(read_events(base_dir=base_dir, limit=0)),
+            "reflection": redact_sensitive(load_reflection(base_dir)),
+            "reflection_meta": _redact_tree(load_reflection_meta(base_dir)),
+        }
+        temporary = target + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        os.replace(temporary, target)
+    except Exception:
+        return _memory_error("Chưa xuất được bộ nhớ. Kiểm tra quyền ghi file rồi thử lại.")
+    return {
+        "ok": True,
+        "message_vi": "Đã lưu bản sao bộ nhớ trên máy này. File chỉ để khôi phục, không gửi lên đám mây.",
+        "path": target,
+    }
+
+
+def _read_memory_file(path: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    import json
+    target = str(path or "").strip()
+    if not target:
+        return None, "Chưa chọn file bộ nhớ."
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except json.JSONDecodeError:
+        return None, "File không phải JSON hợp lệ."
+    except OSError:
+        return None, "Không đọc được file bộ nhớ."
+    except Exception:
+        return None, "Không đọc được file bộ nhớ."
+    if not isinstance(data, dict) or data.get("kind") != MEMORY_EXPORT_KIND:
+        return None, "File này không phải bản sao bộ nhớ AI đồng hành."
+    try:
+        version = int(data.get("version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    if version != MEMORY_EXPORT_VERSION:
+        return None, "Mình chưa đọc được phiên bản file này."
+    if not any(key in data for key in ("profile", "maturity", "skills", "diary", "reflection")):
+        return None, "File không có bộ nhớ để nhập."
+    if "profile" in data and data.get("profile") is not None and not isinstance(data.get("profile"), dict):
+        return None, "Hồ sơ trong file không đúng định dạng."
+    if "maturity" in data and data.get("maturity") is not None and not isinstance(data.get("maturity"), dict):
+        return None, "Giai đoạn trong file không đúng định dạng."
+    if "skills" in data and data.get("skills") is not None and not isinstance(data.get("skills"), list):
+        return None, "Kỹ năng trong file không đúng định dạng."
+    if "diary" in data and data.get("diary") is not None and not isinstance(data.get("diary"), list):
+        return None, "Nhật ký trong file không đúng định dạng."
+    if "reflection" in data and data.get("reflection") is not None and not isinstance(data.get("reflection"), str):
+        return None, "Sổ tay trong file không đúng định dạng."
+    return data, ""
+
+
+def _merge_named(local: Any, incoming: Any) -> List[Any]:
+    out: List[Any] = []
+    seen = set()
+    for item in list(local or []) + list(incoming or []):
+        if not isinstance(item, dict):
+            continue
+        ident = str(item.get("id") or "")
+        if ident:
+            if ident in seen:
+                continue
+            seen.add(ident)
+        out.append(item)
+    return out
+
+
+def _merge_profiles(local: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(local)
+    out["habits"] = _merge_named(local.get("habits"), incoming.get("habits"))[:6]
+    out["corrections"] = _merge_named(local.get("corrections"), incoming.get("corrections"))
+    out["preferences"] = _merge_named(local.get("preferences"), incoming.get("preferences"))
+    dismissed = [str(item) for item in (local.get("dismissed_insights") or []) if str(item).strip()]
+    for item in incoming.get("dismissed_insights") or []:
+        text = str(item or "").strip()
+        if text and text not in dismissed:
+            dismissed.append(text)
+    out["dismissed_insights"] = dismissed
+    def _count(raw: Any, key: str) -> int:
+        try:
+            return max(0, int((raw or {}).get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    local_fb = local.get("feedback") if isinstance(local.get("feedback"), dict) else {}
+    incoming_fb = incoming.get("feedback") if isinstance(incoming.get("feedback"), dict) else {}
+    out["feedback"] = {
+        "helpful": max(_count(local_fb, "helpful"), _count(incoming_fb, "helpful")),
+        "unhelpful": max(_count(local_fb, "unhelpful"), _count(incoming_fb, "unhelpful")),
+    }
+    if str(incoming.get("coaching") or "") == "ask_more" or str(local.get("coaching") or "") == "ask_more":
+        out["coaching"] = "ask_more"
+    goal = local.get("goal") if isinstance(local.get("goal"), dict) else None
+    if not goal or not str(goal.get("text") or "").strip():
+        out["goal"] = incoming.get("goal")
+    muted = dict(local.get("muted_topics") or {}) if isinstance(local.get("muted_topics"), dict) else {}
+    extra_muted = incoming.get("muted_topics") if isinstance(incoming.get("muted_topics"), dict) else {}
+    for topic, meta in extra_muted.items():
+        if topic not in muted:
+            muted[topic] = meta
+    out["muted_topics"] = muted
+    coaching = dict(local.get("topic_coaching") or {}) if isinstance(local.get("topic_coaching"), dict) else {}
+    extra_coaching = incoming.get("topic_coaching") if isinstance(incoming.get("topic_coaching"), dict) else {}
+    for topic, mode in extra_coaching.items():
+        if str(mode or "") == "ask_more":
+            coaching[str(topic)] = "ask_more"
+    out["topic_coaching"] = coaching
+    out["quiet_hours"] = local.get("quiet_hours")
+    return out
+
+
+def _store_profile(raw: Any, base_dir: Optional[str], mode: str) -> None:
+    from core.companion_profile import load_profile, save_profile
+    incoming = _redact_tree(raw) if isinstance(raw, dict) else {}
+    if not isinstance(incoming, dict):
+        return
+    if mode == "replace":
+        save_profile(incoming, base_dir=base_dir)
+        return
+    save_profile(_merge_profiles(load_profile(base_dir), incoming), base_dir=base_dir)
+
+
+def _store_maturity(raw: Any, base_dir: Optional[str], mode: str) -> None:
+    incoming = _scrub_maturity(raw, importing=True)
+    if mode == "replace":
+        save_state(incoming, base_dir=base_dir)
+        return
+    local = load_state(base_dir)
+    dates = list(local.get("active_dates") or [])
+    for day in incoming.get("active_dates") or []:
+        text = str(day or "")[:10]
+        if len(text) == 10 and text not in dates:
+            dates.append(text)
+    local["active_dates"] = dates
+    local["positive_feedback"] = max(
+        int(local.get("positive_feedback") or 0),
+        int(incoming.get("positive_feedback") or 0),
+    )
+    local["negative_feedback"] = max(
+        int(local.get("negative_feedback") or 0),
+        int(incoming.get("negative_feedback") or 0),
+    )
+    if not local.get("first_seen"):
+        local["first_seen"] = incoming.get("first_seen") or ""
+    for key in (
+        "pending_followup",
+        "pending_outcome",
+        "pending_checkin",
+        "pending_eod",
+        "pending_goal_conflict",
+        "pending_stage_up",
+        "pending_skill_offer",
+    ):
+        if not local.get(key) and incoming.get(key):
+            local[key] = incoming.get(key)
+    if not local.get("focus_session") and incoming.get("focus_session"):
+        local["focus_session"] = incoming.get("focus_session")
+    save_state(local, base_dir=base_dir)
+
+
+def _store_skills(raw: Any, base_dir: Optional[str], mode: str) -> None:
+    from core.companion_skills import BLOCKED_ACTION_KEYS, save_skills, skill_from_dict
+    rows = raw if isinstance(raw, list) else []
+    incoming = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        cleaned = _drop_blocked_actions(_redact_tree(item))
+        skill = skill_from_dict(cleaned) if isinstance(cleaned, dict) else None
+        if skill is None or skill.action_key in BLOCKED_ACTION_KEYS:
+            continue
+        incoming.append(skill)
+    if mode == "replace":
+        save_skills(incoming, base_dir=base_dir)
+        return
+    current = {skill.id: skill for skill in load_skills(base_dir)}
+    for skill in incoming:
+        old = current.get(skill.id)
+        if old is None or int(skill.hit_count) > int(old.hit_count):
+            current[skill.id] = skill
+    save_skills(list(current.values()), base_dir=base_dir)
+
+
+def _store_diary(raw: Any, base_dir: Optional[str], mode: str) -> None:
+    from core.companion_diary import (
+        ALLOWED_KINDS as DIARY_KINDS,
+        MAX_DIARY_EVENTS,
+        event_identity,
+        read_events,
+        sanitize_summary,
+        write_events,
+    )
+    cleaned: List[Dict[str, Any]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "").lower()
+        if kind not in DIARY_KINDS:
+            continue
+        summary = sanitize_summary(item.get("summary"))
+        if not summary:
+            continue
+        row = dict(item)
+        row["kind"] = kind
+        row["summary"] = summary
+        cleaned.append(row)
+    if mode == "replace":
+        write_events(cleaned[-MAX_DIARY_EVENTS:], base_dir=base_dir)
+        return
+    local = read_events(base_dir=base_dir, limit=0)
+    seen = {event_identity(row) for row in local}
+    merged = list(local)
+    for row in cleaned:
+        ident = event_identity(row)
+        if ident in seen:
+            continue
+        merged.append(row)
+        seen.add(ident)
+    merged.sort(key=lambda row: str(row.get("ts") or ""))
+    write_events(merged[-MAX_DIARY_EVENTS:], base_dir=base_dir)
+
+
+def _store_reflection(raw: Any, base_dir: Optional[str], mode: str) -> None:
+    from core.companion_diary import redact_sensitive
+    from core.companion_reflection import load_reflection, save_reflection
+    text = redact_sensitive(raw if isinstance(raw, str) else "")
+    if mode != "replace":
+        local = load_reflection(base_dir)
+        if local and text and text not in local:
+            text = local.rstrip() + "\n\n" + text
+        elif local and not text:
+            text = local
+    if text or mode == "replace":
+        save_reflection(text, source="import", base_dir=base_dir)
+
+
+def import_companion_memory(
+    path: str,
+    mode: str = "merge",
+    base_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Merge or replace local companion memory. Never runs imported actions.
+
+    Blocked action keys are dropped. A restored focus session is stored inactive
+    so this PC does not turn Trước thi / họp on by itself.
+    """
+    chosen = str(mode or "").strip().lower()
+    if chosen not in ("merge", "replace"):
+        return _memory_error("Chưa rõ cách nhập: gộp hoặc thay thế.")
+    data, error = _read_memory_file(path)
+    if error or not isinstance(data, dict):
+        return _memory_error(error or "Không đọc được file bộ nhớ.")
+    try:
+        if "profile" in data:
+            _store_profile(data.get("profile"), base_dir, chosen)
+        if "maturity" in data:
+            _store_maturity(data.get("maturity"), base_dir, chosen)
+        if "skills" in data:
+            _store_skills(data.get("skills"), base_dir, chosen)
+        if "diary" in data:
+            _store_diary(data.get("diary"), base_dir, chosen)
+        if "reflection" in data:
+            _store_reflection(data.get("reflection"), base_dir, chosen)
+    except Exception:
+        return _memory_error("Chưa nhập được bộ nhớ. File có thể chưa đúng hoặc máy không ghi được.")
+    verb = "Đã thay bộ nhớ trên máy này." if chosen == "replace" else "Đã gộp bộ nhớ vào máy này."
+    return {
+        "ok": True,
+        "message_vi": verb + " Mình không chạy hành động trong file. Đây là bản sao một máy, không đồng bộ đám mây.",
+        "mode": chosen,
+    }
 
 
 def empty_states_vi() -> Dict[str, str]:
@@ -1697,6 +2114,10 @@ __all__ = [
     "explain_stage_progress",
     "observe_clean",
     "observe_focus_enabled",
+    "observe_focus_disabled",
+    "export_companion_memory",
+    "import_companion_memory",
+    "MEMORY_EXPORT_KIND",
     "observe_ping_repaired",
     "observe_ram_optimized",
     "observe_snapshot",

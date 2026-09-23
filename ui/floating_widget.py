@@ -387,7 +387,12 @@ class FloatingWidget(QWidget):
     def toggle_exam_focus(self):
         from core.exam_focus import ExamMeetingFocus
         if ExamMeetingFocus.is_active():
-            ExamMeetingFocus.disable()
+            res = ExamMeetingFocus.disable()
+            try:
+                from core.companion import observe_focus_disabled
+                observe_focus_disabled(res, config_manager=self.config_manager)
+            except Exception:
+                pass
             self.setToolTip("Chế độ bình thường\nClick để tối ưu RAM")
         else:
             res = ExamMeetingFocus.enable()

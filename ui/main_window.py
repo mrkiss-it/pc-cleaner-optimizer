@@ -2257,6 +2257,11 @@ class MainWindow(QMainWindow):
         whitelist = self.config_manager.get_whitelist_set() if self.config_manager else set()
         if ExamMeetingFocus.is_active():
             res = ExamMeetingFocus.disable()
+            try:
+                from core.companion import observe_focus_disabled
+                observe_focus_disabled(res, config_manager=self.config_manager)
+            except Exception:
+                pass
         else:
             res = ExamMeetingFocus.enable(whitelist=whitelist)
             try:
