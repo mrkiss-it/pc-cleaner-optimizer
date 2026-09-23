@@ -38,7 +38,13 @@ class CDrivePreviewDialog(QDialog):
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
 
-        title = QLabel("Quét ổ C (không cần Admin)")
+        if data.get("deep_admin") and data.get("is_admin"):
+            title_text = "Dọn sâu (cần Admin) — xem trước"
+        elif data.get("deep_admin"):
+            title_text = "Dọn sâu (cần Admin) — chưa chạy"
+        else:
+            title_text = "Quét ổ C (không cần Admin)"
+        title = QLabel(title_text)
         title.setStyleSheet("color: #f8fafc; font-size: 16px; font-weight: bold;")
         layout.addWidget(title)
 

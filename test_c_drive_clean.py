@@ -2,6 +2,7 @@
 Dọn ổ C không cần Admin: chọn mục, bỏ qua mục Admin, cộng byte thật.
 Chạy được trên Linux CI — không cần quyền Administrator.
 """
+import inspect
 import os
 import shutil
 import sys
@@ -32,6 +33,7 @@ if sys.platform != "win32" and "winreg" not in sys.modules:
 from app_meta import APP_VERSION
 from config_manager import DEFAULT_CONFIG
 from core.c_drive_clean import (
+    ADMIN_DEEP_DISABLED_VI,
     ADMIN_SKIP_REASON_VI,
     SYNC_ROOT_REASON_VI,
     LowDiskToastGate,
@@ -41,14 +43,19 @@ from core.c_drive_clean import (
     build_low_disk_notice,
     build_target_paths,
     clean_one_path,
+    _under_drive,
+    default_component_cleanup,
+    default_hibernate_off,
     default_target_flags,
     delete_large_files,
     estimate_reclaimable,
+    format_clean_history_line_vi,
     format_clean_history_vi,
     is_disk_space_low,
     is_process_elevated,
     load_clean_history,
     path_is_forbidden,
+    resolve_clean_plan,
     scan_large_user_files,
 )
 from core.cleaner import JunkCleaner
@@ -1095,6 +1102,244 @@ def test_clean_history_round_trip():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_admin_deep_plan_respects_elevation_and_forbidden_paths():
+    assert _under_drive("C:", "Windows.old") == "C:\\Windows.old"
+    dism_source = inspect.getsource(default_component_cleanup)
+    assert "StartComponentCleanup" in dism_source
+    assert "/ResetBase" not in dism_source
+    assert "cleanmgr" not in dism_source.lower()
+
+    root = tempfile.mkdtemp(prefix="pca-admin-")
+    try:
+        info = _tree(root)
+        drive = os.path.join(root, "Drive")
+        program_data = os.path.join(root, "ProgramData")
+        windows = info["windows"]
+        delivery = os.path.join(windows, "SoftwareDistribution", "DeliveryOptimization", "a.bin")
+        ns_cache = os.path.join(
+            windows, "ServiceProfiles", "NetworkService", "AppData", "Local",
+            "Microsoft", "Windows", "DeliveryOptimization", "Cache", "b.bin",
+        )
+        setup = os.path.join(drive, "$WINDOWS.~BT", "c.bin")
+        cbs = os.path.join(windows, "Logs", "CBS", "cbs.log")
+        wer = os.path.join(program_data, "Microsoft", "Windows", "WER", "report.wer")
+        prefetch = os.path.join(windows, "Prefetch", "APP.pf")
+        old = os.path.join(drive, "Windows.old", "Windows", "explorer.exe")
+        poison = os.path.join(
+            windows, "SoftwareDistribution", "DeliveryOptimization", "WinSxS", "nope.bin",
+        )
+        hiber = os.path.join(drive, "hiberfil.sys")
+        sys32 = os.path.join(windows, "System32", "note.txt")
+        winsxs = os.path.join(windows, "WinSxS", "pending.manifest")
+        _write(delivery, b"D" * 40)
+        _write(ns_cache, b"N" * 20)
+        _write(setup, b"B" * 30)
+        _write(cbs, b"L" * 10)
+        _write(wer, b"W" * 15)
+        _write(prefetch, b"P" * 12)
+        _write(old, b"O" * 50)
+        _write(poison, b"X" * 25)
+        _write(hiber, b"H" * 80)
+        env = dict(info["env"])
+        env["SystemDrive"] = drive
+        env["ProgramData"] = program_data
+
+        paths = build_target_paths(env)
+        flat = [path for group in paths.values() for path in group]
+        blob = "\n".join(flat)
+        assert any(
+            path.endswith(os.path.join("SoftwareDistribution", "DeliveryOptimization"))
+            for path in paths["system_delivery_opt"]
+        )
+        assert any(
+            path.endswith(os.path.join("DeliveryOptimization", "Cache"))
+            for path in paths["system_delivery_opt"]
+        )
+        assert any(path.endswith("$WINDOWS.~BT") for path in paths["windows_setup_temp"])
+        assert any(path.endswith(os.path.join("Logs", "CBS")) for path in paths["windows_logs"])
+        assert any(path.endswith(os.path.join("Windows", "WER")) for path in paths["system_wer"])
+        assert any(path.endswith("Prefetch") for path in paths["prefetch"])
+        assert any(path.endswith("Windows.old") for path in paths["windows_old"])
+        assert "WinSxS" not in blob
+        assert "System32" not in blob
+        assert "hiberfil.sys" not in blob
+        assert all(not path_is_forbidden(path) for path in flat)
+
+        sparse = build_target_paths(info["env"])
+        assert sparse["windows_old"] == []
+        assert sparse["windows_setup_temp"] == []
+        assert sparse["system_wer"] == []
+
+        flags = default_target_flags()
+        flags["recycle_bin"] = False
+        flags["downloads_old"] = False
+        plan_off = resolve_clean_plan(flags, is_admin=False, deep_user_safe=True, deep_admin=True)
+        skipped_keys = {item["key"] for item in plan_off["skipped"]}
+        assert "system_temp" not in plan_off["to_run"]
+        assert "system_delivery_opt" not in plan_off["to_run"]
+        assert "system_temp" in skipped_keys
+        assert "system_delivery_opt" in skipped_keys
+        for opt_in in ("windows_old", "prefetch", "component_cleanup", "hibernate_file", "system_dumps"):
+            assert opt_in not in plan_off["to_run"]
+            assert opt_in not in skipped_keys
+
+        narrow = resolve_clean_plan(
+            {"user_temp": True, "system_temp": True},
+            is_admin=False,
+            deep_user_safe=True,
+        )
+        assert "system_delivery_opt" not in narrow["to_run"]
+        assert "system_delivery_opt" not in {item["key"] for item in narrow["skipped"]}
+
+        plan_on = resolve_clean_plan(flags, is_admin=True, deep_user_safe=True, deep_admin=True)
+        for key in (
+            "user_temp", "system_temp", "windows_update", "system_delivery_opt",
+            "windows_setup_temp", "windows_logs", "system_wer",
+        ):
+            assert key in plan_on["to_run"], key
+        for opt_in in ("windows_old", "prefetch", "component_cleanup", "hibernate_file", "system_dumps"):
+            assert opt_in not in plan_on["to_run"]
+
+        scan = estimate_reclaimable(
+            flags,
+            is_admin=False,
+            deep_user_safe=True,
+            deep_admin=True,
+            environ=env,
+        )
+        skipped = {row["key"]: row for row in scan["targets"] if row["status"] == "skipped"}
+        assert skipped["system_temp"]["reclaimable_bytes"] == 0
+        assert skipped["system_temp"]["size_bytes"] == 80
+        assert scan["total_bytes"] == 180
+        assert "Cần Admin — chưa chạy" in scan["preview_vi"]
+        assert "cần Admin — chưa chạy" in scan["preview_vi"]
+
+        calls = {"dism": 0, "hiber": 0}
+
+        def dism_runner():
+            calls["dism"] += 1
+            return {"success": True, "freed_bytes": 999}
+
+        def hibernate_runner(environ=None):
+            calls["hiber"] += 1
+            return {"success": True, "freed_bytes": 50}
+
+        cold = JunkCleaner.clean(
+            flags,
+            is_admin=False,
+            deep_user_safe=True,
+            deep_admin=True,
+            environ=env,
+            disk_free_bytes=lambda: 1000,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 1},
+            component_cleanup=dism_runner,
+            hibernate_off=hibernate_runner,
+        )
+        assert calls == {"dism": 0, "hiber": 0}
+        for path in (delivery, ns_cache, setup, cbs, wer, prefetch, old, hiber, sys32, winsxs, poison):
+            assert os.path.exists(path), path
+        assert not os.path.exists(os.path.join(info["temp"], "keep.tmp"))
+        assert ADMIN_SKIP_REASON_VI in cold["details"]["system_delivery_opt"]["reason"]
+        assert cold["details"]["system_temp"]["freed_bytes"] == 0
+        assert cold["deep_admin"] is True
+        assert cold["free_bytes_before"] == 1000
+        assert "Dọn sâu (cần Admin) hoàn tất." in cold["report_vi"]
+
+        hot = JunkCleaner.clean(
+            flags,
+            is_admin=True,
+            deep_user_safe=True,
+            deep_admin=True,
+            environ=env,
+            disk_free_bytes=lambda: 2000,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 9, "items": 1},
+            component_cleanup=dism_runner,
+            hibernate_off=hibernate_runner,
+        )
+        assert calls == {"dism": 0, "hiber": 0}
+        for path in (delivery, ns_cache, setup, cbs, wer):
+            assert not os.path.exists(path), path
+        assert not os.path.exists(os.path.join(windows, "Temp", "sys.tmp"))
+        assert not os.path.exists(os.path.join(windows, "SoftwareDistribution", "Download", "upd.cab"))
+        for path in (poison, sys32, winsxs, prefetch, old, hiber):
+            assert os.path.exists(path), path
+        assert hot["total_freed_bytes"] == 40 + 20 + 30 + 10 + 15 + 80 + 60
+        assert hot["free_bytes_before"] == 2000
+        assert hot["free_bytes_after"] == 2000
+
+        opted = dict(flags)
+        opted["component_cleanup"] = True
+        opted["hibernate_file"] = True
+        opted["windows_old"] = True
+        opted["prefetch"] = True
+        still_off = JunkCleaner.clean(
+            opted,
+            is_admin=False,
+            deep_admin=True,
+            environ=env,
+            disk_free_bytes=lambda: None,
+            component_cleanup=dism_runner,
+            hibernate_off=hibernate_runner,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 0},
+        )
+        assert calls == {"dism": 0, "hiber": 0}
+        assert os.path.exists(old)
+        assert os.path.exists(prefetch)
+        assert still_off["details"]["windows_old"]["freed_bytes"] == 0
+
+        opted_on = JunkCleaner.clean(
+            opted,
+            is_admin=True,
+            deep_admin=True,
+            environ=env,
+            disk_free_bytes=lambda: None,
+            component_cleanup=dism_runner,
+            hibernate_off=hibernate_runner,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 0},
+        )
+        assert calls == {"dism": 1, "hiber": 1}
+        assert opted_on["details"]["component_cleanup"]["freed_bytes"] == 0
+        assert opted_on["details"]["component_cleanup"]["status"] == "cleaned"
+        assert opted_on["details"]["hibernate_file"]["freed_bytes"] == 50
+        assert not os.path.exists(old)
+        assert os.path.isdir(os.path.join(drive, "Windows.old"))
+        assert not os.path.exists(prefetch)
+
+        linux_hiber = default_hibernate_off({"SystemDrive": drive})
+        assert linux_hiber["freed_bytes"] == 0
+        assert linux_hiber.get("skipped") is True
+        assert os.path.exists(hiber)
+        linux_dism = default_component_cleanup()
+        assert linux_dism["freed_bytes"] == 0
+        assert linux_dism.get("skipped") is True
+
+        hist_path = os.path.join(root, "hist.json")
+        rows = append_clean_history(hot, path=hist_path, now_ts=1_700_000_100)
+        loaded = load_clean_history(hist_path)
+        assert loaded[0]["deep_admin"] is True
+        assert "dọn sâu Admin" in format_clean_history_line_vi(loaded[0])
+        assert rows[0]["deep_admin"] is True
+
+        preview_flags = dict(flags)
+        preview_flags["windows_old"] = True
+        preview_flags["component_cleanup"] = True
+        preview_flags["hibernate_file"] = True
+        seen = estimate_reclaimable(
+            preview_flags,
+            is_admin=True,
+            deep_admin=True,
+            environ=env,
+        )
+        ready = {row["key"] for row in seen["targets"] if row["status"] == "ready"}
+        assert "component_cleanup" in ready
+        assert "hibernate_file" in ready
+        assert "windows_old" in ready
+        assert "Dọn kho thành phần" in seen["preview_vi"]
+        assert "khoảng 0 B" in seen["preview_vi"]
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_ui_exposes_deep_clean_and_admin_label():
     base = os.path.dirname(__file__)
     text = open(os.path.join(base, "ui", "main_window.py"), encoding="utf-8").read()
@@ -1108,6 +1353,12 @@ def test_ui_exposes_deep_clean_and_admin_label():
     assert "Dọn ngay" in preview
     assert "chưa xóa" in preview.lower() or "Chưa xóa" in preview
     assert "Tìm file lớn" in text
+    assert "Dọn sâu (cần Admin)" in text
+    assert "start_admin_deep_clean" in text
+    assert ADMIN_DEEP_DISABLED_VI.split(".")[0] in text or "ADMIN_DEEP_DISABLED_VI" in text
+    admin_handler = text.split("def start_admin_deep_clean")[1].split("\n    def ")[0]
+    assert "ShellExecute" not in admin_handler
+    assert "runas" not in admin_handler.lower()
     assert "Lần dọn gần đây" in text
     assert "open_large_file_finder" in text
     assert "append_clean_history" in text
@@ -1142,6 +1393,7 @@ def _run():
         test_toolchain_caches_use_safe_defaults_and_skip_package_stores,
         test_large_file_scan_does_not_delete_until_confirmed_paths,
         test_clean_history_round_trip,
+        test_admin_deep_plan_respects_elevation_and_forbidden_paths,
         test_ui_exposes_deep_clean_and_admin_label,
     ]
     failed = 0
