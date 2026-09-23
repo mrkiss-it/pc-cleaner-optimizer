@@ -31,6 +31,14 @@ How fields affect behavior (they never raise action caps or enable Trước thi/
   them on top of the snapshot until the next full rebuild clears them.
 - `trust_deltas` / `stat_deltas`: change versus yesterday's snapshot, not a
   second copy of the lifetime totals.
+- `history`: up to seven dated lesson lines for the panel. Display only.
+  It is not a second score, and an empty day ("chưa có gì mới", no lessons)
+  does not take a slot. A same-day rebuild replaces that day's row.
+- `last_rebuild_at`: when the last full rebuild ran. «Học lại hôm nay» ignores
+  clicks inside a short cooldown. The next calendar day is not blocked.
+- Sparse warning: one quiet Vietnamese line on the model panel when Có ích/Chưa
+  volume is still low. It is not added to the morning line, the weekly line,
+  or insight text, and it does not change caps.
 """
 from __future__ import annotations
 
@@ -50,10 +58,17 @@ _WINDOW_LONG = 30
 _MAX_LESSONS = 5
 _MAX_MICRO_LESSONS = 3
 _MAX_SIGNAL = 80
+_HISTORY_DAYS = 7
+_HISTORY_LESSONS = 3
+SPARSE_FEEDBACK_MIN = 3
+REBUILD_COOLDOWN_SEC = 60
 _NOTE_VI = "Trí nhớ thích nghi trên máy này, không phải AGI và không phải file trọng số."
 _HONEST_PANEL_VI = (
     "Trí nhớ thích nghi local trên máy này, không phải AGI, không train lại mạng nơ-ron."
 )
+_SPARSE_VI = "Cần thêm phản hồi Có ích/Chưa để học chắc hơn."
+_REBUILD_DONE_VI = "Đã học lại từ máy này."
+_REBUILD_SOON_VI = "Mình vừa học lại hôm nay."
 _SIGNALS = ("new", "growing", "steady", "familiar")
 _SIGNAL_VI = {
     "new": "mới gặp",
@@ -157,6 +172,8 @@ def _empty_model() -> Dict[str, Any]:
         "yesterday_vi": "",
         "yesterday_topic": "",
         "yesterday_lesson": "",
+        "history": [],
+        "last_rebuild_at": "",
         "note_vi": _NOTE_VI,
     }
 
@@ -501,6 +518,59 @@ def _clean_stat_deltas(raw: Any) -> Dict[str, Any]:
     }
 
 
+def _valid_day(date: str) -> bool:
+    text = str(date or "")
+    return len(text) == 10 and text[4] == "-" and text[7] == "-"
+
+
+def _parse_stamp(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text[:32])
+    except ValueError:
+        return None
+
+
+def _history_row(raw: Any) -> Optional[Dict[str, Any]]:
+    """One dated lesson. Empty days stay out of the ring."""
+    if not isinstance(raw, dict):
+        return None
+    date = str(raw.get("date") or "")[:10]
+    if not _valid_day(date):
+        return None
+    summary = " ".join(str(raw.get("summary_vi") or "").split())[:180]
+    lessons = _clean_lessons(raw.get("lessons"), limit=_HISTORY_LESSONS)
+    quiet = "chưa có gì mới" in summary and not lessons
+    if quiet or (not summary and not lessons):
+        return None
+    return {"date": date, "summary_vi": summary, "lessons": lessons}
+
+
+def _clean_history(raw: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    by_date: Dict[str, Dict[str, Any]] = {}
+    for item in raw:
+        row = _history_row(item)
+        if row:
+            by_date[row["date"]] = row
+    ordered = [by_date[key] for key in sorted(by_date)]
+    return ordered[-_HISTORY_DAYS:]
+
+
+def _merge_history(history: List[Dict[str, Any]], model: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Keep one row per date. A quiet snapshot removes that day instead of filling the ring."""
+    date = str(model.get("date") or "")[:10]
+    kept = [row for row in _clean_history(history) if row.get("date") != date]
+    row = _history_row(model)
+    if row:
+        kept.append(row)
+    kept.sort(key=lambda item: str(item.get("date") or ""))
+    return kept[-_HISTORY_DAYS:]
+
+
 def _clean_lessons(raw: Any, limit: int = _MAX_LESSONS) -> List[str]:
     if not isinstance(raw, list):
         return []
@@ -665,6 +735,9 @@ def _clean_model(raw: Any) -> Dict[str, Any]:
     base["yesterday_vi"] = " ".join(str(raw.get("yesterday_vi") or "").split())[:160]
     base["yesterday_topic"] = str(raw.get("yesterday_topic") or "")[:24]
     base["yesterday_lesson"] = " ".join(str(raw.get("yesterday_lesson") or "").split())[:90]
+    base["history"] = _clean_history(raw.get("history"))
+    rebuilt = _parse_stamp(raw.get("last_rebuild_at"))
+    base["last_rebuild_at"] = rebuilt.replace(microsecond=0).isoformat(timespec="seconds") if rebuilt else ""
     base["note_vi"] = _NOTE_VI
     base["version"] = MODEL_VERSION
     return base
@@ -1369,7 +1442,9 @@ def update_daily_model(
     current = load_daily_model(base_dir)
     if current.get("date") == today and not force:
         return current
+    history = _clean_history(current.get("history"))
     if current.get("date") and current.get("date") != today:
+        history = _merge_history(history, current)
         baseline_scores = current.get("topic_scores") or {}
         baseline_trust = current.get("trust") or {}
         baseline_stats = _stats_snapshot(current)
@@ -1401,6 +1476,8 @@ def update_daily_model(
         )
     finally:
         _IN_REBUILD = False
+    built["history"] = _merge_history(history, built)
+    built["last_rebuild_at"] = stamp.replace(microsecond=0).isoformat(timespec="seconds")
     return save_daily_model(built, base_dir=base_dir)
 
 
@@ -1419,6 +1496,41 @@ def ensure_daily_model(
         except Exception:
             pass
     return update_daily_model(now=now, base_dir=base_dir, force=False)
+
+
+def rebuild_on_cooldown(model: Optional[Dict[str, Any]] = None, *, now: Optional[datetime] = None) -> bool:
+    """True only when today's snapshot was fully rebuilt moments ago."""
+    payload = _clean_model(model) if isinstance(model, dict) else {}
+    stamp = now or datetime.now()
+    if str(payload.get("date") or "") != stamp.strftime("%Y-%m-%d"):
+        return False
+    previous = _parse_stamp(payload.get("last_rebuild_at"))
+    if previous is None:
+        return False
+    elapsed = (stamp - previous).total_seconds()
+    return 0 <= elapsed < REBUILD_COOLDOWN_SEC
+
+
+def request_rebuild_today(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Force today's full rebuild from diary, profile, and feedback.
+
+    The same calendar day still uses yesterday's baselines, so a rebuild
+    replaces today's snapshot and does not invent a second day's counts.
+    A click inside the cooldown is a no-op. The next day is not blocked.
+    This does not run an action and does not turn Trước thi/họp on.
+    """
+    del config_manager
+    stamp = now or datetime.now()
+    current = load_daily_model(base_dir)
+    if rebuild_on_cooldown(current, now=stamp):
+        return {"rebuilt": False, "model": current, "message_vi": _REBUILD_SOON_VI}
+    model = update_daily_model(now=stamp, base_dir=base_dir, force=True)
+    return {"rebuilt": True, "model": model, "message_vi": _REBUILD_DONE_VI}
 
 
 def _append_lesson(micro: Dict[str, Any], text: str) -> None:
@@ -1592,8 +1704,44 @@ def _trust_bar_line(model: Dict[str, Any]) -> str:
     return " · ".join(bits)
 
 
+def _feedback_volume(model: Dict[str, Any]) -> int:
+    trust = model.get("trust") if isinstance(model.get("trust"), dict) else {}
+    return _as_int(trust.get("helpful")) + _as_int(trust.get("unhelpful"))
+
+
+def sparse_warning_vi(model: Optional[Dict[str, Any]] = None, *, base_dir: Optional[str] = None) -> str:
+    """One quiet line when Có ích/Chưa is still thin. Not a morning or insight sentence."""
+    payload = _clean_model(model) if isinstance(model, dict) else load_daily_model(base_dir)
+    if not _valid_day(str(payload.get("date") or "")):
+        return ""
+    if _feedback_volume(payload) >= SPARSE_FEEDBACK_MIN:
+        return ""
+    return _SPARSE_VI
+
+
+def format_history_vi(model: Optional[Dict[str, Any]] = None, *, base_dir: Optional[str] = None) -> str:
+    """Newest-first lesson ring. Uses a middle dot so it is not a lesson bullet."""
+    payload = _clean_model(model) if isinstance(model, dict) else load_daily_model(base_dir)
+    rows = _clean_history(payload.get("history"))
+    if not rows:
+        return ""
+    lines = ["Bảy ngày gần đây:"]
+    for row in reversed(rows):
+        date = str(row.get("date") or "")
+        shown = date[8:10] + "/" + date[5:7]
+        summary = str(row.get("summary_vi") or "").replace("•", "·")
+        if not summary:
+            summary = "; ".join(row.get("lessons") or []).replace("•", "·")
+        lines.append(f"{shown} · {summary}")
+    return "\n".join(lines)
+
+
 def format_model_panel_vi(model: Optional[Dict[str, Any]] = None, *, base_dir: Optional[str] = None) -> str:
-    """Short honest panel: date, lessons, topic bars, schema version. Not an AGI readout."""
+    """Short honest panel: date, lessons, 7-day history, topic bars. Not an AGI readout.
+
+    The sparse-data line is shown here at most once. It is not copied into
+    the morning line, the weekly line, or insight text.
+    """
     payload = _clean_model(model) if isinstance(model, dict) else load_daily_model(base_dir)
     date = str(payload.get("date") or "")
     if len(date) != 10:
@@ -1612,6 +1760,12 @@ def format_model_panel_vi(model: Optional[Dict[str, Any]] = None, *, base_dir: O
     signal = _SIGNAL_VI.get(str(payload.get("maturity_signal") or ""), "")
     if signal:
         lines.append(f"Độ chín của trí nhớ: {signal}.")
+    history = format_history_vi(payload)
+    if history:
+        lines.append(history)
+    warning = sparse_warning_vi(payload)
+    if warning:
+        lines.append(warning)
     lines.append(_HONEST_PANEL_VI)
     return "\n".join(lines)
 
@@ -1638,6 +1792,10 @@ def morning_learn_clause(
     blocked = set(hidden or [])
     if not text or topic in blocked or _mentions_muted(text, blocked):
         return ""
+    # History and the sparse-data line stay on the model panel. An empty or
+    # thin snapshot must not grow a second morning sentence.
+    if "chưa có gì mới" in text or "Cần thêm phản hồi" in text:
+        return ""
     return text
 
 
@@ -1649,7 +1807,7 @@ def weekly_learn_line(
 ) -> str:
     model = load_daily_model(base_dir)
     text = str(model.get("summary_vi") or "").strip()
-    if not text or "chưa có gì mới" in text:
+    if not text or "chưa có gì mới" in text or "Cần thêm phản hồi" in text:
         return ""
     date = str(model.get("date") or "")
     stamp = now or datetime.now()

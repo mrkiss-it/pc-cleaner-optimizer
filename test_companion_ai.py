@@ -3000,7 +3000,9 @@ from core.companion_learning import (
     prefer_learned_topics,
     prompt_learn_line,
     rank_propose_key,
+    request_rebuild_today,
     save_daily_model,
+    sparse_warning_vi,
     update_daily_model,
     weekly_learn_line,
 )
@@ -3190,6 +3192,8 @@ with open(model_path(legacy_dir), "w", encoding="utf-8") as handle:
 loaded_legacy = load_daily_model(legacy_dir)
 check(loaded_legacy.get("version") == 2, "a v1 file is read as schema v2")
 check(loaded_legacy.get("lessons") == [], "missing lessons default to an empty list")
+check(loaded_legacy.get("history") == [], "missing history defaults to an empty list")
+check(loaded_legacy.get("last_rebuild_at") == "", "a missing rebuild time stays empty")
 check((loaded_legacy.get("windows") or {}).get("7d", {}).get("span_days") == 7, "missing windows default to empty 7-day stats")
 check(loaded_legacy.get("skill_affinity") == {}, "missing affinity defaults to empty")
 check(float(loaded_legacy.get("confidence") or 0) == 0, "missing confidence defaults to zero")
@@ -3274,6 +3278,8 @@ round_dir = _fresh_dir()
 check(import_companion_memory(round_path, mode="replace", base_dir=round_dir).get("ok") is True, "schema v2 imports")
 imported_v2 = load_daily_model(round_dir)
 check(imported_v2.get("lessons") == first_model.get("lessons"), "import keeps the same lessons")
+check(imported_v2.get("history") == first_model.get("history"), "import keeps the lesson history")
+check(first_model.get("history"), "a day with a lesson is stored in history")
 check(imported_v2.get("version") == 2, "import stores schema v2")
 check(ExamMeetingFocus.is_active() is False, "importing schema v2 does not enable Trước thi / họp")
 poison_aff = dict(round_model)
@@ -3316,7 +3322,106 @@ panel_dlg = CompanionDialog(config_manager=_Cfg())
 check("Mô hình học" in panel_dlg.lbl_model.text() or "không phải AGI" in panel_dlg.lbl_model.text(), "memory dialog shows the learning model")
 check("mạng nơ-ron" in panel_dlg.lbl_model.text(), "memory dialog says the model is not a retrained net")
 check("Ollama" not in panel_dlg.lbl_model.text(), "memory dialog does not mention Ollama")
+check(panel_dlg.btn_rebuild.text() == "Học lại hôm nay", "memory view can rebuild today's model")
+panel_dlg.btn_rebuild.click()
+check(ExamMeetingFocus.is_active() is False, "Học lại hôm nay does not enable Trước thi / họp")
 panel_dlg.close()
+
+# Phase 1 — ổn định học: 7-day history, same-day rebuild, quiet sparse line.
+_SPARSE_LINE = "Cần thêm phản hồi Có ích/Chưa để học chắc hơn."
+check("Cần thêm phản hồi" not in format_model_panel_vi(first_model), "a model with enough Có ích/Chưa stays quiet")
+check(format_model_panel_vi(first_model).count("•") <= 3, "history does not add extra lesson bullets")
+check("Bảy ngày gần đây" in format_model_panel_vi(first_model), "the panel shows the lesson history")
+check("•" not in "\n".join(
+    line for line in format_model_panel_vi(first_model).splitlines() if line[:1].isdigit()
+), "history lines are not lesson bullets")
+rich_morning = morning_learn_clause(now=learn_day, base_dir=stable_learn) or ""
+check("Hôm qua mình học" in rich_morning, "a real lesson still reaches the morning line")
+check("Cần thêm phản hồi" not in rich_morning, "the sparse line is not a morning sentence")
+check("Cần thêm phản hồi" not in (weekly_learn_line(now=learn_day, base_dir=stable_learn, muted=set()) or ""), "the sparse line is not a weekly sentence")
+
+sparse_root = _fresh_dir()
+sparse_model = update_daily_model(now=learn_day, base_dir=sparse_root)
+check(sparse_model.get("history") == [], "an empty day does not fill the history ring")
+check(morning_learn_clause(now=learn_day, base_dir=sparse_root) == "", "an empty day stays out of the morning line")
+check(weekly_learn_line(now=learn_day, base_dir=sparse_root, muted=set()) == "", "an empty day stays out of the weekly line")
+check(sparse_warning_vi(sparse_model) == _SPARSE_LINE, "thin feedback gets one quiet line")
+sparse_panel = format_model_panel_vi(sparse_model)
+check(sparse_panel.count(_SPARSE_LINE) == 1, "the sparse line appears once on the model panel")
+check("Cần thêm phản hồi" not in learn_status_vi(sparse_model, now=learn_day), "the status line does not repeat the sparse warning")
+check("Cần thêm phản hồi" not in (prompt_learn_line(now=learn_day, base_dir=sparse_root) or ""), "prompt context does not repeat the sparse warning")
+
+hist_root = _fresh_dir()
+hist_start = datetime(2026, 9, 10, 8, 0, 0)
+for offset in range(8):
+    stamp = hist_start + timedelta(days=offset)
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu",
+        now=stamp - timedelta(hours=2),
+        base_dir=hist_root,
+        coalesce=False,
+    )
+    update_daily_model(now=stamp, base_dir=hist_root)
+hist_model = load_daily_model(hist_root)
+hist_rows = hist_model.get("history") or []
+check(len(hist_rows) == 7, "history keeps the last seven lesson days")
+check(hist_rows[0].get("date") == "2026-09-11", "the oldest day drops off the ring")
+check(hist_rows[-1].get("date") == "2026-09-17", "the newest lesson day stays")
+check(len({row.get("date") for row in hist_rows}) == 7, "each history day is stored once")
+check(all(row.get("summary_vi") for row in hist_rows), "each history row keeps that day's summary")
+note_user_feedback(True, base_dir=hist_root, now=hist_start + timedelta(days=7, hours=1), topic="wifi")
+kept_history = load_daily_model(hist_root).get("history")
+check(kept_history == hist_rows, "a same-day Có ích does not rewrite the history ring")
+soon = request_rebuild_today(now=hist_start + timedelta(days=7, seconds=20), base_dir=hist_root)
+check(soon.get("rebuilt") is False, "Học lại hôm nay ignores a click moments later")
+check("vừa học" in (soon.get("message_vi") or ""), "the cooldown says it just learned")
+check((load_daily_model(hist_root).get("micro") or {}).get("helpful") == 1, "a cooldown click leaves the overlay in place")
+helpful_before = int(((hist_model.get("topic_scores") or {}).get("wifi") or {}).get("helpful") or 0)
+later = request_rebuild_today(now=hist_start + timedelta(days=7, minutes=2), base_dir=hist_root)
+check(later.get("rebuilt") is True, "Học lại hôm nay rebuilds after the cooldown")
+check("Đã học lại" in (later.get("message_vi") or ""), "the rebuild says it learned from this PC")
+rebuilt = later.get("model") or {}
+rebuilt_rows = rebuilt.get("history") or []
+check(len(rebuilt_rows) == 7, "a same-day rebuild does not add an eighth copy")
+check(sum(1 for row in rebuilt_rows if row.get("date") == "2026-09-17") == 1, "a same-day rebuild replaces today's history row")
+check(int(((rebuilt.get("topic_scores") or {}).get("wifi") or {}).get("helpful") or 0) == helpful_before + 1, "the rebuild counts today's Có ích once")
+check(int((rebuilt.get("micro") or {}).get("helpful") or 0) == 0, "the rebuild clears the overlay because the diary is the source of truth")
+wifi_delta_rebuild = ((rebuilt.get("trust_deltas") or {}).get("wifi") or {}).get("delta")
+check(wifi_delta_rebuild == int(((rebuilt.get("topic_scores") or {}).get("wifi") or {}).get("score") or 0) - int((((hist_model.get("baseline_scores") or {}).get("wifi") or {}).get("score") or 0)), "the rebuild delta is still versus yesterday")
+again = request_rebuild_today(now=hist_start + timedelta(days=7, minutes=2, seconds=15), base_dir=hist_root)
+check(again.get("rebuilt") is False, "a second rebuild inside the cooldown does not run")
+check(
+    int(((load_daily_model(hist_root).get("topic_scores") or {}).get("wifi") or {}).get("helpful") or 0) == helpful_before + 1,
+    "the cooldown does not count the Có ích again",
+)
+next_rebuild = request_rebuild_today(now=hist_start + timedelta(days=8), base_dir=hist_root)
+check(next_rebuild.get("rebuilt") is True, "a new calendar day is not blocked by yesterday's cooldown")
+check(
+    int(((next_rebuild.get("model") or {}).get("topic_scores") or {}).get("wifi", {}).get("helpful") or 0) == helpful_before + 1,
+    "the next day does not count yesterday's Có ích a second time",
+)
+check(ExamMeetingFocus.is_active() is False, "rebuilding the model does not enable Trước thi / họp")
+
+aged = load_daily_model(ui_model)
+aged["last_rebuild_at"] = (ui_now - timedelta(minutes=5)).replace(microsecond=0).isoformat(timespec="seconds")
+save_daily_model(aged, base_dir=ui_model)
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = ui_model
+rebuild_bar = CompanionInsightBar(config_manager=_Cfg())
+rebuild_bar.refresh()
+check(rebuild_bar.btn_rebuild.text() == "Học lại hôm nay", "the companion card can rebuild today's model")
+check(rebuild_bar.btn_rebuild.isHidden() is False, "the rebuild button sits with the model panel")
+check(rebuild_bar.btn_rebuild.isEnabled() is True, "an older rebuild leaves the button ready")
+rebuild_bar.btn_rebuild.click()
+check(ExamMeetingFocus.is_active() is False, "the card rebuild button does not enable Trước thi / họp")
+check(rebuild_bar.btn_rebuild.isEnabled() is False, "the button rests after it just rebuilt")
+rebuild_bar.deleteLater()
+fresh_bar = CompanionInsightBar(config_manager=_Cfg())
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = _fresh_dir()
+fresh_bar.refresh()
+check(fresh_bar.btn_rebuild.isHidden(), "an empty day does not show the rebuild button on the insight strip")
+check(fresh_bar.isHidden(), "an empty day still hides the insight strip")
+fresh_bar.deleteLater()
 print(" [PASS] mô hình học mỗi ngày")
 
 print(" [PASS] companion AI suite")
