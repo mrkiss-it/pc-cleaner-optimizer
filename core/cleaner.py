@@ -10,16 +10,19 @@ from core.c_drive_clean import (
     DEFAULT_DOWNLOADS_MIN_AGE_DAYS,
     LOCKED_REASON_VI,
     PROTECTED_REASON_VI,
+    SYNC_ROOT_REASON_VI,
     TARGET_CATALOG,
     TARGET_ORDER,
     TOO_BROAD_REASON_VI,
     build_target_paths,
     clean_one_path,
     empty_detail,
+    estimate_reclaimable,
     format_clean_report_vi,
     format_freed_vi,
     is_process_elevated,
     normalize_downloads_min_age_days,
+    read_c_drive_free_bytes,
     resolve_clean_plan,
     scan_old_files,
     scan_tree,
@@ -209,6 +212,43 @@ class JunkCleaner:
         return results
 
     @classmethod
+    def estimate_deep(
+        cls,
+        enabled_targets: Dict[str, bool],
+        *,
+        is_admin: Optional[bool] = None,
+        environ: Optional[Dict[str, str]] = None,
+        downloads_min_age_days: Optional[int] = None,
+        now_ts: Optional[float] = None,
+        recycle_query: Optional[Callable[[], Dict[str, Any]]] = None,
+        deep_user_safe: bool = True,
+    ) -> Dict[str, Any]:
+        """Quét xem trước cho «Dọn ổ C». Không xóa tệp."""
+        if is_admin is None:
+            is_admin = cls.is_admin()
+        plan = resolve_clean_plan(
+            enabled_targets,
+            is_admin=bool(is_admin),
+            deep_user_safe=bool(deep_user_safe),
+        )
+        recycle_info = None
+        if plan["to_run"].get("recycle_bin"):
+            query = recycle_query or cls.get_recycle_bin_info
+            try:
+                recycle_info = query() or {}
+            except Exception:
+                recycle_info = {}
+        return estimate_reclaimable(
+            enabled_targets,
+            is_admin=bool(is_admin),
+            deep_user_safe=bool(deep_user_safe),
+            environ=environ,
+            downloads_min_age_days=downloads_min_age_days,
+            now_ts=now_ts,
+            recycle_info=recycle_info,
+        )
+
+    @classmethod
     def _apply_recycle_result(cls, res: Dict[str, Any]) -> Dict[str, Any]:
         """Chỉ cộng byte khi Windows báo thành công. Payload thất bại không được tin freed_bytes."""
         if res.get("success"):
@@ -243,6 +283,7 @@ class JunkCleaner:
         environ: Optional[Dict[str, str]] = None,
         now_ts: Optional[float] = None,
         recycle_empty: Optional[Callable[[], Dict[str, Any]]] = None,
+        disk_free_bytes: Optional[Callable[[], Optional[int]]] = None,
     ) -> Dict[str, Any]:
         """
         Dọn các mục được chọn. Mục cần Admin bị bỏ qua khi chưa elevated.
@@ -264,6 +305,13 @@ class JunkCleaner:
         detail_order: List[str] = []
         total_freed_bytes = 0
         total_deleted_files = 0
+        free_before = None
+        if deep_user_safe:
+            reader = disk_free_bytes or read_c_drive_free_bytes
+            try:
+                free_before = reader()
+            except Exception:
+                free_before = None
 
         for skipped in plan["skipped"]:
             key = skipped["key"]
@@ -291,6 +339,7 @@ class JunkCleaner:
                         "errors": 0,
                         "protected": 0,
                         "too_broad": 0,
+                        "sync_root": 0,
                     }
                     for path in target_paths.get(cat_key, []):
                         part = clean_one_path(
@@ -308,6 +357,9 @@ class JunkCleaner:
                     if agg["protected"]:
                         status = "error" if agg["freed_bytes"] <= 0 else "cleaned"
                         reason = PROTECTED_REASON_VI
+                    elif agg["sync_root"] and agg["freed_bytes"] <= 0:
+                        status = "error"
+                        reason = SYNC_ROOT_REASON_VI
                     elif agg["too_broad"] and agg["freed_bytes"] <= 0:
                         status = "error"
                         reason = TOO_BROAD_REASON_VI
@@ -341,6 +393,14 @@ class JunkCleaner:
         if progress_callback:
             progress_callback("Hoàn tất dọn dẹp!", 100)
 
+        free_after = None
+        if deep_user_safe:
+            reader = disk_free_bytes or read_c_drive_free_bytes
+            try:
+                free_after = reader()
+            except Exception:
+                free_after = None
+
         freed_mb = round(total_freed_bytes / (1024 ** 2), 2)
         skipped_names = [item.get("name") or item.get("key") for item in plan["skipped"]]
         logger.info(
@@ -358,6 +418,13 @@ class JunkCleaner:
             "skipped": plan["skipped"],
             "is_admin": bool(is_admin),
             "deep_user_safe": bool(deep_user_safe),
+            "free_bytes_before": free_before,
+            "free_bytes_after": free_after,
+            "free_bytes_delta": (
+                int(free_after) - int(free_before)
+                if free_before is not None and free_after is not None
+                else None
+            ),
         }
         result["report_vi"] = format_clean_report_vi(result)
         return result

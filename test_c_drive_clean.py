@@ -33,11 +33,14 @@ from app_meta import APP_VERSION
 from config_manager import DEFAULT_CONFIG
 from core.c_drive_clean import (
     ADMIN_SKIP_REASON_VI,
+    SYNC_ROOT_REASON_VI,
     LowDiskToastGate,
     TARGET_CATALOG,
     build_low_disk_notice,
     build_target_paths,
+    clean_one_path,
     default_target_flags,
+    estimate_reclaimable,
     is_disk_space_low,
     is_process_elevated,
     path_is_forbidden,
@@ -428,12 +431,350 @@ def test_low_disk_threshold_and_toast_cooldown():
     assert gate.allow(2800, cooldown_sec=1800) is True
 
 
+def _extended_tree(root):
+    """Cache/log phổ biến trên máy Windows, cộng các đường dẫn không được đụng."""
+    home = os.path.join(root, "Users", "alice")
+    local = os.path.join(home, "AppData", "Local")
+    roaming = os.path.join(home, "AppData", "Roaming")
+    windows = os.path.join(root, "Windows")
+
+    def put(rel_parts, payload, base=local):
+        path = os.path.join(base, *rel_parts)
+        _write(path, payload)
+        return path
+
+    files = {
+        "coccoc_cache": put(["CocCoc", "Browser", "User Data", "Default", "Cache", "a.bin"], b"A" * 10),
+        "coccoc_cookies": put(["CocCoc", "Browser", "User Data", "Default", "Cookies"], b"SECRET"),
+        "coccoc_sw": put(
+            ["CocCoc", "Browser", "User Data", "Default", "Service Worker", "CacheStorage", "sw.bin"],
+            b"S" * 8,
+        ),
+        "coccoc_sw_db": put(
+            ["CocCoc", "Browser", "User Data", "Default", "Service Worker", "Database", "db.bin"],
+            b"D" * 9,
+        ),
+        "coccoc_idb": put(
+            ["CocCoc", "Browser", "User Data", "Default", "IndexedDB", "idb.bin"],
+            b"I" * 7,
+        ),
+        "webview_cache": put(
+            ["Contoso", "Widget", "EBWebView", "Default", "Cache", "c.bin"],
+            b"W" * 11,
+        ),
+        "webview_sw": put(
+            ["Contoso", "Widget", "EBWebView", "Default", "Service Worker", "CacheStorage", "sw2.bin"],
+            b"E" * 6,
+        ),
+        "webview_idb": put(
+            ["Contoso", "Widget", "EBWebView", "Default", "IndexedDB", "secret.bin"],
+            b"X" * 4,
+        ),
+        "spotify": put(["Spotify", "Browser", "Cache", "s.bin"], b"P" * 12),
+        "spotify_storage": put(["Spotify", "Storage", "offline.bin"], b"M" * 20),
+        "slack": put(["Slack", "Cache", "sl.bin"], b"K" * 13, roaming),
+        "zoom": put(["Zoom", "logs", "z.log"], b"Z" * 3, roaming),
+        "notion": put(["Notion", "Cache", "n.bin"], b"N" * 4, roaming),
+        "capcut": put(["CapCut", "User Data", "Cache", "cc.bin"], b"C" * 15),
+        "capcut_project": put(["CapCut", "User Data", "Projects", "draft.bin"], b"R" * 40),
+        "idea": put(["JetBrains", "IntelliJIdea2024.3", "caches", "idea.bin"], b"J" * 16),
+        "idea_index": put(["JetBrains", "IntelliJIdea2024.3", "index", "idx.bin"], b"Q" * 17),
+        "studio": put(["Google", "AndroidStudio2024.2", "caches", "as.bin"], b"G" * 18),
+        "studio_plugins": put(["Google", "AndroidStudio2024.2", "plugins", "plug.bin"], b"U" * 19),
+        "font": put(["Microsoft", "FontCache", "font.dat"], b"F" * 6),
+        "fonts_user": put(["Microsoft", "Windows", "Fonts", "myfont.ttf"], b"T" * 14),
+        "explorer_cache": put(["Microsoft", "Windows", "Caches", "shell.db"], b"H" * 7),
+        "shell_temp": put(
+            ["Packages", "Microsoft.Windows.ShellExperienceHost_abc", "TempState", "t.bin"],
+            b"Y" * 5,
+        ),
+        "shell_local": put(
+            ["Packages", "Microsoft.Windows.ShellExperienceHost_abc", "LocalState", "keep.bin"],
+            b"L" * 21,
+        ),
+        "store_temp": put(
+            ["Packages", "Microsoft.WindowsStore_8wekyb3d8bbwe", "TempState", "st.bin"],
+            b"B" * 9,
+        ),
+        "store_local": put(
+            ["Packages", "Microsoft.WindowsStore_8wekyb3d8bbwe", "LocalState", "keep2.bin"],
+            b"V" * 22,
+        ),
+        "office_web": put(["Microsoft", "Office", "16.0", "WebServiceCache", "ws.bin"], b"O" * 8),
+        "office_file": put(["Microsoft", "Office", "16.0", "OfficeFileCache", "pending.docx"], b"D" * 30),
+        "onedrive_log": put(["Microsoft", "OneDrive", "logs", "od.log"], b"L" * 2),
+        "onedrive_sync": put(["OneDrive", "doc.txt"], b"S" * 50, home),
+        "poison": put(["WinSxS", "EBWebView", "Default", "Cache", "poison.bin"], b"P" * 99),
+        "sys_temp": put(["Temp", "sys.tmp"], b"S" * 80, windows),
+        "download": put(["Downloads", "old.bin"], b"O" * 70, home),
+    }
+    env = {
+        "USERPROFILE": home,
+        "LOCALAPPDATA": local,
+        "APPDATA": roaming,
+        "TEMP": os.path.join(local, "Temp"),
+        "SystemRoot": windows,
+    }
+    os.makedirs(env["TEMP"], exist_ok=True)
+    return {"env": env, "home": home, "windows": windows, "files": files}
+
+
+def _path_parts(path):
+    return [part.lower() for part in os.path.normpath(path).split(os.sep) if part]
+
+
+def test_expanded_user_safe_paths_scan_without_deleting():
+    root = tempfile.mkdtemp(prefix="pca-ext-")
+    try:
+        info = _extended_tree(root)
+        paths = build_target_paths(info["env"])
+        flat = [path for group in paths.values() for path in group]
+        joined = "\n".join(flat).lower()
+
+        assert any(path.endswith(os.path.join("Default", "Cache")) and "coccoc" in path.lower() for path in paths["browser_cache"])
+        assert any("cachestorage" in path.lower() for path in paths["browser_cache"])
+        assert any(path.endswith(os.path.join("EBWebView", "Default", "Cache")) for path in paths["browser_cache"])
+        assert any(path.endswith(os.path.join("Spotify", "Browser", "Cache")) for path in paths["app_caches"])
+        assert any(path.endswith(os.path.join("Slack", "Cache")) for path in paths["app_caches"])
+        assert any(path.endswith(os.path.join("Zoom", "logs")) for path in paths["app_caches"])
+        assert any(path.endswith(os.path.join("Notion", "Cache")) for path in paths["app_caches"])
+        assert any(path.endswith(os.path.join("CapCut", "User Data", "Cache")) for path in paths["app_caches"])
+        assert any(path.endswith(os.path.join("IntelliJIdea2024.3", "caches")) for path in paths["app_caches"])
+        assert any("androidstudio2024.2" in path.lower() and path.endswith("caches") for path in paths["app_caches"])
+        assert any(path.endswith("FontCache") for path in paths["shell_font_cache"])
+        assert any(path.endswith(os.path.join("Windows", "Caches")) for path in paths["shell_font_cache"])
+        assert any(path.endswith("TempState") and "ShellExperienceHost" in path for path in paths["shell_font_cache"])
+        assert any(path.endswith("TempState") and "WindowsStore" in path for path in paths["store_cache"])
+        assert any(path.endswith("WebServiceCache") for path in paths["office_cache"])
+        assert any(path.endswith(os.path.join("OneDrive", "logs")) for path in paths["office_cache"])
+        assert any(path.endswith("OfficeFileCache") for path in paths["office_file_cache"])
+
+        for path in flat:
+            parts = _path_parts(path)
+            assert "winsxs" not in parts
+            assert "system32" not in parts
+            assert "indexeddb" not in parts
+            assert "cookies" not in parts
+            assert "database" not in parts
+            assert "projects" not in parts
+            assert "localstate" not in parts
+            assert "fonts" not in parts
+            assert "index" not in parts
+            assert "plugins" not in parts
+            assert not path_is_forbidden(path)
+        assert "offline.bin" not in joined
+        assert info["files"]["onedrive_sync"].lower() not in joined
+        assert "doc.txt" not in joined
+        assert TARGET_CATALOG["shell_font_cache"]["needs_admin"] is False
+        assert TARGET_CATALOG["office_cache"]["needs_admin"] is False
+        assert TARGET_CATALOG["store_cache"]["needs_admin"] is False
+        assert TARGET_CATALOG["office_file_cache"]["needs_admin"] is False
+        assert TARGET_CATALOG["office_file_cache"]["default_enabled"] is False
+        assert TARGET_CATALOG["shell_font_cache"]["default_enabled"] is True
+
+        flags = default_target_flags()
+        flags["recycle_bin"] = False
+        flags["downloads_old"] = False
+        before = {
+            os.path.join(dirpath, filename)
+            for dirpath, _dirs, filenames in os.walk(root)
+            for filename in filenames
+        }
+        scan = estimate_reclaimable(
+            flags,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=info["env"],
+        )
+        after = {
+            os.path.join(dirpath, filename)
+            for dirpath, _dirs, filenames in os.walk(root)
+            for filename in filenames
+        }
+        assert before == after
+        assert os.path.getsize(info["files"]["coccoc_cookies"]) == 6
+        ready = {row["key"]: row for row in scan["targets"] if row["status"] == "ready"}
+        skipped = {row["key"]: row for row in scan["targets"] if row["status"] == "skipped"}
+        assert "office_file_cache" not in ready
+        assert "downloads_old" not in ready
+        assert skipped["system_temp"]["reclaimable_bytes"] == 0
+        assert skipped["system_temp"]["size_bytes"] == 80
+        assert ADMIN_SKIP_REASON_VI in skipped["system_temp"]["reason"]
+        # 17 tệp cache/log an toàn, không gồm OfficeFileCache (30) hay temp hệ thống (80).
+        assert scan["total_bytes"] == 153
+        assert scan["total_files"] == 17
+        assert "chưa xóa" in scan["preview_vi"].lower()
+        assert "153 B" in scan["preview_vi"]
+
+        opted = dict(flags)
+        opted["office_file_cache"] = True
+        opted_scan = estimate_reclaimable(
+            opted,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=info["env"],
+        )
+        assert opted_scan["total_bytes"] == 183
+        assert os.path.exists(info["files"]["office_file"])
+
+        calls = []
+
+        def _recycle():
+            calls.append("recycle")
+            return {"success": True, "freed_bytes": 99999, "items": 1}
+
+        result = JunkCleaner.clean(
+            flags,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=info["env"],
+            recycle_empty=_recycle,
+            disk_free_bytes=lambda: None,
+        )
+        assert calls == []
+        assert result["total_freed_bytes"] == 153
+        assert result["details"]["system_temp"]["status"] == "skipped"
+        assert result["details"]["system_temp"]["freed_bytes"] == 0
+        for key in (
+            "coccoc_cookies", "coccoc_sw_db", "coccoc_idb", "webview_idb",
+            "spotify_storage", "capcut_project", "idea_index", "studio_plugins",
+            "fonts_user", "shell_local", "store_local", "office_file",
+            "onedrive_sync", "poison", "sys_temp", "download",
+        ):
+            assert os.path.exists(info["files"][key]), key
+        for key in (
+            "coccoc_cache", "coccoc_sw", "webview_cache", "spotify", "slack",
+            "capcut", "idea", "studio", "font", "office_web", "onedrive_log",
+        ):
+            assert not os.path.exists(info["files"][key]), key
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_forbidden_and_sync_root_stay_blocked():
+    root = tempfile.mkdtemp(prefix="pca-block-")
+    try:
+        info = _extended_tree(root)
+        home = info["home"]
+        windows = info["windows"]
+        broad = clean_one_path(home, clean_mode="contents", user_profile=home, system_root=windows)
+        assert broad["too_broad"] == 1
+        assert broad["freed_bytes"] == 0
+        assert os.path.exists(info["files"]["onedrive_sync"])
+
+        sync = clean_one_path(
+            os.path.dirname(info["files"]["onedrive_sync"]),
+            clean_mode="contents",
+            user_profile=home,
+            system_root=windows,
+        )
+        assert sync["sync_root"] == 1
+        assert sync["freed_bytes"] == 0
+        assert os.path.exists(info["files"]["onedrive_sync"])
+
+        system = clean_one_path(windows, clean_mode="contents", user_profile=home, system_root=windows)
+        assert system["too_broad"] == 1
+        assert os.path.exists(info["files"]["sys_temp"])
+        assert os.path.exists(info["files"]["poison"])
+
+        protected = clean_one_path(
+            os.path.join(windows, "WinSxS"),
+            clean_mode="contents",
+            user_profile=home,
+            system_root=windows,
+        )
+        assert protected.get("protected") == 1
+        assert protected["freed_bytes"] == 0
+
+        direct = JunkCleaner.clean(
+            {"user_temp": False, "system_temp": True, "windows_update": True},
+            is_admin=False,
+            environ=info["env"],
+        )
+        assert direct["details"]["system_temp"]["status"] == "skipped"
+        assert direct["details"]["system_temp"]["freed_bytes"] == 0
+        assert direct["total_freed_bytes"] == 0
+        assert os.path.exists(info["files"]["sys_temp"])
+        assert "OneDrive" in SYNC_ROOT_REASON_VI
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_deep_report_shows_free_space_delta_and_claimed_bytes():
+    root = tempfile.mkdtemp(prefix="pca-free-")
+    try:
+        info = _tree(root)
+        samples = {"i": 0, "values": [5000, 5100]}
+
+        def reader():
+            value = samples["values"][samples["i"]]
+            samples["i"] += 1
+            return value
+
+        result = JunkCleaner.clean(
+            {
+                "user_temp": False,
+                "browser_cache": False,
+                "system_temp": True,
+                "downloads_old": False,
+                "recycle_bin": False,
+            },
+            is_admin=False,
+            deep_user_safe=True,
+            environ=info["env"],
+            disk_free_bytes=reader,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 1},
+        )
+        assert result["total_freed_bytes"] == 180
+        assert result["free_bytes_before"] == 5000
+        assert result["free_bytes_after"] == 5100
+        assert result["free_bytes_delta"] == 100
+        assert "trống trước" in result["report_vi"]
+        assert "thay đổi thực tế +100 B" in result["report_vi"]
+        assert "Byte đã xóa: 180 B" in result["report_vi"]
+
+        unread = JunkCleaner.clean(
+            {"user_temp": False, "recycle_bin": False, "downloads_old": False},
+            is_admin=False,
+            deep_user_safe=True,
+            environ=info["env"],
+            disk_free_bytes=lambda: None,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1},
+        )
+        assert "Không đọc được dung lượng trống ổ C:" in unread["report_vi"]
+        assert unread["free_bytes_delta"] is None
+
+        plain_root = tempfile.mkdtemp(prefix="pca-plain-")
+        try:
+            plain_info = _tree(plain_root)
+            plain = JunkCleaner.clean(
+                {"user_temp": True},
+                is_admin=False,
+                deep_user_safe=False,
+                environ=plain_info["env"],
+                disk_free_bytes=reader,
+            )
+        finally:
+            shutil.rmtree(plain_root, ignore_errors=True)
+        assert plain["free_bytes_delta"] is None
+        assert "trống trước" not in plain["report_vi"]
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_ui_exposes_deep_clean_and_admin_label():
-    text = open(os.path.join(os.path.dirname(__file__), "ui", "main_window.py"), encoding="utf-8").read()
+    base = os.path.dirname(__file__)
+    text = open(os.path.join(base, "ui", "main_window.py"), encoding="utf-8").read()
+    preview = open(os.path.join(base, "ui", "c_drive_preview_dialog.py"), encoding="utf-8").read()
     assert "Dọn ổ C (không cần Admin)" in text
+    assert "Quét ổ C" in text
     assert "Cần Admin" in text
     assert "start_deep_c_clean" in text
-    scheduler = open(os.path.join(os.path.dirname(__file__), "core", "scheduler.py"), encoding="utf-8").read()
+    assert "start_deep_c_preview" in text
+    assert "deep_preview" in text
+    assert "Dọn ngay" in preview
+    assert "chưa xóa" in preview.lower() or "Chưa xóa" in preview
+    scheduler = open(os.path.join(base, "core", "scheduler.py"), encoding="utf-8").read()
     assert "low_disk_warning" in scheduler
     assert "LowDiskToastGate" in scheduler
 
@@ -452,6 +793,9 @@ def _run():
         test_symlink_is_unlinked_without_deleting_the_target,
         test_failed_recycle_bin_does_not_invent_freed_bytes,
         test_low_disk_threshold_and_toast_cooldown,
+        test_expanded_user_safe_paths_scan_without_deleting,
+        test_forbidden_and_sync_root_stay_blocked,
+        test_deep_report_shows_free_space_delta_and_claimed_bytes,
         test_ui_exposes_deep_clean_and_admin_label,
     ]
     failed = 0
