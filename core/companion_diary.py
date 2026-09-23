@@ -37,6 +37,7 @@ ALLOWED_KINDS = frozenset({
     "suggestion_rejected",
     "chat_note",
     "stage_up",
+    "focus_end",
 })
 
 ALLOWED_OUTCOMES = frozenset({
@@ -71,6 +72,7 @@ KIND_OUTCOME = {
     "suggestion_rejected": "rejected",
     "chat_note": "neutral",
     "stage_up": "ok",
+    "focus_end": "neutral",
 }
 
 KIND_TAGS = {
@@ -95,6 +97,7 @@ KIND_TAGS = {
     "suggestion_rejected": ["suggestion"],
     "chat_note": ["chat"],
     "stage_up": ["stage"],
+    "focus_end": ["focus", "end"],
 }
 
 # Same kind+outcome+tags inside this window updates the open episode instead of a new line.

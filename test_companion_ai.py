@@ -1835,6 +1835,261 @@ print(" [PASS] quiet hours, follow-up, outcomes, end-of-day wrap")
 
 
 # ---------------------------------------------------------------------------
+# Focus session, goal conflict, stress, memory backup
+# ---------------------------------------------------------------------------
+
+from core.companion import (
+    export_companion_memory,
+    import_companion_memory,
+    observe_focus_disabled,
+    observe_focus_enabled,
+)
+from core.companion_moment import (
+    compose_daily_checkin,
+    dismiss_goal_conflict,
+    due_action_followup,
+    machine_stress_active,
+    note_focus_ended,
+    note_focus_started,
+    quiet_covers_reminder_band,
+    sync_focus_session,
+    sync_goal_conflict,
+)
+from core.companion_profile import mute_topic, set_goal, set_quiet_hours, unmute_topic
+from core.companion_reflection import load_reflection, save_reflection
+from core.exam_focus import ExamMeetingFocus
+from core.companion_diary import read_events
+from core.companion_maturity import load_state, save_state
+from core.companion_skills import BLOCKED_ACTION_KEYS, load_skills
+
+ExamMeetingFocus.reset_for_tests()
+focus_root = _fresh_dir()
+started = datetime(2026, 9, 23, 9, 0, 0)
+check(observe_focus_enabled({"already_active": True}, base_dir=focus_root, now=started) is None, "already-on focus does not write another start")
+check(ExamMeetingFocus.is_active() is False, "observing focus does not turn the mode on")
+started_row = observe_focus_enabled({"freed_junk_mb": 12}, base_dir=focus_root, now=started, config_manager=_Cfg())
+check(started_row and started_row.get("kind") == "focus_mode", "enabling focus writes a diary episode")
+check("bật" in started_row.get("summary", "").lower() or "Trước thi" in started_row.get("summary", ""), "start episode names Trước thi / họp")
+check("start" in (started_row.get("tags") or []), "start episode is tagged")
+check(load_state(focus_root).get("focus_session", {}).get("active") is True, "the companion notices the open session")
+check(observe_focus_disabled({"already_inactive": True}, base_dir=focus_root, now=started) is None, "already-off focus does not write an end")
+nudge_root = _fresh_dir()
+for i in range(4):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=datetime(2026, 9, 20, 21, 0, 0) + timedelta(days=i),
+        base_dir=nudge_root,
+        coalesce=False,
+    )
+open_nudge = plan_companion_nudge(
+    now=datetime(2026, 9, 24, 21, 0, 0),
+    base_dir=nudge_root,
+    config_manager=_Cfg(),
+    commit=False,
+)
+check(open_nudge and open_nudge.get("issue_class") == "wifi_weak", "without focus, a repeated Wi-Fi pattern can nudge")
+ExamMeetingFocus._is_active = True
+try:
+    check(stage_voice(3, focus_active=True)["boldness"] == "ask", "an open session uses a softer voice")
+    check(action_cap_for_stage(3, focus_active=True) == 0, "an open session does not pile propose buttons")
+    check(
+        plan_companion_nudge(
+            now=datetime(2026, 9, 24, 21, 0, 0),
+            base_dir=nudge_root,
+            config_manager=_Cfg(),
+            commit=False,
+        ) is None,
+        "an open session skips non-focus nudges",
+    )
+    wifi_line = attach_insight_action(
+        {"id": "habit:wifi", "text": "Hôm nay: Wi-Fi yếu.", "topic": "wifi"},
+        config_manager=_Cfg(companion_may_propose_actions=True),
+        base_dir=focus_root,
+        now=started,
+    )
+    check(not (wifi_line or {}).get("action_key"), "focus session keeps non-focus actions off the strip")
+finally:
+    ExamMeetingFocus.reset_for_tests()
+ended = observe_focus_disabled({}, base_dir=focus_root, now=datetime(2026, 9, 23, 11, 0, 0), config_manager=_Cfg())
+check(ended and ended.get("kind") == "focus_end", "turning focus off writes its own episode")
+check("tắt" in (ended.get("summary") or "").lower(), "end episode says the session stopped")
+check(load_state(focus_root).get("focus_session", {}).get("active") is False, "the session is closed in memory")
+asked = due_action_followup(now=datetime(2026, 9, 23, 11, 5, 0), base_dir=focus_root, config_manager=_Cfg())
+check(asked and "Trước thi" in asked.get("question_vi", ""), "ending focus asks whether the session helped")
+check(note_focus_ended(now=datetime(2026, 9, 23, 11, 6, 0), base_dir=focus_root, config_manager=_Cfg()) is None, "the same session is not asked twice")
+set_quiet_hours(True, base_dir=focus_root)
+check(
+    due_action_followup(now=datetime(2026, 9, 23, 23, 30, 0), base_dir=focus_root, config_manager=_Cfg()) is None,
+    "quiet hours hide the focus follow-up",
+)
+check(load_state(focus_root).get("pending_followup"), "quiet hours keep the focus question")
+set_quiet_hours(False, base_dir=focus_root)
+mute_topic("focus", days=7, base_dir=focus_root, now=datetime(2026, 9, 23, 11, 10, 0))
+check(
+    due_action_followup(now=datetime(2026, 9, 23, 12, 0, 0), base_dir=focus_root, config_manager=_Cfg()) is None,
+    "a muted focus topic hides the follow-up",
+)
+unmute_topic("focus", base_dir=focus_root)
+helpful = answer_action_followup(True, now=datetime(2026, 9, 23, 12, 5, 0), base_dir=focus_root, config_manager=_Cfg())
+check(helpful and helpful.get("helpful") is True, "Có ích answers the focus question")
+check(load_state(focus_root).get("positive_feedback", 0) >= 1, "Có ích feeds trust")
+check(load_state(focus_root).get("pending_followup") is None, "answering clears the focus question")
+
+reopen = _fresh_dir()
+note_focus_started(now=datetime(2026, 9, 23, 8, 0, 0), base_dir=reopen, config_manager=_Cfg())
+ExamMeetingFocus.reset_for_tests()
+reopened = sync_focus_session(now=datetime(2026, 9, 24, 8, 0, 0), base_dir=reopen, config_manager=_Cfg())
+check(reopened and reopened.get("kind") == "focus_end", "the next open notices a session that already ended")
+check(
+    due_action_followup(now=datetime(2026, 9, 24, 8, 5, 0), base_dir=reopen, config_manager=_Cfg()),
+    "the next open asks once about that session",
+)
+check(sync_focus_session(now=datetime(2026, 9, 24, 9, 0, 0), base_dir=reopen, config_manager=_Cfg()) is None, "a later open does not ask again")
+check(sum(1 for row in read_events(base_dir=reopen) if row.get("kind") == "focus_end") == 1, "one end episode for one session")
+check(ExamMeetingFocus.is_active() is False, "noticing the end does not turn focus back on")
+print(" [PASS] exam-focus session")
+
+conflict_root = _fresh_dir()
+when = datetime(2026, 9, 23, 10, 0, 0)
+check(sync_goal_conflict(now=when, base_dir=conflict_root, config_manager=_Cfg()) is None, "no goal means no conflict line")
+set_goal("ổn định Wi-Fi trước họp", base_dir=conflict_root, now=when)
+set_quiet_hours(True, start="23:00", end="07:00", base_dir=conflict_root)
+check(
+    not quiet_covers_reminder_band("morning", quiet_hours_settings(base_dir=conflict_root)),
+    "the suggested night window does not cover most of the morning",
+)
+check(sync_goal_conflict(now=when, base_dir=conflict_root, config_manager=_Cfg()) is None, "night quiet hours alone do not block the morning goal")
+set_quiet_hours(False, base_dir=conflict_root)
+mute_topic("wifi", days=7, base_dir=conflict_root, now=when)
+muted_goal = sync_goal_conflict(now=when, base_dir=conflict_root, config_manager=_Cfg())
+check(muted_goal and "im" in muted_goal.get("text", "").lower(), "a muted goal topic is said out loud")
+check(muted_goal.get("unmute") is True, "the line offers to unmute that topic")
+again_goal = sync_goal_conflict(now=when.replace(hour=18), base_dir=conflict_root, config_manager=_Cfg())
+check(again_goal and again_goal.get("text") == muted_goal.get("text"), "the conflict line is once per day")
+dismiss_goal_conflict(base_dir=conflict_root, now=when.replace(hour=19))
+check(sync_goal_conflict(now=when.replace(hour=20), base_dir=conflict_root, config_manager=_Cfg()) is None, "hiding the conflict lasts the rest of the day")
+check(
+    sync_goal_conflict(now=when + timedelta(days=1), base_dir=conflict_root, config_manager=_Cfg()),
+    "the next day may mention the conflict again",
+)
+quiet_goal = _fresh_dir()
+set_goal("ổn định Wi-Fi trước họp", base_dir=quiet_goal, now=when)
+set_quiet_hours(True, start="00:00", end="12:00", base_dir=quiet_goal)
+covered = sync_goal_conflict(now=when, base_dir=quiet_goal, config_manager=_Cfg())
+check(covered and "yên" in covered.get("text", "").lower(), "quiet hours that cover the reminder are explained")
+check("đổi mục tiêu" in covered.get("text", "").lower(), "the line offers to change the goal")
+print(" [PASS] goal versus mute / quiet hours")
+
+stress_root = _fresh_dir()
+stress_day = datetime(2026, 9, 23, 15, 0, 0)
+record_app_event("wifi_weak", "Wi-Fi yếu", now=stress_day.replace(hour=9), base_dir=stress_root, coalesce=False)
+check(not machine_stress_active(read_events(base_dir=stress_root), stress_day), "one stress family is not a rough day")
+record_app_event(
+    "thermal_warn",
+    "Nhiệt cao",
+    metrics={"thermal_c": 90},
+    now=stress_day.replace(hour=10),
+    base_dir=stress_root,
+    coalesce=False,
+)
+check(machine_stress_active(read_events(base_dir=stress_root), stress_day), "wifi and thermal on the same day is a rough day")
+check(stage_voice(3, stressed=True)["boldness"] == "ask", "a rough day uses the ask voice")
+check("nhẹ" in stage_voice(2, stressed=True)["aside_vi"] or "hỏi" in stage_voice(2, stressed=True)["tone_vi"], "the aside stays calm")
+for offset in range(7):
+    record_app_event(
+        "session_day",
+        "Phiên dùng app trên máy này",
+        now=stress_day - timedelta(days=8 - offset),
+        base_dir=stress_root,
+        coalesce=False,
+    )
+record_app_event("wifi_weak", "Wi-Fi yếu hôm qua", now=stress_day - timedelta(days=1), base_dir=stress_root, coalesce=False)
+stress_hello = compose_daily_checkin(now=stress_day, base_dir=stress_root, config_manager=_Cfg(companion_may_propose_actions=True))
+check(stress_hello and "nhẹ" in stress_hello.get("text", ""), "check-in mentions the rough day")
+check(not stress_hello.get("action_key"), "a rough day does not add a propose button")
+stress_insight = attach_insight_action(
+    {"id": "goal:wifi", "text": "Hôm nay: Wi-Fi chưa ổn.", "topic": "wifi"},
+    config_manager=_Cfg(companion_may_propose_actions=True),
+    base_dir=stress_root,
+    now=stress_day,
+)
+check(not (stress_insight or {}).get("action_key"), "stress drops propose buttons on the insight")
+check("nhẹ" in (stress_insight or {}).get("text", "") or "hỏi" in (stress_insight or {}).get("text", ""), "the insight keeps a short calm aside")
+record_app_event("wifi_repaired", "Wi-Fi đã ổn định lại", now=stress_day.replace(hour=16), base_dir=stress_root, coalesce=False, outcome="ok")
+check(not machine_stress_active(read_events(base_dir=stress_root), stress_day), "a recovery calms that family")
+check(not machine_stress_active(read_events(base_dir=stress_root), stress_day + timedelta(days=1)), "stress does not carry into the next day")
+print(" [PASS] machine-stress softer voice")
+
+backup_root = _fresh_dir()
+set_goal("ổn định Wi-Fi trước họp", base_dir=backup_root, now=stress_day)
+record_app_event("wifi_weak", "Wi-Fi yếu", now=stress_day, base_dir=backup_root, coalesce=False)
+save_skill("thermal", hit_count=2, base_dir=backup_root)
+save_reflection("Sổ tay máy này. AIzaSyDUMMYKEY1234567890 không được giữ.", source="template", base_dir=backup_root)
+backup_path = os.path.join(backup_root, "bo-nho-dong-hanh.json")
+exported = export_companion_memory(backup_path, base_dir=backup_root)
+check(exported.get("ok") is True, "export writes a local backup")
+with open(backup_path, "r", encoding="utf-8") as handle:
+    blob = handle.read()
+payload = json.loads(blob)
+check(payload.get("kind") == "pc_cleaner_companion_memory", "export kind is the companion backup")
+check("đám mây" in payload.get("note_vi", ""), "export says this is not cloud sync")
+check("AIza" not in blob, "export redacts secrets")
+check("ổn định Wi-Fi" in blob, "export keeps the goal text")
+bad = import_companion_memory(os.path.join(backup_root, "missing.json"), mode="merge", base_dir=backup_root)
+check(bad.get("ok") is False and bad.get("message_vi"), "a missing file fails in Vietnamese")
+junk_path = os.path.join(backup_root, "not-memory.json")
+with open(junk_path, "w", encoding="utf-8") as handle:
+    handle.write("{not json")
+junk = import_companion_memory(junk_path, mode="merge", base_dir=backup_root)
+check(junk.get("ok") is False and "JSON" in junk.get("message_vi", ""), "invalid JSON fails softly")
+other = _fresh_dir()
+planted = {
+    "kind": "pc_cleaner_companion_memory",
+    "version": 1,
+    "profile": {"goal": {"text": "xem nhiệt máy", "topic": "thermal", "topics": ["thermal"], "set_at": "2026-09-23T10:00:00"}},
+    "skills": [{
+        "id": "thermal",
+        "issue_class": "thermal",
+        "title": "Nhiệt",
+        "if_condition": "Nóng",
+        "suggest": "Xem nhiệt",
+        "action_key": "winsxs_cleanup",
+        "created_at": "2026-09-23T10:00:00",
+        "hit_count": 1,
+    }],
+    "maturity": {"pending_followup": {"action_key": "clean_junk", "question_vi": "Làm ngay?", "topic": "disk"}},
+    "diary": [{"ts": "2026-09-23T10:00:00", "kind": "thermal_warn", "summary": "Nhiệt cao", "outcome": "warn", "tags": ["thermal"]}],
+    "reflection": "Sổ tay nhập.",
+}
+plant_path = os.path.join(other, "plant.json")
+with open(plant_path, "w", encoding="utf-8") as handle:
+    json.dump(planted, handle)
+ExamMeetingFocus.reset_for_tests()
+brought = import_companion_memory(plant_path, mode="replace", base_dir=other)
+check(brought.get("ok") is True, "a valid backup replaces local memory")
+check(ExamMeetingFocus.is_active() is False, "import does not enable Trước thi / họp")
+imported_skills = load_skills(other)
+check(imported_skills and imported_skills[0].action_key not in BLOCKED_ACTION_KEYS, "imported skills cannot keep a blocked action")
+check(imported_skills[0].action_key != "winsxs_cleanup", "winsxs is not stored from the file")
+state_blob = json.dumps(load_state(other), ensure_ascii=False)
+check("clean_junk" not in state_blob and "winsxs_cleanup" not in state_blob, "blocked actions are not left in maturity")
+check("xem nhiệt" in (load_profile(other).get("goal") or {}).get("text", ""), "replace stores the imported goal")
+check("Sổ tay nhập" in load_reflection(other), "replace stores the sổ tay")
+merge_root = _fresh_dir()
+set_goal("giữ mục tiêu Wi-Fi", base_dir=merge_root, now=stress_day)
+record_app_event("high_ram", "RAM cao", now=stress_day, base_dir=merge_root, coalesce=False)
+merged = import_companion_memory(backup_path, mode="merge", base_dir=merge_root)
+check(merged.get("ok") is True, "merge accepts a backup")
+check("giữ mục tiêu" in (load_profile(merge_root).get("goal") or {}).get("text", ""), "merge keeps the goal already on this PC")
+kinds = {row.get("kind") for row in read_events(base_dir=merge_root)}
+check("high_ram" in kinds and "wifi_weak" in kinds, "merge keeps both diaries")
+check("AIza" not in load_reflection(merge_root), "imported sổ tay is redacted")
+print(" [PASS] export / import companion memory")
+ExamMeetingFocus.reset_for_tests()
+
+
+# ---------------------------------------------------------------------------
 # Qt smoke: Settings card + memory dialog
 # ---------------------------------------------------------------------------
 
@@ -1876,6 +2131,11 @@ check(hasattr(dlg, "btn_clear_profile"), "dialog can clear the habit profile")
 check(hasattr(dlg, "list_muted") and hasattr(dlg, "btn_unmute_all"), "dialog can clear muted topics")
 check(hasattr(dlg, "list_corrections") and hasattr(dlg, "btn_delete_correction"), "dialog lists and deletes corrections")
 check(hasattr(dlg, "list_growth") and hasattr(dlg, "lbl_growth_empty"), "dialog has a growth timeline")
+check(hasattr(dlg, "btn_export") and dlg.btn_export.text() == "Xuất bộ nhớ", "dialog can export companion memory")
+check(hasattr(dlg, "btn_import") and dlg.btn_import.text() == "Nhập bộ nhớ", "dialog can import companion memory")
+check("&" not in dlg.btn_export.text() and "&" not in dlg.btn_import.text(), "export buttons have no Qt mnemonic")
+check(card.insight_bar.btn_conflict_goal.text() == "Đổi mục tiêu", "conflict line can change the goal")
+check(card.insight_bar.btn_conflict_unmute.text() == "Bỏ im chủ đề", "conflict line can unmute the goal topic")
 check("mốc" in dlg.lbl_growth_empty.text(), "empty growth timeline is dismissible copy")
 dlg.btn_growth_hide.click()
 check(dlg.lbl_growth_empty.isHidden(), "empty growth line can be hidden")

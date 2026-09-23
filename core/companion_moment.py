@@ -566,6 +566,10 @@ def attach_insight_action(
     if not isinstance(insight, dict) or not insight.get("text"):
         return insight
     skill = None
+    action = None
+    focus_on = False
+    stressed = False
+    stage = None
     try:
         from core.companion import current_stage
         from core.companion_profile import effective_coaching
@@ -583,9 +587,16 @@ def attach_insight_action(
             coaching=coaching,
             prefer_key=str(getattr(skill, "action_key", "") or ""),
         )
+        rows = recent_events(days=1, limit=0, base_dir=base_dir, now=now)
+        focus_on = exam_focus_is_live()
+        stressed = machine_stress_active(rows, now or datetime.now())
+        action = _calm_insight_action(action, focus_active=focus_on, stressed=stressed)
     except Exception:
         action = None
         skill = None
+        focus_on = False
+        stressed = False
+        stage = None
     out = dict(insight)
     for extra in ("action_key", "action_label_vi", "skill_id", "skill_issue"):
         out.pop(extra, None)
@@ -607,6 +618,25 @@ def attach_insight_action(
             out["quiet"] = True
     except Exception:
         pass
+    if (focus_on or stressed) and stage is not None:
+        try:
+            from core.companion_profile import effective_coaching, score_trust
+            profile = load_profile(base_dir)
+            trust = score_trust(profile=profile, base_dir=base_dir, now=now)
+            voice = stage_voice(
+                stage.stage,
+                coaching=effective_coaching(profile, base_dir=base_dir, now=now),
+                may_propose=bool(stage.may_propose_actions),
+                trust=str(trust.get("level") or "steady"),
+                focus_active=focus_on,
+                stressed=stressed,
+            )
+            aside = str(voice.get("aside_vi") or "").strip()
+            text = str(out.get("text") or "")
+            if aside and aside not in text and stage.stage >= 1:
+                out["text"] = (text.rstrip() + " " + aside).strip()
+        except Exception:
+            pass
     return out
 
 
@@ -616,6 +646,8 @@ def stage_voice(
     coaching: str = "steady",
     may_propose: bool = True,
     trust: str = "steady",
+    focus_active: bool = False,
+    stressed: bool = False,
 ) -> Dict[str, str]:
     """Short tone cue. Stage 0 stays shy; stage 3 may cite this machine.
 
@@ -626,6 +658,9 @@ def stage_voice(
     consent flag still decide, and BLOCKED_ACTION_KEYS stay out of the
     allowlist. A topic mute is applied by the caller as coaching="ask_more"
     and is not undone when trust is high.
+
+    An open Trước thi / họp session, or two stress signals on the same day,
+    softens stage 1+ to the ask voice. Stage 0 stays shy either way.
     """
     try:
         stage_n = max(0, min(3, int(stage)))
@@ -642,9 +677,24 @@ def stage_voice(
     elif stage_n >= 2 and not may_propose:
         boldness = "ask"
         tone = tone + " Người dùng chưa bật quyền đề xuất hành động."
+    calm = stage_n >= 1 and (bool(focus_active) or bool(stressed))
+    if calm:
+        boldness = "ask"
+        if focus_active and stressed:
+            tone = "Đang tập trung và máy có vài dấu hiệu cùng lúc — nói nhẹ, hỏi thêm. " + tone
+        elif focus_active:
+            tone = "Đang Trước thi / họp — nói nhẹ, chỉ nhắc việc tập trung. " + tone
+        else:
+            tone = "Hôm nay máy có vài dấu hiệu cùng lúc — hỏi thêm, chưa xếp nhiều nút. " + tone
     aside = ""
     if stage_n <= 0:
         aside = "Mình mới gặp máy này — nói ngắn và hỏi lại."
+    elif focus_active and stressed and stage_n >= 1:
+        aside = "Mình nói nhẹ và hỏi thêm trong buổi này."
+    elif focus_active and stage_n >= 1:
+        aside = "Mình hỏi nhiều hơn trong buổi tập trung."
+    elif stressed and stage_n >= 1:
+        aside = "Mình nói nhẹ hơn hôm nay."
     elif stage_n >= 3 and boldness == "specific":
         aside = "Theo nhật ký máy này."
     return {"boldness": boldness, "tone_vi": tone, "policy_vi": tone, "aside_vi": aside}
@@ -656,13 +706,256 @@ def action_cap_for_stage(
     coaching: str = "steady",
     may_propose: bool = True,
     trust: str = "steady",
+    focus_active: bool = False,
+    stressed: bool = False,
 ) -> int:
-    voice = stage_voice(stage, coaching=coaching, may_propose=may_propose, trust=trust)
+    voice = stage_voice(
+        stage,
+        coaching=coaching,
+        may_propose=may_propose,
+        trust=trust,
+        focus_active=focus_active,
+        stressed=stressed,
+    )
     if voice["boldness"] in ("shy", "ask"):
         return 0
     if voice["boldness"] == "suggest":
         return 1
     return 2
+
+
+# Two different stress families on the same calendar day. One family, even if
+# it repeats, is not "the machine is having a rough day".
+_STRESS_GROUPS = {
+    "network": frozenset({"wifi_weak", "ping_high"}),
+    "thermal": frozenset({"thermal_warn"}),
+    "ram": frozenset({"high_ram"}),
+}
+_STRESS_RECOVERY = {
+    "network": frozenset({"wifi_repaired", "ping_repaired"}),
+    "thermal": frozenset(),
+    "ram": frozenset({"ram_optimized"}),
+}
+
+
+def exam_focus_is_live() -> bool:
+    """True only while the user has Trước thi / họp on. Never turns it on."""
+    try:
+        from core.exam_focus import ExamMeetingFocus
+        return bool(ExamMeetingFocus.is_active())
+    except Exception:
+        return False
+
+
+def _event_stamp(event: Dict[str, Any]) -> Optional[datetime]:
+    return _parse_iso(event.get("ts"))
+
+
+def machine_stress_groups(
+    events: Optional[List[Dict[str, Any]]] = None,
+    now: Optional[datetime] = None,
+) -> List[str]:
+    """Stress families still open today. No temperatures or extra metrics.
+
+    A family counts when its latest row today is a warning, not a later recovery.
+    Thermal has no recovery row, so it stays until the next calendar day.
+    """
+    stamp = now or datetime.now()
+    day = stamp.strftime("%Y-%m-%d")
+    latest: Dict[str, Any] = {}
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("ts") or "")[:10] != day:
+            continue
+        kind = str(event.get("kind") or "")
+        moment = _event_stamp(event)
+        ts = moment.timestamp() if moment is not None else 0.0
+        outcome = str(event.get("outcome") or "")
+        for group, kinds in _STRESS_GROUPS.items():
+            if kind in kinds and outcome in ("warn", "fail", ""):
+                prev = latest.get(group)
+                if prev is None or ts >= prev[0]:
+                    latest[group] = (ts, "warn")
+            elif kind in _STRESS_RECOVERY.get(group, ()) and outcome in ("ok", "accepted", ""):
+                prev = latest.get(group)
+                if prev is None or ts >= prev[0]:
+                    latest[group] = (ts, "calm")
+    return sorted(group for group, (_ts, state) in latest.items() if state == "warn")
+
+
+def machine_stress_active(
+    events: Optional[List[Dict[str, Any]]] = None,
+    now: Optional[datetime] = None,
+) -> bool:
+    """True when at least two stress families are still open today."""
+    return len(machine_stress_groups(events, now)) >= 2
+
+
+def _session_dict(base_dir: Optional[str]) -> Dict[str, Any]:
+    raw = load_state(base_dir).get("focus_session")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def note_focus_started(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Remember that the user started a session. Does not enable the mode."""
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    state = load_state(base_dir)
+    payload = {
+        "active": True,
+        "started_at": stamp.replace(microsecond=0).isoformat(timespec="seconds"),
+        "ended_at": "",
+        "followup_for": "",
+    }
+    state["focus_session"] = payload
+    save_state(state, base_dir=base_dir)
+    return payload
+
+
+def schedule_focus_session_followup(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """One yes/no after the session, reusing the open follow-up slot.
+
+    Due immediately. Quiet hours and a muted focus topic hide it later.
+    Does not record a recovery expectation, so the end line is not auto-credit.
+    """
+    if not _cfg_enabled(config_manager):
+        return None
+    try:
+        from core.companion_profile import topic_is_muted
+        if topic_is_muted("focus", base_dir=base_dir, now=now):
+            return None
+    except Exception:
+        return None
+    state = load_state(base_dir)
+    existing = state.get("pending_followup")
+    if isinstance(existing, dict) and str(existing.get("question_vi") or "").strip():
+        return None
+    stamp = now or datetime.now()
+    iso = stamp.replace(microsecond=0).isoformat(timespec="seconds")
+    payload = {
+        "action_key": "enable_exam_focus",
+        "topic": "focus",
+        "skill_id": "",
+        "since": iso,
+        "due_at": iso,
+        "question_vi": _FOLLOWUP_QUESTION["focus"],
+        "source": "focus_session",
+    }
+    state["pending_followup"] = payload
+    save_state(state, base_dir=base_dir)
+    return payload
+
+
+def note_focus_ended(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+    write_diary: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Close the remembered session and ask once whether it helped.
+
+    A second call for the same start does not write another line or question.
+    """
+    if not _cfg_enabled(config_manager):
+        return None
+    session = _session_dict(base_dir)
+    started = str(session.get("started_at") or "")
+    if (
+        started
+        and session.get("followup_for") == started
+        and not session.get("active")
+    ):
+        return None
+    stamp = now or datetime.now()
+    ended = stamp.replace(microsecond=0).isoformat(timespec="seconds")
+    event = None
+    if write_diary:
+        try:
+            from core.companion import record_app_event
+            event = record_app_event(
+                "focus_end",
+                "Người dùng tắt Trước thi / họp",
+                source="focus",
+                now=stamp,
+                base_dir=base_dir,
+                config_manager=config_manager,
+                outcome="neutral",
+                tags=["focus", "end"],
+                coalesce=False,
+            )
+        except Exception:
+            event = None
+    state = load_state(base_dir)
+    state["focus_session"] = {
+        "active": False,
+        "started_at": started,
+        "ended_at": ended,
+        "followup_for": started or ended,
+    }
+    save_state(state, base_dir=base_dir)
+    schedule_focus_session_followup(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    return event or {"ended_at": ended}
+
+
+def sync_focus_session(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Next open after a session that ended without a disable hook.
+
+    If the mode is still on, leave it alone. This never calls enable.
+    """
+    session = _session_dict(base_dir)
+    if not session.get("active"):
+        return None
+    if exam_focus_is_live():
+        return None
+    return note_focus_ended(
+        now=now,
+        base_dir=base_dir,
+        config_manager=config_manager,
+        write_diary=True,
+    )
+
+
+def _calm_insight_action(
+    action: Optional[Dict[str, str]],
+    *,
+    focus_active: bool = False,
+    stressed: bool = False,
+) -> Optional[Dict[str, str]]:
+    """During focus or a rough day, do not pile propose buttons.
+
+    Focus keeps only a focus action that does not need a proposal — turning
+    the mode on again is not one of those. Stress drops propose buttons and
+    leaves a plain open-the-card button if one was already chosen.
+    """
+    if not action or not action.get("key"):
+        return None
+    spec = INSIGHT_ACTION_ALLOWLIST.get(str(action.get("key") or "")) or {}
+    if focus_active:
+        topics = spec.get("topics") or frozenset()
+        if "focus" not in topics or spec.get("needs_propose"):
+            return None
+        return action
+    if stressed and spec.get("needs_propose"):
+        return None
+    return action
 
 
 def week_key(now: Optional[datetime] = None) -> str:
@@ -965,11 +1258,15 @@ def compose_daily_checkin(
         return None
     trust = score_trust(profile=profile, base_dir=base_dir, now=stamp)
     coaching = effective_coaching(profile, base_dir=base_dir, now=stamp)
+    focus_on = exam_focus_is_live()
+    stressed = machine_stress_active(events, stamp)
     voice = stage_voice(
         stage.stage,
         coaching=coaching,
         may_propose=bool(stage.may_propose_actions),
         trust=str(trust.get("level") or "steady"),
+        focus_active=focus_on,
+        stressed=stressed,
     )
     shy = voice.get("boldness") in ("shy", "ask")
     parts: List[str] = []
@@ -1029,6 +1326,9 @@ def compose_daily_checkin(
             break
     if str(trust.get("level") or "") == "low" and parts:
         parts.append("Mình hỏi thêm, chưa đề xuất việc cần làm.")
+    aside = str(voice.get("aside_vi") or "").strip()
+    if aside and (focus_on or stressed) and stage.stage >= 1 and aside not in " ".join(parts):
+        parts.append(aside)
     action = None
     skill_id = ""
     if (
@@ -1250,7 +1550,11 @@ def due_action_followup(
     base_dir: Optional[str] = None,
     config_manager: Optional[Any] = None,
 ) -> Optional[Dict[str, str]]:
-    """The open question once it is due. Hidden during quiet hours, not dropped."""
+    """The open question once it is due.
+
+    Hidden during quiet hours or while its topic is muted. The question stays
+    pending so it can show again after those lift.
+    """
     if not _cfg_enabled(config_manager):
         return None
     stamp = now or datetime.now()
@@ -1266,6 +1570,12 @@ def due_action_followup(
     question = str(pending.get("question_vi") or "").strip()
     if not question:
         return None
+    try:
+        from core.companion_profile import topic_is_muted
+        if topic_is_muted(str(pending.get("topic") or ""), base_dir=base_dir, now=stamp):
+            return None
+    except Exception:
+        pass
     due = _parse_iso(pending.get("due_at"))
     if due is not None and stamp < due:
         return None
@@ -1556,4 +1866,206 @@ def dismiss_eod_wrap(
     state = load_state(base_dir)
     state["last_eod_date"] = stamp.strftime("%Y-%m-%d")
     state["pending_eod"] = None
+    save_state(state, base_dir=base_dir)
+
+
+# Half a reminder band inside quiet hours means the main reminder is blocked.
+_BAND_RANGES = {
+    "morning": ((5 * 60, 11 * 60),),
+    "afternoon": ((11 * 60, 17 * 60),),
+    "evening": ((17 * 60, 22 * 60),),
+    "night": ((22 * 60, 24 * 60), (0, 5 * 60)),
+}
+_BAND_NAME = {
+    "morning": "buổi sáng",
+    "afternoon": "buổi chiều",
+    "evening": "buổi tối",
+    "night": "đêm",
+}
+
+
+def _hhmm_to_minutes(value: Any) -> Optional[int]:
+    parts = str(value or "").strip().split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except (TypeError, ValueError):
+        return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def _quiet_ranges(settings: Dict[str, Any]) -> List[tuple]:
+    start = _hhmm_to_minutes(settings.get("start"))
+    end = _hhmm_to_minutes(settings.get("end"))
+    if start is None or end is None or start == end:
+        return []
+    if start < end:
+        return [(start, end)]
+    return [(start, 24 * 60), (0, end)]
+
+
+def _ranges_overlap(left: List[tuple], right: tuple) -> int:
+    total = 0
+    for a0, a1 in left:
+        for b0, b1 in right:
+            total += max(0, min(a1, b1) - max(a0, b0))
+    return total
+
+
+def quiet_covers_reminder_band(band: str, settings: Dict[str, Any]) -> bool:
+    """True when quiet hours cover at least half of a reminder band."""
+    ranges = _BAND_RANGES.get(str(band or ""))
+    if not ranges or not settings.get("enabled"):
+        return False
+    length = sum(end - start for start, end in ranges)
+    if length <= 0:
+        return False
+    return _ranges_overlap(_quiet_ranges(settings), ranges) * 2 >= length
+
+
+def _dominant_topic_band(events: Optional[List[Dict[str, Any]]], topic: str) -> str:
+    """Band where this topic shows up on at least two different days."""
+    if not topic:
+        return ""
+    try:
+        from core.companion_diary import time_band
+    except Exception:
+        return ""
+    days: Dict[str, set] = {}
+    for event in events or []:
+        if event_topic(event) != topic:
+            continue
+        moment = _parse_iso(event.get("ts"))
+        if moment is None:
+            continue
+        band = time_band(moment)
+        days.setdefault(band, set()).add(moment.strftime("%Y-%m-%d"))
+    if not days:
+        return ""
+    best = max(days, key=lambda item: (len(days[item]), item))
+    if len(days[best]) < 2:
+        return ""
+    return best
+
+
+def compose_goal_conflict(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """One honest line when a goal cannot be reminded the usual way.
+
+    A muted goal topic, or quiet hours covering the morning check-in (or the
+    topic's usual band), is the conflict. No line when the goal can still be said.
+    """
+    if not _cfg_enabled(config_manager):
+        return None
+    try:
+        from core.companion_profile import (
+            load_profile,
+            quiet_hours_settings,
+            topic_is_muted,
+        )
+        profile = load_profile(base_dir)
+    except Exception:
+        return None
+    goal = profile.get("goal") if isinstance(profile.get("goal"), dict) else None
+    if not goal:
+        return None
+    text = str(goal.get("text") or "").strip()
+    topic = str(goal.get("topic") or "")
+    if not text:
+        return None
+    stamp = now or datetime.now()
+    muted = bool(topic) and topic_is_muted(topic, base_dir=base_dir, now=stamp, profile=profile)
+    settings = quiet_hours_settings(profile)
+    covered = ""
+    if settings.get("enabled"):
+        bands = ["morning"]
+        try:
+            rows = recent_events(days=21, limit=0, base_dir=base_dir, now=stamp)
+        except Exception:
+            rows = []
+        extra = _dominant_topic_band(rows, topic)
+        if extra and extra not in bands:
+            bands.append(extra)
+        for band in bands:
+            if quiet_covers_reminder_band(band, settings):
+                covered = _BAND_NAME.get(band, band)
+                break
+    if not muted and not covered:
+        return None
+    name = _topic_name(topic) if topic else ""
+    window = f"{settings.get('start')}–{settings.get('end')}"
+    if muted and covered and name:
+        body = (
+            f"Mục tiêu «{text}» đang về {name}, nhưng chủ đề này đang im "
+            f"và giờ yên lặng {window} cũng che {covered} — mình sẽ không nhắc. "
+            "Bạn có thể bỏ im hoặc đổi mục tiêu."
+        )
+    elif muted and name:
+        body = (
+            f"Mục tiêu «{text}» đang về {name}, nhưng chủ đề này đang im — mình sẽ không nhắc. "
+            "Bạn có thể bỏ im hoặc đổi mục tiêu."
+        )
+    elif covered:
+        body = (
+            f"Mục tiêu «{text}» hay được nhắc {covered}, nhưng giờ yên lặng {window} che lúc đó — "
+            "mình không nhắc trong giờ yên. Bạn có thể đổi mục tiêu."
+        )
+    else:
+        return None
+    body = _clip_checkin(redact_sensitive(body))
+    if not body:
+        return None
+    return {
+        "date": stamp.strftime("%Y-%m-%d"),
+        "text": body,
+        "topic": topic,
+        "unmute": bool(muted and topic),
+        "edit_goal": True,
+    }
+
+
+def sync_goal_conflict(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Show the conflict at most once per calendar day. Later opens reuse it."""
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    today = stamp.strftime("%Y-%m-%d")
+    state = load_state(base_dir)
+    if str(state.get("last_goal_conflict_date") or "") == today:
+        pending = state.get("pending_goal_conflict")
+        if isinstance(pending, dict) and str(pending.get("text") or "").strip():
+            return pending
+        return None
+    payload = compose_goal_conflict(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    if not payload:
+        return None
+    state = load_state(base_dir)
+    state["last_goal_conflict_date"] = today
+    state["pending_goal_conflict"] = payload
+    save_state(state, base_dir=base_dir)
+    return payload
+
+
+def dismiss_goal_conflict(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    """Hide today's conflict line without changing the goal or the mute."""
+    stamp = now or datetime.now()
+    state = load_state(base_dir)
+    state["last_goal_conflict_date"] = stamp.strftime("%Y-%m-%d")
+    state["pending_goal_conflict"] = None
     save_state(state, base_dir=base_dir)

@@ -5,12 +5,14 @@ Empty-state trung thực khi cài mới. Không nhận là AGI.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -129,6 +131,7 @@ class CompanionInsightBar(QFrame):
 
     dismissed = pyqtSignal()
     action_requested = pyqtSignal(str)
+    goal_edit_requested = pyqtSignal()
 
     def __init__(self, config_manager=None, parent=None):
         super().__init__(parent)
@@ -217,6 +220,30 @@ class CompanionInsightBar(QFrame):
         eod_row.addWidget(self.btn_eod_hide)
         self.row_eod.hide()
 
+        self.row_conflict = QWidget()
+        conflict_row = QHBoxLayout(self.row_conflict)
+        conflict_row.setContentsMargins(0, 0, 0, 0)
+        conflict_row.setSpacing(8)
+        self.lbl_conflict = _plain_label("#fde68a")
+        self.btn_conflict_unmute = QPushButton("Bỏ im chủ đề")
+        self.btn_conflict_unmute.setStyleSheet(_BTN_STYLE)
+        self.btn_conflict_unmute.setToolTip("Bỏ im chủ đề của mục tiêu này. Mình không tự bật lại thông báo khác.")
+        self.btn_conflict_unmute.clicked.connect(self._unmute_conflict)
+        self.btn_conflict_unmute.hide()
+        self.btn_conflict_goal = QPushButton("Đổi mục tiêu")
+        self.btn_conflict_goal.setStyleSheet(_BTN_STYLE)
+        self.btn_conflict_goal.setToolTip("Sửa mục tiêu ở ô bên dưới, hoặc mở bộ nhớ để xem hồ sơ.")
+        self.btn_conflict_goal.clicked.connect(self._edit_goal)
+        self.btn_conflict_hide = QPushButton("Ẩn")
+        self.btn_conflict_hide.setStyleSheet(_BTN_STYLE)
+        self.btn_conflict_hide.setToolTip("Ẩn dòng này hôm nay. Mình không nhắc lại cho đến ngày mai.")
+        self.btn_conflict_hide.clicked.connect(self._dismiss_conflict)
+        conflict_row.addWidget(self.lbl_conflict, stretch=1)
+        conflict_row.addWidget(self.btn_conflict_unmute)
+        conflict_row.addWidget(self.btn_conflict_goal)
+        conflict_row.addWidget(self.btn_conflict_hide)
+        self.row_conflict.hide()
+
         self.row_insight = QWidget()
         row = QHBoxLayout(self.row_insight)
         row.setContentsMargins(0, 0, 0, 0)
@@ -246,6 +273,7 @@ class CompanionInsightBar(QFrame):
         root.addWidget(self.row_checkin)
         root.addWidget(self.row_follow)
         root.addWidget(self.row_eod)
+        root.addWidget(self.row_conflict)
         root.addWidget(self.row_insight)
         self.hide()
 
@@ -260,13 +288,27 @@ class CompanionInsightBar(QFrame):
                 refresh_profile()
             except Exception:
                 pass
+        if enabled:
+            try:
+                from core.companion_moment import sync_focus_session
+                sync_focus_session(config_manager=self.config_manager)
+            except Exception:
+                pass
         self._show_stage(enabled)
         self._show_checkin(enabled)
         self._show_followup(enabled)
         self._show_eod(enabled)
+        self._show_conflict(enabled)
         self._show_insight(enabled)
         # isVisible() is false while this frame is hidden, so decide from the text.
-        labels = (self.lbl_stage, self.lbl_checkin, self.lbl_follow, self.lbl_eod, self.lbl_insight)
+        labels = (
+            self.lbl_stage,
+            self.lbl_checkin,
+            self.lbl_follow,
+            self.lbl_eod,
+            self.lbl_conflict,
+            self.lbl_insight,
+        )
         if any(label.text().strip() for label in labels):
             self.show()
         else:
@@ -354,6 +396,53 @@ class CompanionInsightBar(QFrame):
             return
         self.lbl_eod.setText(text)
         self.row_eod.show()
+
+    def _show_conflict(self, enabled: bool):
+        self.lbl_conflict.setText("")
+        self._conflict_topic = ""
+        self.btn_conflict_unmute.hide()
+        self.row_conflict.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_moment import sync_goal_conflict
+            payload = sync_goal_conflict(config_manager=self.config_manager)
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("text") or "").strip()
+        if not text:
+            return
+        self._conflict_topic = str((payload or {}).get("topic") or "")
+        self.lbl_conflict.setText(text)
+        if payload.get("unmute") and self._conflict_topic:
+            self.btn_conflict_unmute.show()
+        self.row_conflict.show()
+
+    def _unmute_conflict(self):
+        topic = str(getattr(self, "_conflict_topic", "") or "")
+        if topic:
+            try:
+                from core.companion_profile import unmute_topic
+                unmute_topic(topic)
+            except Exception:
+                pass
+        try:
+            from core.companion_moment import dismiss_goal_conflict
+            dismiss_goal_conflict()
+        except Exception:
+            pass
+        self.refresh()
+
+    def _edit_goal(self):
+        self.goal_edit_requested.emit()
+
+    def _dismiss_conflict(self):
+        try:
+            from core.companion_moment import dismiss_goal_conflict
+            dismiss_goal_conflict()
+        except Exception:
+            pass
+        self.refresh()
 
     def _show_insight(self, enabled: bool):
         self._insight_id = ""
@@ -572,6 +661,7 @@ class CompanionCard(QFrame):
 
         self.insight_bar = CompanionInsightBar(config_manager=self.config_manager, parent=self)
         self.insight_bar.action_requested.connect(self.insight_action_requested.emit)
+        self.insight_bar.goal_edit_requested.connect(self._focus_goal)
         layout.addWidget(self.insight_bar)
 
         self.lbl_blurb = QLabel("")
@@ -766,6 +856,11 @@ class CompanionCard(QFrame):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #64748b; font-size: 10px; background: transparent; border: none;")
         layout.addWidget(hint)
+
+    def _focus_goal(self):
+        if hasattr(self, "txt_goal"):
+            self.txt_goal.setFocus()
+            self.txt_goal.selectAll()
 
     def _persist_toggles(self, *_args):
         if not self.config_manager or not hasattr(self, "chk_enabled"):
@@ -1213,6 +1308,28 @@ class CompanionDialog(QDialog):
         )
         root.addWidget(self.txt_note, stretch=1)
 
+        transfer = QHBoxLayout()
+        self.btn_export = QPushButton("Xuất bộ nhớ")
+        self.btn_export.setStyleSheet(_BTN_STYLE)
+        self.btn_export.setToolTip(
+            "Lưu hồ sơ, giai đoạn, kỹ năng, nhật ký và sổ tay ra một file JSON trên máy này. Không gửi đám mây."
+        )
+        self.btn_export.clicked.connect(self._export_memory)
+        self.btn_import = QPushButton("Nhập bộ nhớ")
+        self.btn_import.setStyleSheet(_BTN_STYLE)
+        self.btn_import.setToolTip(
+            "Gộp hoặc thay thế bộ nhớ từ file JSON. Mình không chạy hành động trong file."
+        )
+        self.btn_import.clicked.connect(self._import_memory)
+        transfer.addWidget(self.btn_export)
+        transfer.addWidget(self.btn_import)
+        transfer.addStretch()
+        root.addLayout(transfer)
+        self.lbl_transfer = QLabel("")
+        self.lbl_transfer.setWordWrap(True)
+        self.lbl_transfer.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        root.addWidget(self.lbl_transfer)
+
         foot = QHBoxLayout()
         self.btn_clear_all = QPushButton("Xóa hết bộ nhớ local…")
         self.btn_clear_all.setStyleSheet(_DANGER_BTN_STYLE)
@@ -1226,6 +1343,81 @@ class CompanionDialog(QDialog):
         root.addLayout(foot)
 
         self.refresh()
+
+    def _show_transfer(self, result: Any):
+        payload = result if isinstance(result, dict) else {}
+        text = str(payload.get("message_vi") or "Chưa xong việc với file bộ nhớ.")
+        color = "#34d399" if payload.get("ok") else "#f87171"
+        self.lbl_transfer.setText(text)
+        self.lbl_transfer.setStyleSheet(f"color: {color}; font-size: 11px;")
+        if payload.get("ok"):
+            QMessageBox.information(self, "Bộ nhớ đồng hành", text)
+        else:
+            QMessageBox.warning(self, "Bộ nhớ đồng hành", text)
+
+    def _memory_start_dir(self) -> str:
+        try:
+            from config_manager import companion_dir
+            folder = companion_dir()
+            os.makedirs(folder, exist_ok=True)
+            return folder
+        except Exception:
+            return ""
+
+    def _export_memory(self):
+        folder = self._memory_start_dir()
+        suggested = os.path.join(folder, "bo-nho-dong-hanh.json") if folder else "bo-nho-dong-hanh.json"
+        path, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Xuất bộ nhớ đồng hành",
+            suggested,
+            "JSON (*.json)",
+        )
+        if not path:
+            return
+        try:
+            from core.companion import export_companion_memory
+            result = export_companion_memory(path)
+        except Exception:
+            result = {"ok": False, "message_vi": "Chưa xuất được bộ nhớ."}
+        self._show_transfer(result)
+
+    def _import_memory(self):
+        folder = self._memory_start_dir()
+        path, _selected = QFileDialog.getOpenFileName(
+            self,
+            "Nhập bộ nhớ đồng hành",
+            folder,
+            "JSON (*.json)",
+        )
+        if not path:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Nhập bộ nhớ đồng hành?")
+        box.setText(
+            "Gộp thêm vào bộ nhớ máy này, hoặc thay thế toàn bộ.\n\n"
+            "Mình không chạy hành động trong file. Đây là bản sao một máy, không phải đồng bộ đám mây."
+        )
+        btn_merge = box.addButton("Gộp", QMessageBox.AcceptRole)
+        btn_replace = box.addButton("Thay thế", QMessageBox.DestructiveRole)
+        box.addButton("Hủy", QMessageBox.RejectRole)
+        box.exec_()
+        clicked = box.clickedButton()
+        if clicked is btn_merge:
+            mode = "merge"
+        elif clicked is btn_replace:
+            mode = "replace"
+        else:
+            return
+        try:
+            from core.companion import import_companion_memory
+            result = import_companion_memory(path, mode=mode)
+        except Exception:
+            result = {"ok": False, "message_vi": "Chưa nhập được bộ nhớ."}
+        self._show_transfer(result)
+        if isinstance(result, dict) and result.get("ok"):
+            self.refresh()
 
     def _set_reflect_status(self, text: str, status: str = ""):
         colors = {
