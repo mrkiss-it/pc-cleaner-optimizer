@@ -10,6 +10,7 @@ from core.leak_detector import MemoryLeakDetector
 from config_manager import ConfigManager
 from core.wifi_recovery import RecoveryToastGate
 from core.thermal_monitor import ThermalToastGate
+from core.c_drive_clean import LowDiskToastGate, build_low_disk_notice
 
 class BackgroundScheduler(QObject):
     # Signals for UI notifications
@@ -21,6 +22,7 @@ class BackgroundScheduler(QObject):
     security_scan_completed = pyqtSignal(dict)   # Auto Security Scanner signal
     thermal_warning = pyqtSignal(dict)
     thermal_snapshot_ready = pyqtSignal(dict)
+    low_disk_warning = pyqtSignal(dict)
     companion_tip = pyqtSignal(dict)
 
     def __init__(self, config_manager: ConfigManager, parent=None):
@@ -43,6 +45,7 @@ class BackgroundScheduler(QObject):
         self.wifi_fix_max_unrecovered = 2
         self.recovery_toast_gate = RecoveryToastGate()
         self.thermal_toast_gate = ThermalToastGate()
+        self.low_disk_toast_gate = LowDiskToastGate()
         self.last_dns_trigger = datetime.now() - timedelta(hours=2)
         self.dns_cooldown_seconds = 7200
         self.last_security_trigger = datetime.now() - timedelta(hours=23)  # Run first scan sooner
@@ -191,6 +194,9 @@ class BackgroundScheduler(QObject):
         # 6. Laptop thermal warning (cached WMI / nvidia-smi / psutil — never fake)
         self._maybe_emit_thermal_warning(now, config)
 
+        # 6b. Ổ C: sắp đầy — cooldown riêng, không spam mỗi nhịp 15 giây
+        self._maybe_emit_low_disk_warning(now, config)
+
         # 7. Companion diary snapshots + evening sổ tay (local, optional LLM)
         self._maybe_companion_tick(now, config, wifi_snap, ping)
 
@@ -232,7 +238,10 @@ class BackgroundScheduler(QObject):
         whitelist = self.config_manager.get_whitelist_set()
         
         # Dọn rác
-        clean_res = JunkCleaner.clean(targets)
+        clean_res = JunkCleaner.clean(
+            targets,
+            downloads_min_age_days=config.get("downloads_old_min_days", 30),
+        )
         junk_mb = clean_res.get("total_freed_mb", 0.0)
 
         # Tối ưu RAM nếu bật (truyền whitelist)
@@ -650,6 +659,25 @@ class BackgroundScheduler(QObject):
             ensure_snapshot_async(_done, force_refresh=False, warn_celsius=warn)
         except Exception:
             pass
+
+    def _maybe_emit_low_disk_warning(self, now, config):
+        """Toast khi ổ C: dưới ngưỡng. Gate nuốt các lần lặp trong cooldown."""
+        cfg = config if isinstance(config, dict) else {}
+        if not cfg.get("low_disk_warn_enabled", True):
+            return
+        try:
+            disk = SystemMonitor.get_disk_info("C:\\")
+            payload = build_low_disk_notice(disk, cfg)
+        except Exception:
+            return
+        if not payload:
+            return
+        try:
+            if not self.low_disk_toast_gate.allow_from_config(time.time(), cfg):
+                return
+        except Exception:
+            return
+        self.low_disk_warning.emit(payload)
 
     def _maybe_companion_tick(self, now, config, wifi_snap, ping):
         """Light diary snapshots + evening reflection (LLM off the UI thread)."""

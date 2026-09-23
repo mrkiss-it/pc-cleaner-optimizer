@@ -58,34 +58,50 @@ class CleanWorker(QThread):
     progress = pyqtSignal(str, int)
     finished = pyqtSignal(dict)
 
-    def __init__(self, targets: dict, is_scan_only: bool = False, whitelist: set = None):
+    def __init__(
+        self,
+        targets: dict,
+        is_scan_only: bool = False,
+        whitelist: set = None,
+        deep_user_safe: bool = False,
+        downloads_min_age_days: int = 30,
+    ):
         super().__init__()
         self.targets = targets
         self.is_scan_only = is_scan_only
         self.whitelist = whitelist or set()
+        self.deep_user_safe = bool(deep_user_safe)
+        self.downloads_min_age_days = int(downloads_min_age_days or 30)
 
     def run(self):
         if self.is_scan_only:
             self.progress.emit("Đang quét các vị trí rác...", 30)
-            res = JunkCleaner.scan(self.targets)
+            res = JunkCleaner.scan(
+                self.targets,
+                downloads_min_age_days=self.downloads_min_age_days,
+            )
             self.progress.emit("Quét hoàn tất!", 100)
             self.finished.emit({"type": "scan", "data": res})
         else:
             self.progress.emit("Đang bắt đầu dọn dẹp...", 5)
-            # Dọn rác file
-            clean_res = JunkCleaner.clean(self.targets, progress_callback=lambda msg, pct: self.progress.emit(msg, pct))
-            
-            # Tối ưu RAM nếu được chọn
+            clean_res = JunkCleaner.clean(
+                self.targets,
+                progress_callback=lambda msg, pct: self.progress.emit(msg, pct),
+                deep_user_safe=self.deep_user_safe,
+                downloads_min_age_days=self.downloads_min_age_days,
+            )
+
             ram_res = {}
-            if self.targets.get("ram_optimize", True):
+            if not self.deep_user_safe and self.targets.get("ram_optimize", True):
                 self.progress.emit("Đang tối ưu hóa bộ nhớ RAM...", 90)
                 ram_res = MemoryOptimizer.optimize_ram(whitelist=self.whitelist)
 
             self.progress.emit("Hoàn thành dọn dẹp!", 100)
             self.finished.emit({
-                "type": "clean", 
-                "clean_res": clean_res, 
-                "ram_res": ram_res
+                "type": "clean",
+                "clean_res": clean_res,
+                "ram_res": ram_res,
+                "deep_user_safe": self.deep_user_safe,
             })
 
 
@@ -538,6 +554,43 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(gauge_layout)
 
+        self.disk_low_banner = QFrame()
+        self.disk_low_banner.setObjectName("DiskLowBanner")
+        self.disk_low_banner.setVisible(False)
+        self.disk_low_banner.setStyleSheet("""
+            QFrame#DiskLowBanner {
+                background-color: #451a03;
+                border: 1px solid #b45309;
+                border-radius: 12px;
+            }
+        """)
+        disk_low_layout = QVBoxLayout(self.disk_low_banner)
+        disk_low_layout.setContentsMargins(16, 12, 16, 12)
+        disk_low_layout.setSpacing(8)
+        self.lbl_disk_low = QLabel("Ổ C: sắp đầy")
+        self.lbl_disk_low.setWordWrap(True)
+        self.lbl_disk_low.setStyleSheet(
+            "color: #fde68a; font-size: 12px; font-weight: 600; background: transparent; border: none;"
+        )
+        self.btn_disk_low_clean = QPushButton("Dọn ổ C (không cần Admin)")
+        self.btn_disk_low_clean.setCursor(Qt.PointingHandCursor)
+        self.btn_disk_low_clean.setStyleSheet("""
+            QPushButton {
+                background-color: #b45309;
+                color: #fffbeb;
+                font-weight: bold;
+                padding: 8px 14px;
+                border-radius: 8px;
+                border: 1px solid #f59e0b;
+            }
+            QPushButton:hover { background-color: #d97706; }
+            QPushButton:disabled { background-color: #78350f; color: #fed7aa; }
+        """)
+        self.btn_disk_low_clean.clicked.connect(self.start_deep_c_clean)
+        disk_low_layout.addWidget(self.lbl_disk_low)
+        disk_low_layout.addWidget(self.btn_disk_low_clean)
+        layout.addWidget(self.disk_low_banner)
+
         # Exam / meeting focus — one primary toggle (reversible, like Game Boost)
         card_exam = QFrame()
         card_exam.setObjectName("ExamFocusCard")
@@ -620,6 +673,30 @@ class MainWindow(QMainWindow):
         btn_row1.addWidget(self.btn_ram_only, stretch=2)
         btn_row1.addWidget(self.btn_scan_only, stretch=2)
         layout.addLayout(btn_row1)
+
+        self.btn_deep_c = QPushButton("Dọn ổ C (không cần Admin)")
+        self.btn_deep_c.setCursor(Qt.PointingHandCursor)
+        self.btn_deep_c.setToolTip(
+            "Dọn temp, cache trình duyệt, thumbnail, shader, crash dump và cache ứng dụng "
+            "của tài khoản này. Không cần quyền Administrator. "
+            "Thùng rác và tệp cũ trong Downloads chỉ chạy khi bạn đang bật các mục đó. "
+            "Mục «Cần Admin» bị bỏ qua và không được tính là đã giải phóng."
+        )
+        self.btn_deep_c.setStyleSheet("""
+            QPushButton {
+                background-color: #0f766e;
+                color: #f0fdfa;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 10px 16px;
+                border-radius: 8px;
+                border: 1px solid #14b8a6;
+            }
+            QPushButton:hover { background-color: #0d9488; }
+            QPushButton:disabled { background-color: #134e4a; color: #99f6e4; }
+        """)
+        self.btn_deep_c.clicked.connect(self.start_deep_c_clean)
+        layout.addWidget(self.btn_deep_c)
 
         # Row 3: Specialized Utility & Optimization Tools
         btn_row2 = QHBoxLayout()
@@ -745,6 +822,21 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
+        from core.c_drive_clean import TARGET_CATALOG, TARGET_ORDER
+
+        elevated = JunkCleaner.is_admin()
+        if elevated:
+            admin_text = "Đang chạy với quyền Administrator. Mục «Cần Admin» sẽ được dọn nếu bạn bật."
+        else:
+            admin_text = (
+                "Đang chạy không có quyền Administrator. Mục «Cần Admin» sẽ bị bỏ qua, "
+                "không báo thành công và không tính dung lượng."
+            )
+        lbl_admin = QLabel(admin_text)
+        lbl_admin.setWordWrap(True)
+        lbl_admin.setStyleSheet("color: #fbbf24; font-weight: 600; margin-bottom: 4px;")
+        layout.addWidget(lbl_admin)
+
         lbl_info = QLabel("Chọn các mục bạn muốn quét và dọn dẹp:")
         lbl_info.setStyleSheet("color: #94a3b8; font-weight: 600; margin-bottom: 4px;")
         layout.addWidget(lbl_info)
@@ -752,23 +844,52 @@ class MainWindow(QMainWindow):
         cfg_targets = self.config_manager.get("targets", {})
 
         self.target_rows = {}
-        target_defs = [
-            ("user_temp", "File tạm người dùng (%TEMP%)", "Dữ liệu đệm phát sinh từ các ứng dụng đang chạy"),
-            ("system_temp", "File tạm hệ thống (C:\\Windows\\Temp)", "File tạm được Windows tích lũy theo thời gian"),
-            ("recycle_bin", "Thùng rác hệ thống (Recycle Bin)", "Các file đã bị xóa tạm thời nhưng chưa dọn sạch"),
-            ("browser_cache", "Bộ nhớ đệm trình duyệt", "Cache của Chrome, Microsoft Edge, Firefox, Brave"),
-            ("crash_dumps", "Báo cáo lỗi & Crash Dumps", "File ghi nhận lỗi ứng dụng và sự cố Windows (WER)"),
-            ("windows_update", "Bộ nhớ đệm cập nhật Windows Update", "Tệp tải về trong C:\\Windows\\SoftwareDistribution\\Download"),
-            ("app_caches", "Bộ nhớ đệm ứng dụng (Zalo, VS Code, Discord, Pip, Npm)", "Dọn dẹp an toàn các file tạm và cache không làm mất dữ liệu cá nhân"),
-            ("ram_optimize", "Tối ưu hóa bộ nhớ RAM (EmptyWorkingSet)", "Thu hồi bộ nhớ không dùng từ các tiến trình nhàn rỗi")
-        ]
-
-        for key, title, desc in target_defs:
-            checked = cfg_targets.get(key, True)
+        for key in TARGET_ORDER:
+            meta = TARGET_CATALOG[key]
+            title = meta["label_vi"]
+            desc = meta["description_vi"]
+            if meta["needs_admin"]:
+                title = f"{title}  ·  Cần Admin"
+            checked = bool(cfg_targets.get(key, meta["default_enabled"]))
             row = CleanerTargetRow(key, title, desc, checked=checked)
             row.checkbox.stateChanged.connect(self._auto_save_targets)
+            if meta["needs_admin"] and not elevated:
+                row.set_badge("Cần Admin", is_warning=True)
+            elif not meta["default_enabled"]:
+                row.set_badge("Tắt mặc định", is_warning=True)
             self.target_rows[key] = row
             layout.addWidget(row)
+
+        ram_checked = bool(cfg_targets.get("ram_optimize", True))
+        ram_row = CleanerTargetRow(
+            "ram_optimize",
+            "Tối ưu hóa bộ nhớ RAM (EmptyWorkingSet)",
+            "Thu hồi bộ nhớ không dùng từ các tiến trình nhàn rỗi. Không giải phóng ổ C:.",
+            checked=ram_checked,
+        )
+        ram_row.checkbox.stateChanged.connect(self._auto_save_targets)
+        self.target_rows["ram_optimize"] = ram_row
+        layout.addWidget(ram_row)
+
+        row_downloads_age = QHBoxLayout()
+        lbl_downloads_age = QLabel("Xóa tệp Downloads cũ hơn:")
+        lbl_downloads_age.setStyleSheet("color: #94a3b8;")
+        self.spin_downloads_age = QSpinBox()
+        self.spin_downloads_age.setRange(1, 365)
+        self.spin_downloads_age.setSuffix(" ngày")
+        try:
+            age_days = int(self.config_manager.get("downloads_old_min_days", 30) or 30)
+        except (TypeError, ValueError):
+            age_days = 30
+        self.spin_downloads_age.setValue(max(1, min(365, age_days)))
+        self.spin_downloads_age.valueChanged.connect(self._auto_save_targets)
+        lbl_downloads_hint = QLabel("Chỉ khi bật mục Downloads. Không xóa thư mục.")
+        lbl_downloads_hint.setStyleSheet("color: #64748b; font-size: 11px;")
+        row_downloads_age.addWidget(lbl_downloads_age)
+        row_downloads_age.addWidget(self.spin_downloads_age)
+        row_downloads_age.addWidget(lbl_downloads_hint)
+        row_downloads_age.addStretch()
+        layout.addLayout(row_downloads_age)
 
         layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -790,6 +911,8 @@ class MainWindow(QMainWindow):
         for key, row in self.target_rows.items():
             new_targets[key] = row.is_checked()
         self.config_manager.set("targets", new_targets)
+        if hasattr(self, "spin_downloads_age"):
+            self.config_manager.set("downloads_old_min_days", int(self.spin_downloads_age.value()))
 
     def init_tab_automation(self):
         outer_layout = QVBoxLayout(self.tab_automation)
@@ -905,6 +1028,68 @@ class MainWindow(QMainWindow):
         layout_thermal.addLayout(row_thermal_spin)
         layout_thermal.addWidget(lbl_thermal_desc)
         layout.addWidget(card_thermal)
+
+        card_disk = QFrame()
+        card_disk.setObjectName("SettingCard")
+        card_disk.setStyleSheet(card_style)
+        layout_disk = QVBoxLayout(card_disk)
+        layout_disk.setContentsMargins(18, 16, 18, 16)
+        layout_disk.setSpacing(10)
+
+        self.chk_low_disk = QCheckBox("Báo khi ổ C: sắp đầy (banner và thông báo, có cooldown)")
+        self.chk_low_disk.setStyleSheet("font-weight: bold; font-size: 14px; color: #fbbf24;")
+        self.chk_low_disk.setChecked(True)
+
+        row_disk_mode = QHBoxLayout()
+        lbl_disk_mode = QLabel("Cách so ngưỡng:")
+        lbl_disk_mode.setStyleSheet("color: #94a3b8;")
+        self.combo_low_disk_mode = QComboBox()
+        self._low_disk_mode_values = ["gb", "percent", "either"]
+        self.combo_low_disk_mode.addItems([
+            "Theo GB trống (mặc định 10 GB)",
+            "Theo % trống (mặc định 10%)",
+            "GB hoặc % — cảnh báo khi chạm một trong hai",
+        ])
+        row_disk_mode.addWidget(lbl_disk_mode)
+        row_disk_mode.addWidget(self.combo_low_disk_mode)
+        row_disk_mode.addStretch()
+
+        row_disk_gb = QHBoxLayout()
+        lbl_disk_gb = QLabel("Ngưỡng GB trống:")
+        lbl_disk_gb.setStyleSheet("color: #94a3b8;")
+        self.spin_low_disk_gb = QSpinBox()
+        self.spin_low_disk_gb.setRange(1, 500)
+        self.spin_low_disk_gb.setSuffix(" GB")
+        self.spin_low_disk_gb.setValue(10)
+        row_disk_gb.addWidget(lbl_disk_gb)
+        row_disk_gb.addWidget(self.spin_low_disk_gb)
+        row_disk_gb.addStretch()
+
+        row_disk_pct = QHBoxLayout()
+        lbl_disk_pct = QLabel("Ngưỡng % trống:")
+        lbl_disk_pct.setStyleSheet("color: #94a3b8;")
+        self.spin_low_disk_pct = QSpinBox()
+        self.spin_low_disk_pct.setRange(1, 50)
+        self.spin_low_disk_pct.setSuffix(" %")
+        self.spin_low_disk_pct.setValue(10)
+        row_disk_pct.addWidget(lbl_disk_pct)
+        row_disk_pct.addWidget(self.spin_low_disk_pct)
+        row_disk_pct.addStretch()
+
+        lbl_disk_desc = QLabel(
+            "Mặc định cảnh báo khi ổ C: còn dưới 10 GB. "
+            "Thông báo dùng cùng kiểu cooldown ~30 phút, không spam mỗi lần đo. "
+            "Banner gợi ý «Dọn ổ C (không cần Admin)» — chỉ xóa rác tài khoản hiện tại."
+        )
+        lbl_disk_desc.setWordWrap(True)
+        lbl_disk_desc.setStyleSheet("color: #64748b; font-size: 11px;")
+
+        layout_disk.addWidget(self.chk_low_disk)
+        layout_disk.addLayout(row_disk_mode)
+        layout_disk.addLayout(row_disk_gb)
+        layout_disk.addLayout(row_disk_pct)
+        layout_disk.addWidget(lbl_disk_desc)
+        layout.addWidget(card_disk)
 
         # Card 2b: AI Auto-Pilot
         card_ap = QFrame()
@@ -1488,6 +1673,10 @@ class MainWindow(QMainWindow):
         self.chk_thermal_monitor.toggled.connect(self._auto_save_automation_settings)
         self.chk_thermal_warn_toast.toggled.connect(self._auto_save_automation_settings)
         self.spin_thermal_warn.valueChanged.connect(self._auto_save_automation_settings)
+        self.chk_low_disk.toggled.connect(self._auto_save_automation_settings)
+        self.combo_low_disk_mode.currentIndexChanged.connect(self._auto_save_automation_settings)
+        self.spin_low_disk_gb.valueChanged.connect(self._auto_save_automation_settings)
+        self.spin_low_disk_pct.valueChanged.connect(self._auto_save_automation_settings)
         self.chk_ai_autopilot.toggled.connect(self._auto_save_automation_settings)
         self.combo_ai_autopilot_mode.currentIndexChanged.connect(self._auto_save_automation_settings)
         self.chk_auto_net.toggled.connect(self._auto_save_automation_settings)
@@ -1606,6 +1795,19 @@ class MainWindow(QMainWindow):
             self.spin_ram_threshold.setValue(cfg.get("ram_threshold_percent", 80))
             self.chk_thermal_monitor.setChecked(cfg.get("thermal_monitor_enabled", True))
             self.chk_thermal_warn_toast.setChecked(cfg.get("thermal_warn_toast_enabled", True))
+            self.chk_low_disk.setChecked(cfg.get("low_disk_warn_enabled", True))
+            mode = str(cfg.get("low_disk_threshold_mode", "gb") or "gb").lower()
+            if mode not in self._low_disk_mode_values:
+                mode = "gb"
+            self.combo_low_disk_mode.setCurrentIndex(self._low_disk_mode_values.index(mode))
+            try:
+                self.spin_low_disk_gb.setValue(int(float(cfg.get("low_disk_free_gb", 10))))
+            except (TypeError, ValueError):
+                self.spin_low_disk_gb.setValue(10)
+            try:
+                self.spin_low_disk_pct.setValue(int(float(cfg.get("low_disk_free_percent", 10))))
+            except (TypeError, ValueError):
+                self.spin_low_disk_pct.setValue(10)
             try:
                 self.spin_thermal_warn.setValue(int(cfg.get("thermal_warn_celsius", 90)))
             except (TypeError, ValueError):
@@ -1668,6 +1870,13 @@ class MainWindow(QMainWindow):
         self.config_manager.set("thermal_monitor_enabled", self.chk_thermal_monitor.isChecked())
         self.config_manager.set("thermal_warn_toast_enabled", self.chk_thermal_warn_toast.isChecked())
         self.config_manager.set("thermal_warn_celsius", int(self.spin_thermal_warn.value()))
+        if hasattr(self, "chk_low_disk"):
+            mode_idx = self.combo_low_disk_mode.currentIndex()
+            mode = self._low_disk_mode_values[mode_idx] if 0 <= mode_idx < len(self._low_disk_mode_values) else "gb"
+            self.config_manager.set("low_disk_warn_enabled", self.chk_low_disk.isChecked())
+            self.config_manager.set("low_disk_threshold_mode", mode)
+            self.config_manager.set("low_disk_free_gb", int(self.spin_low_disk_gb.value()))
+            self.config_manager.set("low_disk_free_percent", int(self.spin_low_disk_pct.value()))
         if hasattr(self, "thermal_card"):
             self.thermal_card.set_warn_celsius(self.spin_thermal_warn.value())
         ap_enabled = self.chk_ai_autopilot.isChecked()
@@ -1920,7 +2129,14 @@ class MainWindow(QMainWindow):
         # Update gauges
         self.gauge_ram.set_value(ram["percent"], f"{ram['used_gb']:.1f}/{ram['total_gb']:.1f} GB")
         self.gauge_cpu.set_value(cpu["percent"], f"{cpu['core_count']} Cores")
-        self.gauge_disk.set_value(disk["percent"], f"Còn trống {disk['free_gb']:.1f} GB")
+        total_gb = float(disk.get("total_gb") or 0)
+        free_gb = float(disk.get("free_gb") or 0)
+        if total_gb > 0:
+            disk_sub = f"Trống {free_gb:.1f} / {total_gb:.1f} GB"
+        else:
+            disk_sub = "Không đọc được ổ C:"
+        self.gauge_disk.set_value(disk.get("percent") or 0, disk_sub)
+        self._refresh_low_disk_banner(disk)
 
         # Update network speed card
         net = stats.get("net")
@@ -1956,7 +2172,9 @@ class MainWindow(QMainWindow):
             "auto_periodic": "Tự động (Định kỳ)",
             "ram_threshold": "Tự động (Ngưỡng RAM)",
             "quick_tray": "Khay hệ thống",
-            "game_boost": "Game Boost"
+            "game_boost": "Game Boost",
+            "deep_c_user": "Dọn ổ C (không Admin)",
+            "clean_light": "Dọn nhẹ",
         }
 
         for row_idx, item in enumerate(history):
@@ -2035,6 +2253,27 @@ class MainWindow(QMainWindow):
         msg += "Chi tiết đã được ghi vào file app.log!"
         QMessageBox.information(self, "Chẩn Đoán Hệ Thống Hoàn Tất", msg)
 
+    def _downloads_min_age_days(self) -> int:
+        try:
+            if hasattr(self, "spin_downloads_age"):
+                return int(self.spin_downloads_age.value())
+            return int(self.config_manager.get("downloads_old_min_days", 30) or 30)
+        except (TypeError, ValueError):
+            return 30
+
+    def _refresh_low_disk_banner(self, disk: dict = None):
+        from core.c_drive_clean import build_low_disk_notice
+        if not hasattr(self, "disk_low_banner"):
+            return
+        if disk is None:
+            disk = SystemMonitor.get_disk_info("C:\\")
+        notice = build_low_disk_notice(disk, self.config_manager.config)
+        if not notice:
+            self.disk_low_banner.setVisible(False)
+            return
+        self.lbl_disk_low.setText(notice.get("message") or "Ổ C: sắp đầy")
+        self.disk_low_banner.setVisible(True)
+
     def start_scan_only(self):
         targets = {k: r.is_checked() for k, r in self.target_rows.items()}
         self._set_buttons_enabled(False)
@@ -2042,7 +2281,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(10)
         self.lbl_status.setText("Đang phân tích và quét rác hệ thống...")
 
-        self.worker = CleanWorker(targets, is_scan_only=True)
+        self.worker = CleanWorker(
+            targets,
+            is_scan_only=True,
+            downloads_min_age_days=self._downloads_min_age_days(),
+        )
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.finished.connect(self._on_worker_finished)
         self.worker.start()
@@ -2055,7 +2298,31 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(5)
         self.lbl_status.setText("Đang thực thi dọn dẹp và tối ưu hóa hệ thống...")
 
-        self.worker = CleanWorker(targets, is_scan_only=False, whitelist=whitelist)
+        self.worker = CleanWorker(
+            targets,
+            is_scan_only=False,
+            whitelist=whitelist,
+            downloads_min_age_days=self._downloads_min_age_days(),
+        )
+        self.worker.progress.connect(self._on_worker_progress)
+        self.worker.finished.connect(self._on_worker_finished)
+        self.worker.start()
+
+    def start_deep_c_clean(self):
+        """Một lần bấm: dọn mục an toàn không cần Admin. Không tối ưu RAM."""
+        targets = {k: r.is_checked() for k, r in self.target_rows.items()}
+        self._set_buttons_enabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(5)
+        self.lbl_status.setText("Đang dọn ổ C (không cần Admin)...")
+
+        self.worker = CleanWorker(
+            targets,
+            is_scan_only=False,
+            whitelist=set(),
+            deep_user_safe=True,
+            downloads_min_age_days=self._downloads_min_age_days(),
+        )
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.finished.connect(self._on_worker_finished)
         self.worker.start()
@@ -2130,25 +2397,41 @@ class MainWindow(QMainWindow):
             # Update badges on targets tab
             for cat_key, info in data.get("categories", {}).items():
                 if cat_key in self.target_rows:
+                    if info.get("will_skip"):
+                        self.target_rows[cat_key].set_badge("Cần Admin", is_warning=True)
+                        continue
                     mb = info.get("size_mb", 0)
                     cnt = info.get("file_count", 0)
                     self.target_rows[cat_key].set_badge(f"{mb:.1f} MB ({cnt} files)", is_warning=(mb > 100))
 
-            self.lbl_status.setText(f"Quét hoàn tất: Phát hiện {total_mb:.1f} MB rác ({total_files} files)")
-            QMessageBox.information(
-                self, "Kết Quả Quét Rác", 
-                f"Phát hiện tổng cộng {total_mb:.1f} MB dữ liệu rác ({total_files} files) có thể dọn dẹp an toàn!"
+            admin_mb = float(data.get("admin_only_mb") or 0)
+            scan_msg = (
+                f"Có thể dọn ngay: {total_mb:.1f} MB ({total_files} tệp). "
+                "Số này không gồm mục cần Admin."
             )
+            if admin_mb > 0:
+                scan_msg += (
+                    f"\n\nThêm khoảng {admin_mb:.1f} MB thuộc mục «Cần Admin». "
+                    "Phần đó sẽ không bị xóa và không được tính là đã giải phóng khi bạn chưa có quyền Administrator."
+                )
+            self.lbl_status.setText(f"Quét hoàn tất: có thể dọn {total_mb:.1f} MB (không gồm mục Cần Admin)")
+            QMessageBox.information(self, "Kết Quả Quét Rác", scan_msg)
         elif res_type == "clean":
             clean_res = result.get("clean_res", {})
             ram_res = result.get("ram_res", {})
+            deep = bool(result.get("deep_user_safe") or clean_res.get("deep_user_safe"))
 
             freed_junk_mb = clean_res.get("total_freed_mb", 0.0)
-            freed_ram_mb = ram_res.get("freed_mb", 0.0)
+            freed_label = str(clean_res.get("freed_label_vi") or f"{float(freed_junk_mb):.1f} MB")
+            freed_ram_mb = ram_res.get("freed_mb", 0.0) if not deep else 0.0
             del_files = clean_res.get("total_deleted_files", 0)
 
-            # Record history
-            self.config_manager.add_history(freed_junk_mb, freed_ram_mb, trigger_type="manual")
+            # Record history — only bytes actually freed
+            self.config_manager.add_history(
+                freed_junk_mb,
+                freed_ram_mb,
+                trigger_type="deep_c_user" if deep else "manual",
+            )
             try:
                 from core.companion import observe_clean
                 observe_clean(
@@ -2168,29 +2451,45 @@ class MainWindow(QMainWindow):
             else:
                 self.update_system_stats()
 
-            msg = (
-                f"✨ Dọn Dẹp & Tối Ưu Hoàn Tất!\n\n"
-                f"• Dung lượng rác đã xóa: {freed_junk_mb:.1f} MB ({del_files} files)\n"
-                f"• Bộ nhớ RAM đã giải phóng: {freed_ram_mb:.1f} MB\n"
-            )
-            self.lbl_status.setText(f"Đã giải phóng: {freed_junk_mb:.1f} MB rác và {freed_ram_mb:.1f} MB RAM")
+            report = str(clean_res.get("report_vi") or "").strip()
+            if not report:
+                report = (
+                    f"Đã giải phóng thực sự: {freed_junk_mb:.1f} MB ({del_files} tệp)."
+                )
+            if not deep:
+                report += f"\n\nBộ nhớ RAM đã giải phóng: {freed_ram_mb:.1f} MB"
+            msg = report
+            if deep:
+                self.lbl_status.setText(f"Dọn ổ C xong: giải phóng thực sự {freed_label}")
+            else:
+                self.lbl_status.setText(
+                    f"Đã giải phóng: {freed_label} rác và {freed_ram_mb:.1f} MB RAM"
+                )
             
             if self.tray_manager and (self.config_manager.get("show_notifications", True) or self.config_manager.get("instant_screen_notifications_enabled", True)):
+                tray_title = "Dọn ổ C xong" if deep else "PC Cleaner: Hoàn Tất Dọn Dẹp"
+                tray_body = f"Đã giải phóng thực sự {freed_label}."
+                if not deep:
+                    tray_body += f" RAM: {freed_ram_mb:.1f} MB."
                 self.tray_manager.notify(
-                    "PC Cleaner: Hoàn Tất Dọn Dẹp",
-                    f"Đã giải phóng {freed_junk_mb:.1f} MB rác và {freed_ram_mb:.1f} MB RAM!",
+                    tray_title,
+                    tray_body,
                     level="success",
                     icon="🗑️",
                     action_text="📊 Xem Nhật Ký",
                     action_callback=lambda: self.tabs.setCurrentIndex(1)
                 )
             
-            QMessageBox.information(self, "Thành Công", msg)
+            QMessageBox.information(self, "Dọn ổ C xong" if deep else "Thành Công", msg)
 
     def _set_buttons_enabled(self, enabled: bool):
         self.btn_boost_now.setEnabled(enabled)
         self.btn_scan_only.setEnabled(enabled)
         self.btn_ram_only.setEnabled(enabled)
+        if hasattr(self, "btn_deep_c"):
+            self.btn_deep_c.setEnabled(enabled)
+        if hasattr(self, "btn_disk_low_clean"):
+            self.btn_disk_low_clean.setEnabled(enabled)
         if hasattr(self, "btn_large_files"):
             self.btn_large_files.setEnabled(enabled)
         if hasattr(self, "btn_disk_analyzer"):

@@ -1,0 +1,1055 @@
+"""
+Dọn ổ C theo quyền thật của tiến trình.
+
+Mục user-safe xóa được khi không có quyền Administrator.
+Mục needs_admin bị bỏ qua (kèm lý do tiếng Việt) nếu tiến trình chưa được nâng quyền.
+Chỉ cộng byte đã xóa thật — không cộng ước lượng của mục bỏ qua hay tệp đang khóa.
+"""
+from __future__ import annotations
+
+import os
+import stat
+import time
+from typing import Any, Dict, Iterable, List, Optional, Sequence
+
+ADMIN_SKIP_REASON_VI = (
+    "Cần quyền Administrator — đã bỏ qua, không giải phóng và không tính dung lượng."
+)
+PROTECTED_REASON_VI = (
+    "Đường dẫn hệ thống được bảo vệ (WinSxS / System32) — không xóa."
+)
+TOO_BROAD_REASON_VI = (
+    "Đường dẫn quá rộng (gốc ổ đĩa hoặc hồ sơ người dùng) — không xóa."
+)
+LOCKED_REASON_VI = "Một số tệp đang bị khóa (ứng dụng đang mở) — không tính phần chưa xóa."
+DOWNLOADS_DISABLED_REASON_VI = (
+    "Mục Downloads đang tắt. Không xóa tệp tải về nếu bạn chưa bật mục này."
+)
+
+DEFAULT_LOW_DISK_FREE_GB = 10.0
+DEFAULT_LOW_DISK_FREE_PERCENT = 10.0
+DEFAULT_LOW_DISK_THRESHOLD_MODE = "gb"
+DEFAULT_LOW_DISK_TOAST_COOLDOWN_SEC = 1800
+DEFAULT_DOWNLOADS_MIN_AGE_DAYS = 30
+
+# Tên thư mục không bao giờ được dọn, dù nằm sâu bên trong một mục cache.
+_BLOCKED_DIR_NAMES = frozenset({
+    "winsxs",
+    "system32",
+    "syswow64",
+    "sysnative",
+    "$recycle.bin",
+    "system volume information",
+})
+
+_CHROMIUM_ROOTS = (
+    os.path.join("Google", "Chrome", "User Data"),
+    os.path.join("Microsoft", "Edge", "User Data"),
+    os.path.join("BraveSoftware", "Brave-Browser", "User Data"),
+    os.path.join("Vivaldi", "User Data"),
+    os.path.join("Chromium", "User Data"),
+)
+_CHROMIUM_CACHE_SUBS = ("Cache", "Code Cache", "GPUCache")
+_OPERA_CACHE_RELS = (
+    os.path.join("Opera Software", "Opera Stable", "Cache"),
+    os.path.join("Opera Software", "Opera GX Stable", "Cache"),
+)
+_SHADER_RELS = (
+    "D3DSCache",
+    os.path.join("NVIDIA", "DXCache"),
+    os.path.join("NVIDIA", "GLCache"),
+    os.path.join("AMD", "DxCache"),
+    os.path.join("AMD", "GLCache"),
+)
+_THUMB_GLOBS = ("thumbcache_*.db", "iconcache_*.db")
+
+
+def _meta(
+    *,
+    label_vi: str,
+    description_vi: str,
+    needs_admin: bool,
+    scope: str,
+    risk: str,
+    default_enabled: bool,
+    clean_mode: str,
+) -> Dict[str, Any]:
+    return {
+        "label_vi": label_vi,
+        "description_vi": description_vi,
+        "needs_admin": needs_admin,
+        "scope": scope,
+        "risk": risk,
+        "default_enabled": default_enabled,
+        "clean_mode": clean_mode,
+    }
+
+
+# Thứ tự ổn định cho UI, quét và báo cáo.
+TARGET_ORDER: Sequence[str] = (
+    "user_temp",
+    "thumbnail_cache",
+    "browser_cache",
+    "inet_cache",
+    "shader_cache",
+    "crash_dumps",
+    "app_caches",
+    "delivery_cache",
+    "recycle_bin",
+    "downloads_old",
+    "system_temp",
+    "windows_update",
+    "system_dumps",
+)
+
+TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
+    "user_temp": _meta(
+        label_vi="File tạm người dùng (%TEMP%)",
+        description_vi="Temp của tài khoản này và LocalAppData\\Temp. Không cần Admin.",
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "thumbnail_cache": _meta(
+        label_vi="Bộ nhớ đệm hình thu nhỏ và icon",
+        description_vi=(
+            "Chỉ xóa thumbcache_*.db và iconcache_*.db. Windows tạo lại sau. "
+            "Tệp đang khóa sẽ được bỏ qua, không tính dung lượng."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "browser_cache": _meta(
+        label_vi="Bộ nhớ đệm trình duyệt",
+        description_vi=(
+            "Cache, Code Cache, GPUCache của Chrome, Edge, Firefox, Brave, Opera, Vivaldi "
+            "trong hồ sơ của bạn. Không xóa mật khẩu, cookie hay hồ sơ."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "inet_cache": _meta(
+        label_vi="Tệp internet tạm (INetCache)",
+        description_vi="Bộ nhớ đệm tạm trong hồ sơ người dùng. Không đụng cookie.",
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "shader_cache": _meta(
+        label_vi="Bộ nhớ đệm shader (DirectX / NVIDIA / AMD)",
+        description_vi="Cache đồ họa có thể tạo lại. Không xóa driver hay thư mục hệ thống.",
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "crash_dumps": _meta(
+        label_vi="Báo cáo lỗi và crash dump của bạn",
+        description_vi="CrashDumps và Windows Error Reporting trong LocalAppData của tài khoản này.",
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "app_caches": _meta(
+        label_vi="Bộ nhớ đệm ứng dụng (Zalo, VS Code, Discord, Teams, Steam, Pip, Npm)",
+        description_vi=(
+            "Chỉ các thư mục cache hoặc log đã biết. Không xóa database Zalo, tin nhắn "
+            "hay thư mục AppData lạ."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "delivery_cache": _meta(
+        label_vi="Cache phân phối của người dùng",
+        description_vi=(
+            "Delivery Optimization trong LocalAppData. Bản nằm trong Windows cần Admin "
+            "và không thuộc mục này."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "recycle_bin": _meta(
+        label_vi="Thùng rác của tài khoản này",
+        description_vi=(
+            "Làm trống thùng rác người dùng hiện tại qua Windows. Không cần Admin. "
+            "Không đụng thùng rác tài khoản khác."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="recycle",
+    ),
+    "downloads_old": _meta(
+        label_vi="Tệp cũ trong Downloads (tắt mặc định)",
+        description_vi=(
+            "Chỉ xóa tệp (không xóa thư mục) cũ hơn số ngày bạn chọn. "
+            "Mặc định tắt — không chạy nếu bạn không bật."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="old_files",
+    ),
+    "system_temp": _meta(
+        label_vi="File tạm hệ thống (C:\\Windows\\Temp)",
+        description_vi="Cần Admin. Khi chưa nâng quyền, mục này bị bỏ qua và không tính dung lượng.",
+        needs_admin=True,
+        scope="system",
+        risk="caution",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "windows_update": _meta(
+        label_vi="Bộ nhớ đệm Windows Update",
+        description_vi=(
+            "Chỉ C:\\Windows\\SoftwareDistribution\\Download. Cần Admin. "
+            "Không đụng WinSxS hay System32."
+        ),
+        needs_admin=True,
+        scope="system",
+        risk="caution",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "system_dumps": _meta(
+        label_vi="Dump lỗi hệ thống (tắt mặc định)",
+        description_vi=(
+            "C:\\Windows\\Minidump và MEMORY.DMP. Cần Admin. "
+            "Tắt mặc định vì file này có thể cần khi sửa lỗi."
+        ),
+        needs_admin=True,
+        scope="system",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+    ),
+}
+
+
+def is_process_elevated() -> bool:
+    """True khi tiến trình đang chạy elevated. Ngoài Windows luôn False."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
+def default_target_flags() -> Dict[str, bool]:
+    flags = {key: bool(TARGET_CATALOG[key]["default_enabled"]) for key in TARGET_ORDER}
+    flags["ram_optimize"] = True
+    return flags
+
+
+def admin_target_keys() -> List[str]:
+    return [key for key in TARGET_ORDER if TARGET_CATALOG[key]["needs_admin"]]
+
+
+def user_safe_target_keys() -> List[str]:
+    return [key for key in TARGET_ORDER if not TARGET_CATALOG[key]["needs_admin"]]
+
+
+def path_is_forbidden(path: str) -> bool:
+    """True nếu path đụng WinSxS, System32, SysWOW64 hoặc thùng rác trên đĩa."""
+    if not path:
+        return False
+    parts = [part.lower() for part in os.path.normpath(path).split(os.sep) if part]
+    return any(part in _BLOCKED_DIR_NAMES for part in parts)
+
+
+def path_is_too_broad(path: str, *, user_profile: str = "", system_root: str = "") -> bool:
+    """Từ chối gốc ổ đĩa, thư mục Windows và gốc hồ sơ người dùng."""
+    if not path:
+        return True
+    try:
+        abs_path = os.path.normcase(os.path.abspath(path))
+    except (OSError, ValueError):
+        return True
+    parent = os.path.dirname(abs_path)
+    if parent == abs_path:
+        return True
+    broad = []
+    for root in (user_profile, system_root):
+        if not root:
+            continue
+        try:
+            broad.append(os.path.normcase(os.path.abspath(root)))
+        except (OSError, ValueError):
+            continue
+    return abs_path in broad
+
+
+def _within_root(path: str, root: str) -> bool:
+    if not path or not root:
+        return False
+    try:
+        abs_path = os.path.abspath(path)
+        abs_root = os.path.abspath(root)
+        return os.path.commonpath([abs_path, abs_root]) == abs_root
+    except (OSError, ValueError):
+        return False
+
+
+def _dedupe(paths: Iterable[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for path in paths:
+        if not path:
+            continue
+        try:
+            key = os.path.normcase(os.path.abspath(path))
+        except (OSError, ValueError):
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _exists(path: str) -> bool:
+    try:
+        return bool(path) and os.path.exists(path)
+    except OSError:
+        return False
+
+
+def _env(environ: Optional[Dict[str, str]], key: str) -> str:
+    source = os.environ if environ is None else environ
+    return str(source.get(key, "") or "")
+
+
+def _chromium_caches(user_data_root: str) -> List[str]:
+    if not _exists(user_data_root):
+        return []
+    profiles: List[str] = []
+    default_profile = os.path.join(user_data_root, "Default")
+    if _exists(default_profile):
+        profiles.append(default_profile)
+    try:
+        for name in os.listdir(user_data_root):
+            if name.startswith("Profile "):
+                candidate = os.path.join(user_data_root, name)
+                if os.path.isdir(candidate):
+                    profiles.append(candidate)
+    except OSError:
+        pass
+    found: List[str] = []
+    for profile in profiles:
+        for sub in _CHROMIUM_CACHE_SUBS:
+            cache_dir = os.path.join(profile, sub)
+            if _exists(cache_dir) and not path_is_forbidden(cache_dir):
+                found.append(cache_dir)
+    return found
+
+
+def _append_if_dir(bucket: List[str], path: str) -> None:
+    if _exists(path) and os.path.isdir(path) and not path_is_forbidden(path):
+        bucket.append(path)
+
+
+def _thumbnail_files(local_app_data: str) -> List[str]:
+    import glob
+
+    explorer = os.path.join(local_app_data, "Microsoft", "Windows", "Explorer")
+    if not _exists(explorer):
+        return []
+    found: List[str] = []
+    for pattern in _THUMB_GLOBS:
+        for path in glob.glob(os.path.join(explorer, pattern)):
+            if os.path.isfile(path) and not os.path.islink(path) and not path_is_forbidden(path):
+                found.append(path)
+    thumb_delete = os.path.join(explorer, "ThumbCacheToDelete")
+    _append_if_dir(found, thumb_delete)
+    return found
+
+
+def _app_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found: List[str] = []
+    if app_data:
+        zalo_base = os.path.join(app_data, "ZaloData")
+        if _exists(zalo_base):
+            for sub in (
+                "Cache",
+                "Code Cache",
+                "GPUCache",
+                "DawnCache",
+                "logs",
+                os.path.join("media", "temp"),
+                os.path.join("media", "update"),
+                "resp_cache",
+                os.path.join("Partitions", "zalo", "Cache"),
+                os.path.join("Partitions", "zalo", "Code Cache"),
+                os.path.join("Partitions", "zalo", "GPUCache"),
+            ):
+                _append_if_dir(found, os.path.join(zalo_base, sub))
+        discord_base = os.path.join(app_data, "discord")
+        if _exists(discord_base):
+            for sub in ("Cache", "Code Cache", "GPUCache"):
+                _append_if_dir(found, os.path.join(discord_base, sub))
+        tele_base = os.path.join(app_data, "Telegram Desktop", "tdata")
+        if _exists(tele_base):
+            for sub in (os.path.join("user_data", "cache"), "temp"):
+                _append_if_dir(found, os.path.join(tele_base, sub))
+        code_base = os.path.join(app_data, "Code")
+        if _exists(code_base):
+            for sub in ("Cache", "CachedData", "CachedExtensionVSIXs", "GPUCache", "logs"):
+                _append_if_dir(found, os.path.join(code_base, sub))
+        _append_if_dir(found, os.path.join(app_data, "npm-cache"))
+        teams_base = os.path.join(app_data, "Microsoft", "Teams")
+        if _exists(teams_base):
+            for sub in ("Cache", "Code Cache", "GPUCache", "tmp"):
+                _append_if_dir(found, os.path.join(teams_base, sub))
+    if local_app_data:
+        _append_if_dir(found, os.path.join(local_app_data, "pip", "cache"))
+        _append_if_dir(found, os.path.join(local_app_data, "npm-cache"))
+        _append_if_dir(found, os.path.join(local_app_data, "Programs", "Zalo", "logs"))
+        _append_if_dir(found, os.path.join(local_app_data, "Steam", "htmlcache"))
+    return found
+
+
+def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, List[str]]:
+    """
+    Tập đường dẫn có thể dọn. environ=None dùng môi trường thật.
+    Khi truyền dict (test), thiếu SystemRoot nghĩa là không có mục hệ thống —
+    không rơi về C:\\Windows.
+    """
+    local_app_data = _env(environ, "LOCALAPPDATA")
+    app_data = _env(environ, "APPDATA")
+    user_temp = _env(environ, "TEMP") or _env(environ, "TMP")
+    user_profile = _env(environ, "USERPROFILE")
+    if environ is None:
+        system_root = _env(None, "SystemRoot") or _env(None, "SYSTEMROOT")
+        if not system_root and os.name == "nt":
+            system_root = r"C:\Windows"
+    else:
+        system_root = _env(environ, "SystemRoot") or _env(environ, "SYSTEMROOT")
+
+    targets: Dict[str, List[str]] = {key: [] for key in TARGET_ORDER if key != "recycle_bin"}
+
+    temp_candidates = [user_temp]
+    if local_app_data:
+        temp_candidates.append(os.path.join(local_app_data, "Temp"))
+    for candidate in temp_candidates:
+        if (
+            candidate
+            and _exists(candidate)
+            and os.path.isdir(candidate)
+            and not path_is_forbidden(candidate)
+            and not path_is_too_broad(candidate, user_profile=user_profile, system_root=system_root)
+        ):
+            targets["user_temp"].append(candidate)
+
+    if local_app_data and not path_is_forbidden(local_app_data):
+        targets["thumbnail_cache"].extend(_thumbnail_files(local_app_data))
+        for rel in _CHROMIUM_ROOTS:
+            targets["browser_cache"].extend(_chromium_caches(os.path.join(local_app_data, rel)))
+        firefox_root = os.path.join(local_app_data, "Mozilla", "Firefox", "Profiles")
+        if _exists(firefox_root):
+            try:
+                for name in os.listdir(firefox_root):
+                    profile = os.path.join(firefox_root, name)
+                    if not os.path.isdir(profile):
+                        continue
+                    for sub in ("cache2", "startupCache"):
+                        _append_if_dir(targets["browser_cache"], os.path.join(profile, sub))
+            except OSError:
+                pass
+        for rel in _OPERA_CACHE_RELS:
+            _append_if_dir(targets["browser_cache"], os.path.join(local_app_data, rel))
+        _append_if_dir(
+            targets["inet_cache"],
+            os.path.join(local_app_data, "Microsoft", "Windows", "INetCache"),
+        )
+        for rel in _SHADER_RELS:
+            _append_if_dir(targets["shader_cache"], os.path.join(local_app_data, rel))
+        _append_if_dir(targets["crash_dumps"], os.path.join(local_app_data, "CrashDumps"))
+        _append_if_dir(
+            targets["crash_dumps"],
+            os.path.join(local_app_data, "Microsoft", "Windows", "WER", "ReportArchive"),
+        )
+        _append_if_dir(
+            targets["crash_dumps"],
+            os.path.join(local_app_data, "Microsoft", "Windows", "WER", "ReportQueue"),
+        )
+        _append_if_dir(
+            targets["crash_dumps"],
+            os.path.join(local_app_data, "Microsoft", "Windows", "WER", "Temp"),
+        )
+        _append_if_dir(
+            targets["delivery_cache"],
+            os.path.join(local_app_data, "Microsoft", "Windows", "DeliveryOptimization", "Cache"),
+        )
+
+    if app_data and not path_is_forbidden(app_data):
+        for rel in _OPERA_CACHE_RELS:
+            _append_if_dir(targets["browser_cache"], os.path.join(app_data, rel))
+
+    targets["app_caches"].extend(_app_cache_paths(local_app_data, app_data))
+
+    if user_profile and not path_is_forbidden(user_profile):
+        downloads = os.path.join(user_profile, "Downloads")
+        if (
+            _exists(downloads)
+            and os.path.isdir(downloads)
+            and not path_is_too_broad(downloads, user_profile=user_profile, system_root=system_root)
+        ):
+            targets["downloads_old"].append(downloads)
+
+    if system_root and not path_is_forbidden(system_root):
+        sys_temp = os.path.join(system_root, "Temp")
+        if _exists(sys_temp) and not path_is_too_broad(sys_temp, user_profile=user_profile, system_root=system_root):
+            _append_if_dir(targets["system_temp"], sys_temp)
+        _append_if_dir(
+            targets["windows_update"],
+            os.path.join(system_root, "SoftwareDistribution", "Download"),
+        )
+        _append_if_dir(targets["system_dumps"], os.path.join(system_root, "Minidump"))
+        memory_dmp = os.path.join(system_root, "MEMORY.DMP")
+        if _exists(memory_dmp) and os.path.isfile(memory_dmp) and not path_is_forbidden(memory_dmp):
+            targets["system_dumps"].append(memory_dmp)
+
+    for key in list(targets.keys()):
+        targets[key] = _dedupe(targets[key])
+    return targets
+
+
+def resolve_clean_plan(
+    enabled_targets: Optional[Dict[str, bool]],
+    *,
+    is_admin: bool,
+    deep_user_safe: bool = False,
+) -> Dict[str, Any]:
+    """
+    Chọn mục sẽ chạy và mục bỏ qua.
+
+    deep_user_safe: một lần bấm «Dọn ổ C» — mọi mục user-safe đang bật
+    (Downloads chỉ khi bật). Mục Admin đang bật được ghi nhận là bỏ qua
+    khi chưa elevated, không làm hỏng cả lượt dọn.
+    """
+    enabled = enabled_targets or {}
+    to_run: Dict[str, bool] = {}
+    skipped: List[Dict[str, Any]] = []
+
+    for key in TARGET_ORDER:
+        meta = TARGET_CATALOG[key]
+        user_on = bool(enabled.get(key, False))
+        if deep_user_safe:
+            # Một lần bấm lấy lại dung lượng an toàn.
+            # Cache/temp user-safe (mặc định bật) luôn chạy, kể cả khi checkbox định kỳ đang tắt.
+            # Thùng rác và Downloads chỉ chạy khi người dùng đang bật — tránh xóa dữ liệu họ muốn giữ.
+            # Mục Admin đang bật: chạy nếu đã elevated, không thì bỏ qua có lý do.
+            if meta["needs_admin"]:
+                if user_on and not is_admin:
+                    skipped.append(_skip_record(key, ADMIN_SKIP_REASON_VI))
+                elif user_on and is_admin:
+                    to_run[key] = True
+                continue
+            if key in ("downloads_old", "recycle_bin"):
+                if user_on:
+                    to_run[key] = True
+                continue
+            if meta["default_enabled"] or user_on:
+                to_run[key] = True
+            continue
+
+        if not user_on:
+            continue
+        if meta["needs_admin"] and not is_admin:
+            skipped.append(_skip_record(key, ADMIN_SKIP_REASON_VI))
+            continue
+        to_run[key] = True
+
+    return {
+        "to_run": to_run,
+        "skipped": skipped,
+        "is_admin": bool(is_admin),
+        "deep_user_safe": bool(deep_user_safe),
+    }
+
+
+def _skip_record(key: str, reason: str) -> Dict[str, Any]:
+    meta = TARGET_CATALOG[key]
+    return {
+        "key": key,
+        "name": meta["label_vi"],
+        "reason": reason,
+        "needs_admin": bool(meta["needs_admin"]),
+        "freed_bytes": 0,
+        "status": "skipped",
+    }
+
+
+def empty_detail(key: str, *, status: str, reason: str = "", **extra: Any) -> Dict[str, Any]:
+    meta = TARGET_CATALOG.get(key, {})
+    freed = int(extra.pop("freed_bytes", 0) or 0)
+    detail = {
+        "key": key,
+        "name": meta.get("label_vi", key),
+        "status": status,
+        "reason": reason,
+        "needs_admin": bool(meta.get("needs_admin", False)),
+        "scope": meta.get("scope", ""),
+        "risk": meta.get("risk", ""),
+        "freed_bytes": freed,
+        "freed_mb": round(freed / (1024 ** 2), 2),
+        "deleted_files": int(extra.pop("deleted_files", 0) or 0),
+        "skipped_locked": int(extra.pop("skipped_locked", 0) or 0),
+        "errors": int(extra.pop("errors", 0) or 0),
+    }
+    detail.update(extra)
+    return detail
+
+
+def bytes_actually_freed(before_size: int, still_exists: bool, after_size: int = 0) -> int:
+    """Chỉ tính phần biến mất khỏi đĩa. Mục còn nguyên thì 0."""
+    before = max(0, int(before_size or 0))
+    if not still_exists:
+        return before
+    after = max(0, int(after_size or 0))
+    return max(0, before - after)
+
+
+def _remove_readonly(func, path, _exc_info):
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception:
+        pass
+
+
+def _file_size(path: str) -> int:
+    try:
+        if os.path.islink(path):
+            return 0
+        return max(0, int(os.path.getsize(path)))
+    except OSError:
+        return 0
+
+
+def scan_tree(path: str) -> Dict[str, int]:
+    """Đếm byte và số tệp. Không đi theo symlink."""
+    if not path or not _exists(path) or path_is_forbidden(path):
+        return {"size_bytes": 0, "file_count": 0}
+    if os.path.islink(path):
+        return {"size_bytes": 0, "file_count": 0}
+    if os.path.isfile(path):
+        return {"size_bytes": _file_size(path), "file_count": 1 if _file_size(path) or _exists(path) else 0}
+    total = 0
+    count = 0
+    try:
+        for root, dirs, files in os.walk(path):
+            dirs[:] = [
+                name for name in dirs
+                if not path_is_forbidden(os.path.join(root, name))
+                and not os.path.islink(os.path.join(root, name))
+            ]
+            for name in files:
+                file_path = os.path.join(root, name)
+                if os.path.islink(file_path) or path_is_forbidden(file_path):
+                    continue
+                size = _file_size(file_path)
+                if size or _exists(file_path):
+                    total += size
+                    count += 1
+    except OSError:
+        pass
+    return {"size_bytes": total, "file_count": count}
+
+
+def try_delete_file(path: str) -> Dict[str, int]:
+    """Xóa một tệp. Byte chỉ được cộng khi tệp không còn."""
+    if not path or path_is_forbidden(path) or os.path.isdir(path) and not os.path.islink(path):
+        return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 1}
+    if os.path.islink(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 1, "errors": 0}
+        if os.path.lexists(path):
+            return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 1, "errors": 0}
+        return {"freed_bytes": 0, "deleted_files": 1, "skipped_locked": 0, "errors": 0}
+
+    size = _file_size(path)
+    try:
+        os.unlink(path)
+    except PermissionError:
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            os.unlink(path)
+        except OSError:
+            return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 1, "errors": 0}
+    except OSError:
+        return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 1, "errors": 0}
+    if os.path.exists(path):
+        return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 1, "errors": 0}
+    return {"freed_bytes": size, "deleted_files": 1, "skipped_locked": 0, "errors": 0}
+
+
+def _merge_counts(total: Dict[str, int], part: Dict[str, int]) -> None:
+    for key in ("freed_bytes", "deleted_files", "skipped_locked", "errors"):
+        total[key] = int(total.get(key, 0)) + int(part.get(key, 0))
+
+
+def clean_children(path: str, *, user_profile: str = "", system_root: str = "") -> Dict[str, int]:
+    """Xóa nội dung bên trong thư mục, giữ lại chính thư mục đó."""
+    result = {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 0, "protected": 0, "too_broad": 0}
+    if path_is_forbidden(path):
+        result["errors"] = 1
+        result["protected"] = 1
+        return result
+    if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
+        result["errors"] = 1
+        result["too_broad"] = 1
+        return result
+    if not _exists(path) or not os.path.isdir(path) or os.path.islink(path):
+        return result
+    try:
+        names = list(os.listdir(path))
+    except OSError:
+        result["errors"] = 1
+        return result
+    for name in names:
+        child = os.path.join(path, name)
+        if path_is_forbidden(child):
+            result["errors"] += 1
+            result["protected"] += 1
+            continue
+        if os.path.islink(child):
+            _merge_counts(result, try_delete_file(child))
+            continue
+        if os.path.isfile(child):
+            _merge_counts(result, try_delete_file(child))
+            continue
+        if os.path.isdir(child):
+            before = scan_tree(child)
+            try:
+                import shutil
+                shutil.rmtree(child, onerror=_remove_readonly)
+            except Exception:
+                result["errors"] += 1
+            still = _exists(child)
+            after = scan_tree(child) if still else {"size_bytes": 0, "file_count": 0}
+            freed = bytes_actually_freed(before["size_bytes"], still, after["size_bytes"])
+            deleted = max(0, before["file_count"] - (after["file_count"] if still else 0))
+            result["freed_bytes"] += freed
+            result["deleted_files"] += deleted
+            if still:
+                result["skipped_locked"] += max(1, after["file_count"])
+    return result
+
+
+def file_is_old_enough(path: str, min_age_days: int, now_ts: float) -> bool:
+    days = int(min_age_days or 0)
+    if days <= 0:
+        return False
+    try:
+        age = float(now_ts) - float(os.path.getmtime(path))
+    except OSError:
+        return False
+    return age >= days * 86400
+
+
+def clean_old_files(
+    root: str,
+    min_age_days: int,
+    now_ts: float,
+    *,
+    user_profile: str = "",
+    system_root: str = "",
+) -> Dict[str, int]:
+    """Chỉ xóa tệp cũ hơn N ngày. Không xóa thư mục, không đụng symlink."""
+    result = {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 0, "skipped_recent": 0}
+    if (
+        path_is_forbidden(root)
+        or path_is_too_broad(root, user_profile=user_profile, system_root=system_root)
+        or int(min_age_days or 0) <= 0
+    ):
+        result["errors"] = 1
+        return result
+    if not _exists(root) or not os.path.isdir(root):
+        return result
+    root_abs = os.path.abspath(root)
+    for dirpath, dirnames, filenames in os.walk(root_abs):
+        dirnames[:] = [
+            name for name in dirnames
+            if not path_is_forbidden(os.path.join(dirpath, name))
+            and not os.path.islink(os.path.join(dirpath, name))
+        ]
+        for name in filenames:
+            file_path = os.path.join(dirpath, name)
+            if os.path.islink(file_path) or path_is_forbidden(file_path):
+                continue
+            if not _within_root(file_path, root_abs):
+                result["errors"] += 1
+                continue
+            if not file_is_old_enough(file_path, min_age_days, now_ts):
+                result["skipped_recent"] += 1
+                continue
+            part = try_delete_file(file_path)
+            _merge_counts(result, part)
+    return result
+
+
+def clean_one_path(
+    path: str,
+    *,
+    clean_mode: str,
+    min_age_days: int = DEFAULT_DOWNLOADS_MIN_AGE_DAYS,
+    now_ts: Optional[float] = None,
+    user_profile: str = "",
+    system_root: str = "",
+) -> Dict[str, int]:
+    if path_is_forbidden(path):
+        return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 1, "protected": 1}
+    if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
+        return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 1, "too_broad": 1}
+    if clean_mode == "old_files":
+        return clean_old_files(
+            path,
+            min_age_days,
+            time.time() if now_ts is None else now_ts,
+            user_profile=user_profile,
+            system_root=system_root,
+        )
+    if os.path.isfile(path) or os.path.islink(path):
+        return try_delete_file(path)
+    return clean_children(path, user_profile=user_profile, system_root=system_root)
+
+
+def scan_old_files(root: str, min_age_days: int, now_ts: float) -> Dict[str, int]:
+    total = 0
+    count = 0
+    if not _exists(root) or path_is_forbidden(root) or int(min_age_days or 0) <= 0:
+        return {"size_bytes": 0, "file_count": 0}
+    root_abs = os.path.abspath(root)
+    for dirpath, dirnames, filenames in os.walk(root_abs):
+        dirnames[:] = [
+            name for name in dirnames
+            if not path_is_forbidden(os.path.join(dirpath, name))
+        ]
+        for name in filenames:
+            file_path = os.path.join(dirpath, name)
+            if os.path.islink(file_path) or not _within_root(file_path, root_abs):
+                continue
+            if not file_is_old_enough(file_path, min_age_days, now_ts):
+                continue
+            total += _file_size(file_path)
+            count += 1
+    return {"size_bytes": total, "file_count": count}
+
+
+def normalize_downloads_min_age_days(value: Any) -> int:
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_DOWNLOADS_MIN_AGE_DAYS
+    if days <= 0:
+        return DEFAULT_DOWNLOADS_MIN_AGE_DAYS
+    return min(days, 3650)
+
+
+def is_disk_space_low(
+    free_gb: float,
+    total_gb: float,
+    *,
+    min_free_gb: float = DEFAULT_LOW_DISK_FREE_GB,
+    min_free_percent: float = DEFAULT_LOW_DISK_FREE_PERCENT,
+    mode: str = DEFAULT_LOW_DISK_THRESHOLD_MODE,
+) -> bool:
+    """
+    Cảnh báo dung lượng trống. total không đọc được thì không cảnh báo
+    (tránh báo giả khi không có ổ C:).
+    mode: gb (mặc định) | percent | either.
+    """
+    try:
+        free = float(free_gb)
+        total = float(total_gb)
+    except (TypeError, ValueError):
+        return False
+    if total <= 0:
+        return False
+    gb_low = free < float(min_free_gb)
+    percent_free = (free / total) * 100.0 if total > 0 else 100.0
+    percent_low = percent_free < float(min_free_percent)
+    selected = str(mode or DEFAULT_LOW_DISK_THRESHOLD_MODE).strip().lower()
+    if selected == "percent":
+        return percent_low
+    if selected == "either":
+        return gb_low or percent_low
+    return gb_low
+
+
+def low_disk_settings(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    cfg = config if isinstance(config, dict) else {}
+    try:
+        min_gb = float(cfg.get("low_disk_free_gb", DEFAULT_LOW_DISK_FREE_GB))
+    except (TypeError, ValueError):
+        min_gb = DEFAULT_LOW_DISK_FREE_GB
+    try:
+        min_pct = float(cfg.get("low_disk_free_percent", DEFAULT_LOW_DISK_FREE_PERCENT))
+    except (TypeError, ValueError):
+        min_pct = DEFAULT_LOW_DISK_FREE_PERCENT
+    mode = str(cfg.get("low_disk_threshold_mode", DEFAULT_LOW_DISK_THRESHOLD_MODE) or "gb").lower()
+    if mode not in ("gb", "percent", "either"):
+        mode = "gb"
+    return {
+        "enabled": bool(cfg.get("low_disk_warn_enabled", True)),
+        "min_free_gb": min_gb,
+        "min_free_percent": min_pct,
+        "mode": mode,
+    }
+
+
+def build_low_disk_notice(
+    disk: Optional[Dict[str, Any]],
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Payload toast/banner tiếng Việt, hoặc None khi chưa dưới ngưỡng."""
+    settings = low_disk_settings(config)
+    if not settings["enabled"]:
+        return None
+    info = disk if isinstance(disk, dict) else {}
+    try:
+        free_gb = float(info.get("free_gb", 0) or 0)
+        total_gb = float(info.get("total_gb", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if not is_disk_space_low(
+        free_gb,
+        total_gb,
+        min_free_gb=settings["min_free_gb"],
+        min_free_percent=settings["min_free_percent"],
+        mode=settings["mode"],
+    ):
+        return None
+    if settings["mode"] == "percent":
+        threshold = f"{settings['min_free_percent']:.0f}%"
+    elif settings["mode"] == "either":
+        threshold = f"{settings['min_free_gb']:.0f} GB hoặc {settings['min_free_percent']:.0f}%"
+    else:
+        threshold = f"{settings['min_free_gb']:.0f} GB"
+    free_pct = (free_gb / total_gb * 100.0) if total_gb > 0 else 0.0
+    message = (
+        f"Ổ C: còn {free_gb:.1f} GB trống / {total_gb:.1f} GB ({free_pct:.0f}%). "
+        f"Ngưỡng cảnh báo: {threshold}. "
+        "Bấm «Dọn ổ C (không cần Admin)» để xóa rác an toàn, không cần quyền Administrator."
+    )
+    return {
+        "title": "Ổ C: sắp đầy",
+        "message": message,
+        "free_gb": round(free_gb, 2),
+        "total_gb": round(total_gb, 2),
+        "free_percent": round(free_pct, 1),
+        "threshold_label": threshold,
+        "action": "deep_user_safe_clean",
+    }
+
+
+class LowDiskToastGate:
+    """Chặn toast ổ đầy lặp lại, cùng kiểu cooldown với cảnh báo nhiệt."""
+
+    def __init__(self) -> None:
+        self.last_toast_ts = 0.0
+
+    def reset(self) -> None:
+        self.last_toast_ts = 0.0
+
+    def allow(self, now_ts: float, *, cooldown_sec: float = DEFAULT_LOW_DISK_TOAST_COOLDOWN_SEC) -> bool:
+        now_ts = float(now_ts)
+        last = float(self.last_toast_ts or 0.0)
+        if last <= 0 or (now_ts - last) >= float(cooldown_sec):
+            self.last_toast_ts = now_ts
+            return True
+        return False
+
+    def allow_from_config(self, now_ts: float, config: Optional[Dict[str, Any]] = None) -> bool:
+        cfg = config if isinstance(config, dict) else {}
+        try:
+            cooldown = float(cfg.get("low_disk_warn_toast_cooldown_seconds", DEFAULT_LOW_DISK_TOAST_COOLDOWN_SEC))
+        except (TypeError, ValueError):
+            cooldown = DEFAULT_LOW_DISK_TOAST_COOLDOWN_SEC
+        return self.allow(now_ts, cooldown_sec=cooldown)
+
+
+def format_freed_vi(num_bytes: int) -> str:
+    """Nhãn dung lượng không làm tròn mất phần đã xóa (tránh 0.0 MB khi vẫn xóa được KB)."""
+    n = max(0, int(num_bytes or 0))
+    if n >= 1024 ** 3:
+        return f"{n / (1024 ** 3):.2f} GB"
+    if n >= 1024 ** 2:
+        return f"{n / (1024 ** 2):.2f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n} B"
+
+
+def format_target_line_vi(detail: Dict[str, Any]) -> str:
+    name = str(detail.get("name") or detail.get("key") or "Mục")
+    status = str(detail.get("status") or "")
+    reason = str(detail.get("reason") or "").strip()
+    freed_bytes = int(detail.get("freed_bytes") or 0)
+    freed_label = format_freed_vi(freed_bytes)
+    if status == "skipped":
+        return f"{name}: đã bỏ qua — {reason or ADMIN_SKIP_REASON_VI}"
+    if status == "error":
+        return f"{name}: lỗi — {reason or 'không xóa được'} (0 B, không tính dung lượng)"
+    locked = int(detail.get("skipped_locked") or 0)
+    locked_note = f", bỏ qua {locked} tệp đang khóa" if locked else ""
+    if freed_bytes <= 0 and locked:
+        return f"{name}: chưa xóa được{locked_note} (0 B)"
+    if freed_bytes <= 0:
+        return f"{name}: không có gì để xóa (0 B)"
+    return f"{name}: đã xóa {freed_label}{locked_note}"
+
+
+def format_clean_report_vi(result: Dict[str, Any]) -> str:
+    deep = bool(result.get("deep_user_safe"))
+    header = "Dọn ổ C (không cần Admin) hoàn tất." if deep else "Dọn dẹp hoàn tất."
+    freed_bytes = int(result.get("total_freed_bytes") or 0)
+    files = int(result.get("total_deleted_files") or 0)
+    lines = [
+        header,
+        f"Đã giải phóng thực sự: {format_freed_vi(freed_bytes)} ({files} tệp).",
+    ]
+    if not result.get("is_admin"):
+        lines.append("Mục cần Admin đã được bỏ qua và không cộng vào số MB ở trên.")
+    lines.append("")
+    details = result.get("details") or {}
+    order = result.get("detail_order") or [key for key in TARGET_ORDER if key in details]
+    for key in order:
+        detail = details.get(key)
+        if isinstance(detail, dict) and detail.get("name"):
+            lines.append("• " + format_target_line_vi(detail))
+    skipped = result.get("skipped") or []
+    reported = set(order)
+    for item in skipped:
+        if not isinstance(item, dict):
+            continue
+        if item.get("key") in reported:
+            continue
+        lines.append("• " + format_target_line_vi(item))
+    return "\n".join(lines).strip()
