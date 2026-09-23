@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -357,6 +358,21 @@ class CompanionInsightBar(QFrame):
         )
         self.lbl_learned_today.hide()
         root.addWidget(self.lbl_learned_today)
+        self.lbl_model = QLabel("")
+        self.lbl_model.setWordWrap(True)
+        self.lbl_model.setTextFormat(Qt.PlainText)
+        self.lbl_model.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; background: transparent; border: none;"
+        )
+        self.lbl_model.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self.lbl_model.hide()
+        root.addWidget(self.lbl_model)
+        self.btn_rebuild = QPushButton("Học lại hôm nay")
+        self.btn_rebuild.setStyleSheet(_BTN_STYLE)
+        self.btn_rebuild.setToolTip("Học lại hôm nay từ nhật ký và phản hồi trên máy này.")
+        self.btn_rebuild.clicked.connect(self._rebuild_today)
+        self.btn_rebuild.hide()
+        root.addWidget(self.btn_rebuild)
         self.hide()
 
     def insight_topic(self) -> str:
@@ -386,6 +402,7 @@ class CompanionInsightBar(QFrame):
         self._show_conflict(enabled)
         self._show_insight(enabled)
         self._show_learned_today(enabled)
+        self._show_model(enabled)
         # isVisible() is false while this frame is hidden, so decide from the text.
         labels = (
             self.lbl_stage,
@@ -398,6 +415,7 @@ class CompanionInsightBar(QFrame):
             self.lbl_conflict,
             self.lbl_insight,
             self.lbl_learned_today,
+            self.lbl_model,
         )
         if any(label.text().strip() for label in labels):
             self.show()
@@ -570,6 +588,52 @@ class CompanionInsightBar(QFrame):
             return
         self.lbl_learned_today.setText(text)
         self.lbl_learned_today.show()
+
+    def _sync_rebuild_button(self, model: Any):
+        try:
+            from core.companion_learning import rebuild_on_cooldown
+            cooling = rebuild_on_cooldown(model if isinstance(model, dict) else None)
+        except Exception:
+            cooling = False
+        self.btn_rebuild.setEnabled(not cooling)
+        if cooling:
+            self.btn_rebuild.setToolTip("Mình vừa học lại hôm nay.")
+        else:
+            self.btn_rebuild.setToolTip("Học lại hôm nay từ nhật ký và phản hồi trên máy này.")
+
+    def _rebuild_today(self):
+        try:
+            from core.companion_learning import request_rebuild_today
+            request_rebuild_today(config_manager=self.config_manager)
+        except Exception:
+            pass
+        self.refresh()
+
+    def _show_model(self, enabled: bool):
+        """Mô hình học: lessons and topic bars. Hidden on a day with nothing learned."""
+        self.lbl_model.setText("")
+        self.lbl_model.hide()
+        self.btn_rebuild.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_learning import current_lessons, ensure_daily_model, format_model_panel_vi
+            model = ensure_daily_model(config_manager=self.config_manager)
+            summary = str((model or {}).get("summary_vi") or "")
+            if not current_lessons(model, limit=1) and "chưa có gì mới" in summary:
+                return
+            text = format_model_panel_vi(model)
+        except Exception:
+            model = None
+            text = ""
+        if not text or "Chưa có mô hình" in text:
+            return
+        self.lbl_model.setText(text)
+        width = self.lbl_model.width() if self.lbl_model.width() > 80 else 360
+        self.lbl_model.setMinimumHeight(self.lbl_model.heightForWidth(width) + 4)
+        self.lbl_model.show()
+        self._sync_rebuild_button(model)
+        self.btn_rebuild.show()
 
     def _show_insight(self, enabled: bool):
         self._insight_id = ""
@@ -1236,7 +1300,16 @@ class CompanionCard(QFrame):
                 daily = learn_status_vi(ensure_daily_model(config_manager=self.config_manager))
             except Exception:
                 daily = ""
-        learning_bits = [bit for bit in (learned, guidance, daily) if bit]
+        model_line = ""
+        if enabled:
+            try:
+                from core.companion_learning import current_lessons, ensure_daily_model
+                lessons = current_lessons(ensure_daily_model(config_manager=self.config_manager), limit=2)
+                if lessons:
+                    model_line = "Bài học: " + "; ".join(lessons)
+            except Exception:
+                model_line = ""
+        learning_bits = [bit for bit in (learned, guidance, daily, model_line) if bit]
         self.lbl_learning.setText("\n".join(learning_bits))
         digest = diary_digest(limit=3, days=14)
         preview_kinds = (
@@ -1472,6 +1545,19 @@ class CompanionDialog(QDialog):
         profile_btns.addWidget(self.btn_clear_profile)
         profile_btns.addStretch()
         root.addLayout(profile_btns)
+
+        root.addWidget(QLabel("Mô hình học"))
+        self.lbl_model = QLabel("")
+        self.lbl_model.setWordWrap(True)
+        self.lbl_model.setTextFormat(Qt.PlainText)
+        self.lbl_model.setStyleSheet("color: #cbd5e1; font-size: 12px;")
+        self.lbl_model.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        root.addWidget(self.lbl_model)
+        self.btn_rebuild = QPushButton("Học lại hôm nay")
+        self.btn_rebuild.setStyleSheet(_BTN_STYLE)
+        self.btn_rebuild.setToolTip("Học lại hôm nay từ nhật ký và phản hồi trên máy này.")
+        self.btn_rebuild.clicked.connect(self._rebuild_today)
+        root.addWidget(self.btn_rebuild)
 
         root.addWidget(QLabel("Lời bạn đã sửa"))
         self.lbl_corrections_empty = QLabel("Chưa có lời sửa. Gõ một câu ngắn nếu mình nhớ nhầm.")
@@ -1745,6 +1831,17 @@ class CompanionDialog(QDialog):
             daily = ""
         if daily:
             self.lbl_legend.setText(self.lbl_legend.text() + "\n" + daily)
+        try:
+            from core.companion_learning import ensure_daily_model, format_model_panel_vi
+            learned_model = ensure_daily_model(config_manager=self.config_manager)
+            self.lbl_model.setText(format_model_panel_vi(learned_model))
+            width = self.lbl_model.width() if self.lbl_model.width() > 80 else 520
+            self.lbl_model.setMinimumHeight(self.lbl_model.heightForWidth(width) + 8)
+            self._sync_rebuild_button(learned_model)
+        except Exception:
+            self.lbl_model.setText(
+                "Trí nhớ thích nghi local trên máy này, không phải AGI, không train lại mạng nơ-ron."
+            )
         self.lbl_profile.setText(format_profile_browse() or empty["profile"])
         self._fill_corrections()
         self._fill_growth()
@@ -1776,6 +1873,26 @@ class CompanionDialog(QDialog):
 
         note = latest_reflection() or empty["reflection"]
         self.txt_note.setPlainText(note)
+
+    def _sync_rebuild_button(self, model: Any):
+        try:
+            from core.companion_learning import rebuild_on_cooldown
+            cooling = rebuild_on_cooldown(model if isinstance(model, dict) else None)
+        except Exception:
+            cooling = False
+        self.btn_rebuild.setEnabled(not cooling)
+        if cooling:
+            self.btn_rebuild.setToolTip("Mình vừa học lại hôm nay.")
+        else:
+            self.btn_rebuild.setToolTip("Học lại hôm nay từ nhật ký và phản hồi trên máy này.")
+
+    def _rebuild_today(self):
+        try:
+            from core.companion_learning import request_rebuild_today
+            request_rebuild_today(config_manager=self.config_manager)
+        except Exception:
+            pass
+        self.refresh()
 
     def _reflect_now(self):
         if self._reflect_worker and self._reflect_worker.isRunning():

@@ -435,6 +435,17 @@ def note_user_feedback(
                 tags=["trust", topic_key],
                 coalesce=False,
             )
+    try:
+        from core.companion_learning import apply_micro_update
+        apply_micro_update(
+            "feedback",
+            helpful=bool(helpful),
+            topic=topic_key,
+            now=now,
+            base_dir=base_dir,
+        )
+    except Exception:
+        pass
     return current_stage(config_manager=config_manager, base_dir=base_dir)
 
 
@@ -1012,6 +1023,11 @@ def build_prompt_context(
         asked = parts.get("topics") or []
         voice_topic = asked[0] if len(asked) == 1 else ""
         trust = score_trust(profile=profile, base_dir=base_dir, now=now)
+        try:
+            from core.companion_learning import voice_tone_kwargs
+            tone_extra = voice_tone_kwargs(base_dir)
+        except Exception:
+            tone_extra = {}
         voice = stage_voice(
             stage.stage,
             coaching=effective_coaching(
@@ -1024,6 +1040,7 @@ def build_prompt_context(
             trust=str(trust.get("level") or "steady"),
             focus_active=exam_focus_is_live(),
             stressed=machine_stress_active(events, now),
+            **tone_extra,
         )
         policy = voice["policy_vi"]
     except Exception:

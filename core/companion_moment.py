@@ -580,16 +580,28 @@ def attach_insight_action(
         # High trust does not skip the stage gate inside resolve_insight_action.
         coaching = effective_coaching(profile, topic=topic, base_dir=base_dir, now=now)
         skill = skill_for_insight(topic, base_dir=base_dir, now=now)
+        fallback = str(getattr(skill, "action_key", "") or "")
+        try:
+            from core.companion_learning import rank_propose_key
+            prefer = rank_propose_key(topic, base_dir=base_dir, fallback=fallback, now=now)
+        except Exception:
+            prefer = fallback
         action = resolve_insight_action(
             topic,
             stage=stage.stage,
             may_propose=bool(stage.may_propose_actions),
             coaching=coaching,
-            prefer_key=str(getattr(skill, "action_key", "") or ""),
+            prefer_key=prefer,
         )
         rows = recent_events(days=1, limit=0, base_dir=base_dir, now=now)
         focus_on = exam_focus_is_live()
         stressed = machine_stress_active(rows, now or datetime.now())
+        if stressed:
+            try:
+                from core.companion_learning import apply_micro_update
+                apply_micro_update("rough_day", now=now, base_dir=base_dir)
+            except Exception:
+                pass
         action = _calm_insight_action(action, focus_active=focus_on, stressed=stressed)
     except Exception:
         action = None
@@ -646,6 +658,11 @@ def attach_insight_action(
             from core.companion_profile import effective_coaching, score_trust
             profile = load_profile(base_dir)
             trust = score_trust(profile=profile, base_dir=base_dir, now=now)
+            try:
+                from core.companion_learning import voice_tone_kwargs
+                tone_extra = voice_tone_kwargs(base_dir)
+            except Exception:
+                tone_extra = {}
             voice = stage_voice(
                 stage.stage,
                 coaching=effective_coaching(profile, base_dir=base_dir, now=now),
@@ -653,6 +670,7 @@ def attach_insight_action(
                 trust=str(trust.get("level") or "steady"),
                 focus_active=focus_on,
                 stressed=stressed,
+                **tone_extra,
             )
             aside = str(voice.get("aside_vi") or "").strip()
             text = str(out.get("text") or "")
@@ -672,6 +690,8 @@ def stage_voice(
     focus_active: bool = False,
     stressed: bool = False,
     learned_vi: str = "",
+    confidence: Optional[float] = None,
+    maturity_signal: str = "",
 ) -> Dict[str, str]:
     """Short tone cue. Stage 0 stays shy; stage 3 may cite this machine.
 
@@ -685,6 +705,10 @@ def stage_voice(
 
     An open Trước thi / họp session, or two stress signals on the same day,
     softens stage 1+ to the ask voice. Stage 0 stays shy either way.
+
+    confidence / maturity_signal come from the local learning snapshot. They
+    only add a short tone phrase. They do not change boldness, so mute, quiet
+    hours, focus, and a rough day still decide whether a button may appear.
     """
     try:
         stage_n = max(0, min(3, int(stage)))
@@ -710,6 +734,19 @@ def stage_voice(
             tone = "Đang Trước thi / họp — nói nhẹ, chỉ nhắc việc tập trung. " + tone
         else:
             tone = "Hôm nay máy có vài dấu hiệu cùng lúc — hỏi thêm, chưa xếp nhiều nút. " + tone
+    # Learning-model confidence tints tone only after the calm gates above.
+    try:
+        conf = None if confidence is None else float(confidence)
+    except (TypeError, ValueError):
+        conf = None
+    if conf is not None:
+        conf = max(0.0, min(1.0, conf))
+    signal = str(maturity_signal or "")
+    if conf is not None and not calm and stage_n >= 1:
+        if conf < 0.34:
+            tone = "Mình còn học máy này, nói ngắn. " + tone
+        elif conf >= 0.72 and signal == "familiar":
+            tone = (tone.rstrip() + " Mình đã quen máy này một chút.").strip()
     aside = ""
     if stage_n <= 0:
         aside = "Mình mới gặp máy này — nói ngắn và hỏi lại."
@@ -940,6 +977,11 @@ def note_focus_ended(
     }
     save_state(state, base_dir=base_dir)
     schedule_focus_session_followup(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    try:
+        from core.companion_learning import apply_micro_update
+        apply_micro_update("focus_end", topic="focus", now=stamp, base_dir=base_dir)
+    except Exception:
+        pass
     return event or {"ended_at": ended}
 
 
@@ -1719,10 +1761,18 @@ def compose_daily_checkin(
     focus_on = exam_focus_is_live()
     stressed = machine_stress_active(events, stamp)
     try:
-        from core.companion_learning import morning_learn_clause
+        from core.companion_learning import morning_learn_clause, voice_tone_kwargs
         learned_clause = morning_learn_clause(base_dir=base_dir, now=stamp, hidden=hidden)
+        tone_extra = voice_tone_kwargs(base_dir)
     except Exception:
         learned_clause = ""
+        tone_extra = {}
+    if stressed:
+        try:
+            from core.companion_learning import apply_micro_update
+            apply_micro_update("rough_day", now=stamp, base_dir=base_dir)
+        except Exception:
+            pass
     voice = stage_voice(
         stage.stage,
         coaching=coaching,
@@ -1731,6 +1781,7 @@ def compose_daily_checkin(
         focus_active=focus_on,
         stressed=stressed,
         learned_vi=learned_clause,
+        **tone_extra,
     )
     shy = voice.get("boldness") in ("shy", "ask")
     parts: List[str] = []
@@ -1816,13 +1867,19 @@ def compose_daily_checkin(
         and not topic_asks_more(lead, profile=profile)
     ):
         skill = skill_for_insight(lead, base_dir=base_dir, now=stamp, events=events)
+        prefer = str(getattr(skill, "action_key", "") or "")
+        try:
+            from core.companion_learning import rank_propose_key
+            prefer = rank_propose_key(lead, base_dir=base_dir, fallback=prefer, now=stamp)
+        except Exception:
+            pass
         try:
             action = resolve_insight_action(
                 lead,
                 stage=stage.stage,
                 may_propose=True,
                 coaching=effective_coaching(profile, topic=lead, base_dir=base_dir, now=stamp),
-                prefer_key=str(getattr(skill, "action_key", "") or ""),
+                prefer_key=prefer,
             )
         except Exception:
             action = None
@@ -2142,6 +2199,11 @@ def pin_favorite_action(
     rows.append(entry)
     state["pinned_actions"] = rows
     save_state(state, base_dir=base_dir)
+    try:
+        from core.companion_learning import apply_micro_update
+        apply_micro_update("pin", topic=stored_topic, action_key=key, now=stamp, base_dir=base_dir)
+    except Exception:
+        pass
     cleaned = list_pinned_actions(base_dir)
     for item in cleaned:
         if item.get("action_key") == key:
