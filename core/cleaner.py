@@ -3,7 +3,7 @@ import ctypes
 import stat
 import time
 from ctypes import wintypes
-from typing import Dict, Any, List, Callable, Optional
+from typing import Dict, Any, List, Callable, Optional, Sequence
 from core.logger import logger
 from core.c_drive_clean import (
     ADMIN_SKIP_REASON_VI,
@@ -338,6 +338,7 @@ class JunkCleaner:
         disk_free_bytes: Optional[Callable[[], Optional[int]]] = None,
         component_cleanup: Optional[Callable[[], Dict[str, Any]]] = None,
         hibernate_off: Optional[Callable[..., Dict[str, Any]]] = None,
+        only_keys: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """
         Dọn các mục được chọn. Mục cần Admin bị bỏ qua khi chưa elevated.
@@ -350,6 +351,7 @@ class JunkCleaner:
             is_admin=bool(is_admin),
             deep_user_safe=deep_user_safe,
             deep_admin=deep_admin,
+            only_keys=only_keys,
         )
         target_paths = cls.get_target_paths(environ)
         env = os.environ if environ is None else environ
