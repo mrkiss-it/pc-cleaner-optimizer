@@ -39,6 +39,24 @@ How fields affect behavior (they never raise action caps or enable Trước thi/
 - Sparse warning: one quiet Vietnamese line on the model panel when Có ích/Chưa
   volume is still low. It is not added to the morning line, the weekly line,
   or insight text, and it does not change caps.
+
+Phase 2 uses the same file to choose quieter, explainable behavior. Still no
+training, and still no raise of action caps.
+
+- Promote: an allowlisted action with at least 3 Có ích and a margin of 2,
+  plus a skill candidate or a lesson that names the topic, becomes an offer.
+  Muted and declined topics are skipped. `skills.json` changes only after Lưu.
+  Blocked keys are never offered and nothing is saved in silence.
+- Rank: the morning lead, weekly bullets, and insight order prefer a high
+  decayed score. A Chưa-heavy topic drops out when another line remains.
+- Explain: one «Vì sao nhắc?» line from today's lesson, yesterday's lesson,
+  or that topic's Có ích / Chưa counts.
+- Decay: after 7 days without a diary or feedback signal, ranking loses one
+  point every 4 days, toward zero. Stored counts and the history ring stay.
+  A same-day micro update counts as a fresh signal.
+- One tap: a trusted disk topic may suggest «Quét ổ C (xem trước)»; a trusted
+  focus topic may suggest Trước thi/họp. The button is the confirmation.
+  Preview does not delete and does not ask for UAC.
 """
 from __future__ import annotations
 
@@ -62,6 +80,18 @@ _HISTORY_DAYS = 7
 _HISTORY_LESSONS = 3
 SPARSE_FEEDBACK_MIN = 3
 REBUILD_COOLDOWN_SEC = 60
+# Ranking only. Stored helpful/unhelpful counts are not reduced.
+DECAY_GRACE_DAYS = 7
+DECAY_STEP_DAYS = 4
+# Offer a playbook after this many Có ích, with a clear margin over Chưa.
+PROMOTE_HELPFUL_MIN = 3
+PROMOTE_MARGIN = 2
+# Suggest one existing safe button. Lower than promote: the tap still confirms.
+ONE_TAP_HELPFUL_MIN = 2
+_ONE_TAP_BY_TOPIC = {
+    "disk": "preview_c_drive",
+    "focus": "enable_exam_focus",
+}
 _NOTE_VI = "Trí nhớ thích nghi trên máy này, không phải AGI và không phải file trọng số."
 _HONEST_PANEL_VI = (
     "Trí nhớ thích nghi local trên máy này, không phải AGI, không train lại mạng nơ-ron."
@@ -268,12 +298,16 @@ def _clean_scores(raw: Any) -> Dict[str, Dict[str, Any]]:
         helpful = _as_int(row.get("helpful"))
         unhelpful = _as_int(row.get("unhelpful"))
         diary = _as_int(row.get("diary"))
+        last = str(row.get("last_signal") or "")[:10]
+        if not _valid_day(last):
+            last = ""
         cleaned[key] = {
             "helpful": helpful,
             "unhelpful": unhelpful,
             "diary": diary,
             "score": helpful - unhelpful,
             "level": _topic_trust_level(helpful, unhelpful),
+            "last_signal": last,
         }
     return cleaned
 
@@ -1289,6 +1323,29 @@ def _compute(
         elif outcome == "rejected":
             bucket["unhelpful"] += 1
 
+    last_seen: Dict[str, str] = {}
+    today_key = stamp.strftime("%Y-%m-%d")
+    for event in events:
+        when = _parse_ts(event.get("ts"))
+        if when is None or when > stamp + timedelta(minutes=1):
+            continue
+        seen_topic = event_topic(event) or _feedback_topic(event)
+        if seen_topic not in TOPIC_META:
+            continue
+        day = when.strftime("%Y-%m-%d")
+        if day > last_seen.get(seen_topic, ""):
+            last_seen[seen_topic] = day
+    for row in kept_log:
+        seen_topic = str(row.get("topic") or "")
+        day = str(row.get("date") or "")
+        if seen_topic not in TOPIC_META or not _valid_day(day) or day > today_key:
+            continue
+        if day > last_seen.get(seen_topic, ""):
+            last_seen[seen_topic] = day
+    for seen_topic, day in last_seen.items():
+        if seen_topic in scores:
+            scores[seen_topic]["last_signal"] = day
+
     cleaned_scores = _clean_scores(scores)
     cleaned_weights = _clean_weights(weights)
     trust = _trust_snapshot(base_dir, stamp)
@@ -1478,7 +1535,12 @@ def update_daily_model(
         _IN_REBUILD = False
     built["history"] = _merge_history(history, built)
     built["last_rebuild_at"] = stamp.replace(microsecond=0).isoformat(timespec="seconds")
-    return save_daily_model(built, base_dir=base_dir)
+    saved = save_daily_model(built, base_dir=base_dir)
+    try:
+        refresh_learned_skill_offer(now=stamp, base_dir=base_dir)
+    except Exception:
+        pass
+    return saved
 
 
 def ensure_daily_model(
@@ -1647,7 +1709,13 @@ def apply_micro_update(
         _append_lesson(micro, lesson_vi or "Hôm nay máy hơi nặng — mình nói nhẹ")
     current["micro"] = micro
     current["updated_at"] = stamp.replace(microsecond=0).isoformat(timespec="seconds")
-    return save_daily_model(current, base_dir=base_dir)
+    saved = save_daily_model(current, base_dir=base_dir)
+    if kind_key in ("feedback", "mute"):
+        try:
+            refresh_learned_skill_offer(now=stamp, base_dir=base_dir)
+        except Exception:
+            pass
+    return saved
 
 
 def learn_status_vi(model: Optional[Dict[str, Any]] = None, *, now: Optional[datetime] = None, base_dir: Optional[str] = None) -> str:
@@ -1847,24 +1915,86 @@ def voice_tone_kwargs(base_dir: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
-def _effective_topic_score(topic: str, model: Dict[str, Any]) -> int:
-    """Lifetime snapshot plus today's micro. The 7-day window is not added again."""
-    scores = model.get("topic_scores") if isinstance(model.get("topic_scores"), dict) else {}
-    row = scores.get(topic) if isinstance(scores.get(topic), dict) else {}
-    score = int(row.get("score") or 0) if isinstance(row, dict) else 0
+def _decay_steps(idle_days: int) -> int:
+    """One ranking point per quiet stretch after the grace window. History is untouched."""
+    if idle_days <= DECAY_GRACE_DAYS:
+        return 0
+    return (idle_days - DECAY_GRACE_DAYS) // DECAY_STEP_DAYS
+
+
+def _apply_decay(score: int, idle_days: int) -> int:
+    steps = _decay_steps(idle_days)
+    if steps <= 0 or score == 0:
+        return score
+    if score > 0:
+        return max(0, score - steps)
+    return min(0, score + steps)
+
+
+def _micro_topic(topic: str, model: Dict[str, Any]) -> Dict[str, int]:
     micro = model.get("micro") if isinstance(model.get("micro"), dict) else {}
     topics = micro.get("topics") if isinstance(micro.get("topics"), dict) else {}
     extra = topics.get(topic) if isinstance(topics.get(topic), dict) else {}
-    if isinstance(extra, dict):
-        score += int(extra.get("helpful") or 0) - int(extra.get("unhelpful") or 0)
+    return extra if isinstance(extra, dict) else {}
+
+
+def _last_signal_day(topic: str, model: Dict[str, Any]) -> str:
+    """Newest diary/feedback day. Today's micro counts as the snapshot date."""
+    extra = _micro_topic(topic, model)
+    if int(extra.get("helpful") or 0) or int(extra.get("unhelpful") or 0):
+        date = str(model.get("date") or "")
+        if _valid_day(date):
+            return date
+    scores = model.get("topic_scores") if isinstance(model.get("topic_scores"), dict) else {}
+    row = scores.get(topic) if isinstance(scores.get(topic), dict) else {}
+    last = str(row.get("last_signal") or "") if isinstance(row, dict) else ""
+    return last if _valid_day(last) else ""
+
+
+def _idle_days(last_day: str, now: datetime) -> int:
+    if not _valid_day(last_day):
+        return 0
+    try:
+        then = datetime.fromisoformat(last_day)
+    except ValueError:
+        return 0
+    return max(0, (now.date() - then.date()).days)
+
+
+def _raw_topic_score(topic: str, model: Dict[str, Any]) -> int:
+    """Lifetime snapshot plus today's micro, before decay."""
+    scores = model.get("topic_scores") if isinstance(model.get("topic_scores"), dict) else {}
+    row = scores.get(topic) if isinstance(scores.get(topic), dict) else {}
+    score = int(row.get("score") or 0) if isinstance(row, dict) else 0
+    extra = _micro_topic(topic, model)
+    score += int(extra.get("helpful") or 0) - int(extra.get("unhelpful") or 0)
     return score
 
 
-def _topic_is_weak(topic: str, model: Dict[str, Any]) -> bool:
+def _effective_topic_score(topic: str, model: Dict[str, Any], now: Optional[datetime] = None) -> int:
+    """Ranking weight. Decay fades stale weight and does not rewrite the file."""
+    score = _raw_topic_score(topic, model)
+    stamp = now or datetime.now()
+    return _apply_decay(score, _idle_days(_last_signal_day(topic, model), stamp))
+
+
+def effective_topic_score(
+    topic: str,
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    model: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Decayed ranking weight for one topic. Stored counts stay as they are."""
+    payload = _clean_model(model) if isinstance(model, dict) else load_daily_model(base_dir)
+    return _effective_topic_score(str(topic or ""), payload, now=now or datetime.now())
+
+
+def _topic_is_weak(topic: str, model: Dict[str, Any], now: Optional[datetime] = None) -> bool:
     """Quiet a topic the user keeps marking Chưa. Windows are not dropped here."""
     if not topic:
         return False
-    score = _effective_topic_score(topic, model)
+    score = _effective_topic_score(topic, model, now=now)
     scores = model.get("topic_scores") if isinstance(model.get("topic_scores"), dict) else {}
     row = scores.get(topic) if isinstance(scores.get(topic), dict) else {}
     level = str(row.get("level") or "") if isinstance(row, dict) else ""
@@ -1903,8 +2033,9 @@ def prefer_learned_topics(
     """Keep window insights in place. Prefer a topic this PC already found useful.
 
     Weak topics (Chưa-heavy snapshot or a bad 7-day window) drop out when another
-    line remains. Today's micro Có ích/Chưa counts here and is not part of the
-    stored lifetime score, so the next rebuild does not add it twice.
+    line remains. A stale topic loses ranking weight without losing its counts.
+    Today's micro Có ích/Chưa counts here and is not part of the stored lifetime
+    score, so the next rebuild does not add it twice.
     """
     model = load_daily_model(base_dir)
     scores = model.get("topic_scores") if isinstance(model.get("topic_scores"), dict) else {}
@@ -1916,7 +2047,7 @@ def prefer_learned_topics(
     for item in items:
         if str((item or {}).get("id") or "").startswith("window:"):
             continue
-        if _topic_is_weak(str((item or {}).get("topic") or ""), model):
+        if _topic_is_weak(str((item or {}).get("topic") or ""), model, now=stamp):
             weak_ids.add(id(item))
     strong = [item for item in items if id(item) not in weak_ids]
     pool = strong if strong else list(items)
@@ -1925,7 +2056,7 @@ def prefer_learned_topics(
         index, item = pair
         topic = str((item or {}).get("topic") or "")
         is_window = str((item or {}).get("id") or "").startswith("window:")
-        score = _effective_topic_score(topic, model) + _band_bonus(topic, model, band)
+        score = _effective_topic_score(topic, model, now=stamp) + _band_bonus(topic, model, band)
         if is_window:
             return (0, index)
         return (1, -score, index)
@@ -2049,6 +2180,347 @@ def rank_propose_key(
     if best:
         return best
     return safe_fallback
+
+
+def topic_is_quiet(
+    topic: str,
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    model: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True when repeated Chưa should keep this topic out of the next suggestion."""
+    payload = _clean_model(model) if isinstance(model, dict) else load_daily_model(base_dir)
+    if not payload.get("date"):
+        return False
+    return _topic_is_weak(str(topic or ""), payload, now=now or datetime.now())
+
+
+def rank_topic_keys(
+    topics: List[str],
+    *,
+    counts: Optional[Dict[str, int]] = None,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> List[str]:
+    """Order topics for the next sentence. Higher decayed trust first.
+
+    Without a snapshot this matches the old tie-break: more diary hits, then
+    the later name. A Chưa-heavy topic drops only when another topic remains.
+    """
+    keys: List[str] = []
+    seen = set()
+    for topic in topics or []:
+        key = str(topic or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    if not keys:
+        return []
+    stamp = now or datetime.now()
+    tally = counts if isinstance(counts, dict) else {}
+    model = load_daily_model(base_dir)
+    micro = model.get("micro") if isinstance(model.get("micro"), dict) else {}
+    micro_topics = micro.get("topics") if isinstance(micro.get("topics"), dict) else {}
+    if not model.get("date") or not (model.get("topic_scores") or micro_topics):
+        return sorted(keys, key=lambda key: (int(tally.get(key) or 0), key), reverse=True)
+    strong = [key for key in keys if not _topic_is_weak(key, model, now=stamp)]
+    pool = strong or list(keys)
+
+    def sort_key(key: str):
+        return (
+            _effective_topic_score(key, model, now=stamp),
+            int(tally.get(key) or 0),
+            key,
+        )
+
+    return sorted(pool, key=sort_key, reverse=True)
+
+
+def _lesson_mentions(topic: str, lessons: List[str]) -> bool:
+    name = _topic_name(topic).lower()
+    key = str(topic or "").strip().lower()
+    for text in lessons:
+        lowered = str(text or "").lower()
+        if name and name in lowered:
+            return True
+        if key and key in lowered:
+            return True
+    return False
+
+
+def explain_suggestion_vi(
+    topic: str,
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    model: Optional[Dict[str, Any]] = None,
+) -> str:
+    """One calm reason. Empty when this PC has nothing local to cite.
+
+    Order: today's lesson, yesterday's lesson for this topic, then Có ích / Chưa
+    counts. The sparse-data warning is not a reason to speak.
+    """
+    del now
+    key = str(topic or "").strip()
+    if not key:
+        return ""
+    payload = _clean_model(model) if isinstance(model, dict) else load_daily_model(base_dir)
+    if not _valid_day(str(payload.get("date") or "")):
+        return ""
+    name = _topic_name(key) or key
+    for text in current_lessons(payload, limit=5):
+        if "Cần thêm phản hồi" in text:
+            continue
+        if _lesson_mentions(key, [text]):
+            body = text.rstrip(".")
+            return f"Vì sao nhắc? {body}."
+    if str(payload.get("yesterday_topic") or "") == key:
+        lesson = str(payload.get("yesterday_lesson") or "").strip().rstrip(".")
+        if lesson:
+            return f"Vì sao nhắc? {lesson}."
+    scores = payload.get("topic_scores") if isinstance(payload.get("topic_scores"), dict) else {}
+    row = scores.get(key) if isinstance(scores.get(key), dict) else {}
+    extra = _micro_topic(key, payload)
+    helpful = int(row.get("helpful") or 0) + int(extra.get("helpful") or 0)
+    unhelpful = int(row.get("unhelpful") or 0) + int(extra.get("unhelpful") or 0)
+    diary = int(row.get("diary") or 0)
+    if helpful >= 1 and helpful > unhelpful:
+        return f"Vì sao nhắc? {name}: bạn đánh Có ích {helpful} lần trên máy này."
+    if unhelpful >= 2 and unhelpful > helpful:
+        return f"Vì sao nhắc? {name}: vài lần Chưa — mình nói nhẹ."
+    if diary >= 1:
+        return f"Vì sao nhắc? {name} có trong nhật ký máy này."
+    return ""
+
+
+def _topic_feedback_counts(topic: str, model: Dict[str, Any]) -> Dict[str, int]:
+    scores = model.get("topic_scores") if isinstance(model.get("topic_scores"), dict) else {}
+    row = scores.get(topic) if isinstance(scores.get(topic), dict) else {}
+    extra = _micro_topic(topic, model)
+    return {
+        "helpful": int(row.get("helpful") or 0) + int(extra.get("helpful") or 0),
+        "unhelpful": int(row.get("unhelpful") or 0) + int(extra.get("unhelpful") or 0),
+    }
+
+
+def _combined_action_feedback(model: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Có ích / Chưa per action. Pins and repairs are not counted as Có ích."""
+    affinity = model.get("skill_affinity") if isinstance(model.get("skill_affinity"), dict) else {}
+    micro = model.get("micro") if isinstance(model.get("micro"), dict) else {}
+    skills = micro.get("skills") if isinstance(micro.get("skills"), dict) else {}
+    seen_pin = set(str(item) for item in (micro.get("seen_pin") or []))
+    combined: Dict[str, Dict[str, Any]] = {}
+    for key in set(affinity) | set(skills):
+        row = affinity.get(key) if isinstance(affinity.get(key), dict) else {}
+        micro_row = skills.get(key) if isinstance(skills.get(key), dict) else {}
+        confirmed = _as_int(row.get("confirmed"))
+        feedback_helpful = min(_as_int(row.get("helpful")), confirmed)
+        feedback_unhelpful = min(_as_int(row.get("unhelpful")), max(0, confirmed - feedback_helpful))
+        micro_helpful = _as_int(micro_row.get("helpful"))
+        if str(key) in seen_pin:
+            micro_helpful = max(0, micro_helpful - 1)
+        combined[str(key)] = {
+            "helpful": feedback_helpful + micro_helpful,
+            "unhelpful": feedback_unhelpful + _as_int(micro_row.get("unhelpful")),
+            "issue_class": str(row.get("issue_class") or ""),
+        }
+    return combined
+
+
+def learned_one_tap_key(
+    topic: str,
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    model: Optional[Dict[str, Any]] = None,
+) -> str:
+    """One allowlisted button for a trusted topic. Empty when trust is thin or low.
+
+    Disk maps to a C: preview. Focus maps to Trước thi/họp. The caller still
+    has to pass stage, consent, mute, and the button. This does not run it.
+    """
+    topic_key = str(topic or "").strip()
+    action = _ONE_TAP_BY_TOPIC.get(topic_key, "")
+    if not action:
+        return ""
+    payload = _clean_model(model) if isinstance(model, dict) else load_daily_model(base_dir)
+    if not payload.get("date"):
+        return ""
+    stamp = now or datetime.now()
+    if _topic_is_weak(topic_key, payload, now=stamp):
+        return ""
+    try:
+        from core.companion_profile import active_muted_topics
+        if topic_key in set(active_muted_topics(base_dir=base_dir, now=stamp)):
+            return ""
+    except Exception:
+        pass
+    micro = payload.get("micro") if isinstance(payload.get("micro"), dict) else {}
+    if topic_key in set(micro.get("seen_mute") or []):
+        return ""
+    counts = _topic_feedback_counts(topic_key, payload)
+    helpful = counts["helpful"]
+    unhelpful = counts["unhelpful"]
+    if helpful < ONE_TAP_HELPFUL_MIN or helpful <= unhelpful:
+        return ""
+    if _effective_topic_score(topic_key, payload, now=stamp) < 1:
+        return ""
+    return _safe_allowlisted(action)
+
+
+def learned_skill_offer(
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    model: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """One playbook offer from Có ích. Does not write skills.json.
+
+    Needs PROMOTE_HELPFUL_MIN Có ích, a margin of PROMOTE_MARGIN, and either a
+    skill candidate or a lesson that names the topic. Muted, declined, blocked,
+    and already saved issues are skipped.
+    """
+    payload = _clean_model(model) if isinstance(model, dict) else load_daily_model(base_dir)
+    if not payload.get("date"):
+        return None
+    stamp = now or datetime.now()
+    try:
+        from core.companion_profile import active_muted_topics, topic_for_issue, topic_issue
+        from core.companion_skills import (
+            BLOCKED_ACTION_KEYS,
+            PLAYBOOKS,
+            has_skill,
+            issue_is_declined,
+        )
+    except Exception:
+        return None
+    muted = set(active_muted_topics(base_dir=base_dir, now=stamp))
+    micro = payload.get("micro") if isinstance(payload.get("micro"), dict) else {}
+    muted.update(str(item) for item in (micro.get("seen_mute") or []))
+    lessons = current_lessons(payload, limit=5)
+    candidate_weight: Dict[str, int] = {}
+    for item in payload.get("skill_candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        issue = str(item.get("issue_class") or "").strip().lower()
+        if issue:
+            candidate_weight[issue] = max(candidate_weight.get(issue, 0), _as_int(item.get("weight")))
+    best: Optional[Dict[str, Any]] = None
+    best_rank = (-1, -1)
+    for action, row in _combined_action_feedback(payload).items():
+        safe = _safe_allowlisted(action)
+        if not safe or safe in BLOCKED_ACTION_KEYS or "winsxs" in safe:
+            continue
+        issue = str(row.get("issue_class") or "").strip().lower()
+        if issue not in PLAYBOOKS:
+            try:
+                from core.companion_skills import action_to_issue
+                issue = action_to_issue().get(safe, "")
+            except Exception:
+                issue = ""
+        if issue not in PLAYBOOKS:
+            continue
+        template = PLAYBOOKS[issue]
+        template_action = str(template.get("action_key") or "")
+        if template_action in BLOCKED_ACTION_KEYS or not _safe_allowlisted(template_action):
+            continue
+        helpful = int(row.get("helpful") or 0)
+        unhelpful = int(row.get("unhelpful") or 0)
+        if helpful < PROMOTE_HELPFUL_MIN or helpful - unhelpful < PROMOTE_MARGIN or helpful <= unhelpful:
+            continue
+        topic = topic_for_issue(issue)
+        if not topic or topic in muted or _topic_is_weak(topic, payload, now=stamp):
+            continue
+        if _effective_topic_score(topic, payload, now=stamp) < 1:
+            continue
+        if has_skill(issue, base_dir=base_dir) or issue_is_declined(issue, base_dir=base_dir, now=stamp):
+            continue
+        if candidate_weight.get(issue, 0) < 1 and not _lesson_mentions(topic, lessons):
+            continue
+        rank = (helpful - unhelpful, helpful)
+        if rank <= best_rank:
+            continue
+        best_rank = rank
+        best = _learning_offer(issue, template, helpful)
+    scores = payload.get("topic_scores") if isinstance(payload.get("topic_scores"), dict) else {}
+    micro_topics = micro.get("topics") if isinstance(micro.get("topics"), dict) else {}
+    for topic in set(scores) | set(micro_topics):
+        topic_key = str(topic or "")
+        counts = _topic_feedback_counts(topic_key, payload)
+        helpful = counts["helpful"]
+        unhelpful = counts["unhelpful"]
+        if helpful < PROMOTE_HELPFUL_MIN or helpful - unhelpful < PROMOTE_MARGIN or helpful <= unhelpful:
+            continue
+        if topic_key in muted or _topic_is_weak(topic_key, payload, now=stamp):
+            continue
+        if _effective_topic_score(topic_key, payload, now=stamp) < 1:
+            continue
+        issue = topic_issue(topic_key)
+        if issue not in PLAYBOOKS:
+            continue
+        if has_skill(issue, base_dir=base_dir) or issue_is_declined(issue, base_dir=base_dir, now=stamp):
+            continue
+        if candidate_weight.get(issue, 0) < 1 and not _lesson_mentions(topic_key, lessons):
+            continue
+        template = PLAYBOOKS[issue]
+        template_action = str(template.get("action_key") or "")
+        if template_action in BLOCKED_ACTION_KEYS or not _safe_allowlisted(template_action):
+            continue
+        rank = (helpful - unhelpful, helpful)
+        if rank <= best_rank:
+            continue
+        best_rank = rank
+        best = _learning_offer(issue, template, helpful)
+    return best
+
+
+def _learning_offer(issue: str, template: Dict[str, Any], helpful: int) -> Dict[str, Any]:
+    title = str(template.get("title") or issue)
+    return {
+        "issue_class": issue,
+        "hit_count": helpful,
+        "title": title,
+        "if_condition": str(template.get("if_condition") or ""),
+        "suggest": str(template.get("suggest") or ""),
+        "action_key": str(template.get("action_key") or ""),
+        "source": "learning",
+        "message_vi": (
+            f"Bạn đánh Có ích {helpful} lần cho «{title}». "
+            "Lưu thành kỹ năng trên máy này? Mình không tự chạy."
+        ),
+    }
+
+
+def refresh_learned_skill_offer(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Store the learning offer when no diary-repeat offer is waiting.
+
+    A repeat-count offer is left alone. A learning offer is replaced or cleared
+    when Có ích no longer clears the bar. This never calls save_skill.
+    """
+    try:
+        from core.companion_maturity import load_state, save_state
+    except Exception:
+        return None
+    stamp = now or datetime.now()
+    state = load_state(base_dir)
+    current = state.get("pending_skill_offer")
+    if isinstance(current, dict) and current.get("issue_class") and current.get("source") != "learning":
+        return current
+    offer = learned_skill_offer(base_dir=base_dir, now=stamp)
+    if offer:
+        state["pending_skill_offer"] = offer
+        save_state(state, base_dir=base_dir)
+        return offer
+    if isinstance(current, dict) and current.get("source") == "learning":
+        state["pending_skill_offer"] = None
+        save_state(state, base_dir=base_dir)
+    return None
 
 
 def merge_learning_models(local: Any, incoming: Any) -> Dict[str, Any]:

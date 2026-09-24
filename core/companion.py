@@ -306,7 +306,21 @@ def _refresh_skill_offer(base_dir: Optional[str] = None, now: Optional[datetime]
         counts = count_by_kind(days=21, base_dir=base_dir, now=now)
         offer = pending_offer_from_counts(counts, base_dir=base_dir, now=now)
         state = load_state(base_dir)
-        state["pending_skill_offer"] = offer
+        if offer:
+            state["pending_skill_offer"] = offer
+        else:
+            current = state.get("pending_skill_offer")
+            keep_learning = isinstance(current, dict) and current.get("source") == "learning"
+            if not keep_learning:
+                state["pending_skill_offer"] = None
+            if not state.get("pending_skill_offer"):
+                try:
+                    from core.companion_learning import learned_skill_offer
+                    learned = learned_skill_offer(base_dir=base_dir, now=now)
+                except Exception:
+                    learned = None
+                if learned:
+                    state["pending_skill_offer"] = learned
         save_state(state, base_dir=base_dir)
     except Exception:
         return

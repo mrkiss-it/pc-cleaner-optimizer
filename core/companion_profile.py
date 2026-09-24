@@ -2095,8 +2095,8 @@ def current_insight(
     if not visible:
         return None
     try:
-        from core.companion_learning import prefer_learned_topics
-        visible = prefer_learned_topics(visible, base_dir=base_dir)
+        from core.companion_learning import explain_suggestion_vi, prefer_learned_topics
+        visible = prefer_learned_topics(visible, base_dir=base_dir, now=stamp)
     except Exception:
         pass
     windows = [item for item in visible if str(item.get("id") or "").startswith("window:")]
@@ -2111,6 +2111,12 @@ def current_insight(
         chosen["text"] = (text.rstrip() + " Bạn hay thấy việc này có ích.").strip()
     elif level == "low" and "Mình nói nhẹ về việc này" not in text:
         chosen["text"] = (text.rstrip() + " Mình nói nhẹ về việc này.").strip()
+    try:
+        why = explain_suggestion_vi(str(chosen.get("topic") or ""), base_dir=base_dir, now=stamp)
+    except Exception:
+        why = ""
+    if why:
+        chosen["why_vi"] = why
     return chosen
 
 
