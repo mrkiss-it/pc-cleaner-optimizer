@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
@@ -109,6 +110,102 @@ _SHADER_RELS = (
     os.path.join("AMD", "GLCache"),
     os.path.join("Steam", "shadercache"),
 )
+# Chỉ tên thư mục cache GPU tạo lại được. Không gồm cả cây driver.
+_GPU_CACHE_DIR_NAMES = frozenset({
+    "dxcache",
+    "glcache",
+    "computecache",
+    "d3dscache",
+    "shadercache",
+    "nv_cache",
+})
+_GPU_VENDOR_RELS = (
+    "NVIDIA",
+    "NVIDIA Corporation",
+    "AMD",
+    "Intel",
+    "D3DSCache",
+)
+_GPU_VENDOR_WALK_DEPTH = 3
+_DISCORD_DIR_NAMES = (
+    "discord",
+    "Discord",
+    "discordcanary",
+    "DiscordCanary",
+    "discordptb",
+    "DiscordPTB",
+    "discorddevelopment",
+    "DiscordDevelopment",
+)
+_DISCORD_CACHE_SUBS = (
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    os.path.join("Service Worker", "CacheStorage"),
+)
+_TELEGRAM_USER_CACHE_SUBS = ("cache", "media_cache", "temp")
+_ZALO_ROAMING_SUBS = (
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "logs",
+    os.path.join("media", "temp"),
+    os.path.join("media", "update"),
+    "resp_cache",
+    os.path.join("Partitions", "zalo", "Cache"),
+    os.path.join("Partitions", "zalo", "Code Cache"),
+    os.path.join("Partitions", "zalo", "GPUCache"),
+)
+_ZALO_LOCAL_ROOTS = ("Zalo", "ZaloPC", "ZaloData")
+_ZALO_LOCAL_SUBS = ("Cache", "Code Cache", "GPUCache", "Temp", "tmp", "logs")
+_MESSENGER_ROOTS = (
+    "Messenger",
+    os.path.join("Facebook", "Messenger"),
+    os.path.join("Facebook", "Messenger Desktop"),
+)
+_MESSENGER_CACHE_SUBS = (
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "Temp",
+    "tmp",
+    os.path.join("Service Worker", "CacheStorage"),
+)
+_MESSENGER_PACKAGE_PREFIXES = (
+    "Facebook.Messenger_",
+    "Facebook.FacebookMessenger_",
+)
+_STEAM_CACHE_RELS = (
+    "appcache",
+    os.path.join("steamapps", "downloading"),
+    os.path.join("steamapps", "shadercache"),
+    os.path.join("steamapps", "temp"),
+)
+_VDF_PATH_RE = re.compile(r'"path"\s+"((?:\\.|[^"\\])*)"', re.IGNORECASE)
+_VDF_LEGACY_RE = re.compile(r'^\s*"(\d+)"\s+"((?:\\.|[^"\\])*)"\s*$', re.MULTILINE)
+_EMPTY_PROFILE_DIRS = ("Documents", "Downloads", "Desktop", "Pictures", "Music", "Videos")
+_EMPTY_SKIP_DIR_NAMES = frozenset({
+    "node_modules",
+    ".git",
+    ".svn",
+    "pnpm",
+    "pnpm-store",
+    ".pnpm-store",
+    "appdata",
+    "application data",
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+})
+DEFAULT_EMPTY_DIR_MAX_DEPTH = 6
+DEFAULT_EMPTY_DIR_MAX_VISITED = 8000
+DEFAULT_EMPTY_DIR_MAX_SECONDS = 4.0
 _THUMB_GLOBS = ("thumbcache_*.db", "iconcache_*.db")
 _ELECTRON_CACHE_SUBS = (
     "Cache",
@@ -170,6 +267,12 @@ _SENSITIVE_DIR_NAMES = frozenset({
     "extensions",
     "local extension settings",
     "unsavedfiles",
+    "leveldb",
+    "key_datas",
+    "key_data",
+    "map0",
+    "map1",
+    "accounts",
 })
 _VS_TEMP_DIR_NAMES = frozenset({
     "componentmodelcache",
@@ -274,8 +377,16 @@ TARGET_ORDER: Sequence[str] = (
     "browser_cache",
     "inet_cache",
     "shader_cache",
+    "gpu_shader_caches",
     "crash_dumps",
     "app_caches",
+    "discord_cache",
+    "telegram_cache",
+    "zalo_cache",
+    "messenger_cache",
+    "steam_caches",
+    "epic_caches",
+    "empty_user_folders",
     "toolchain_caches",
     "nuget_packages",
     "gradle_caches",
@@ -346,8 +457,22 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
     "shader_cache": _meta(
         label_vi="Bộ nhớ đệm shader (DirectX / NVIDIA / AMD)",
         description_vi=(
-            "Cache đồ họa DirectX, NVIDIA, AMD và shadercache của Steam. "
-            "Có thể tạo lại. Không xóa driver hay thư mục hệ thống."
+            "Cache đồ họa DirectX, NVIDIA, AMD và shadercache của Steam trong LocalAppData. "
+            "Có thể tạo lại. Mục GPU riêng bổ sung Intel, ComputeCache và LocalLow. "
+            "Không xóa driver hay thư mục hệ thống."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "gpu_shader_caches": _meta(
+        label_vi="Cache shader GPU (NVIDIA / AMD / Intel)",
+        description_vi=(
+            "DXCache, GLCache, ComputeCache, ShaderCache và D3DSCache trong LocalAppData "
+            "và LocalLow của tài khoản này. GPU tạo lại được. Không đụng Program Files, "
+            "ProgramData hay thư mục cài driver."
         ),
         needs_admin=False,
         scope="user",
@@ -366,18 +491,106 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
     ),
     "app_caches": _meta(
         label_vi=(
-            "Bộ nhớ đệm ứng dụng (Zalo, VS Code, Discord, Teams, Steam, Spotify, "
-            "Slack, Zoom, Notion, CapCut, JetBrains)"
+            "Bộ nhớ đệm ứng dụng (VS Code, Teams, Spotify, Slack, "
+            "Zoom, Notion, CapCut, JetBrains)"
         ),
         description_vi=(
-            "Chỉ cache hoặc log đã biết. Không xóa tin nhắn, dự án CapCut, nhạc Spotify "
-            "đã tải, cấu hình IDE hay thư mục AppData lạ."
+            "Chỉ cache hoặc log đã biết, kể cả htmlcache của Steam. "
+            "Cache Discord, Telegram, Zalo và Messenger nằm ở mục riêng. "
+            "Không xóa tin nhắn, dự án CapCut, nhạc Spotify đã tải, "
+            "cấu hình IDE hay thư mục AppData lạ."
         ),
         needs_admin=False,
         scope="user",
         risk="safe",
         default_enabled=True,
         clean_mode="contents",
+    ),
+    "discord_cache": _meta(
+        label_vi="Cache Discord (Cache / GPUCache)",
+        description_vi=(
+            "Chỉ Cache, Code Cache và GPUCache của Discord (kể cả Canary/PTB) "
+            "trong hồ sơ của bạn. Không xóa Local Storage, IndexedDB, leveldb "
+            "hay phiên đăng nhập. Không cài thì 0 B."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "telegram_cache": _meta(
+        label_vi="Cache Telegram (tdata tạm)",
+        description_vi=(
+            "Chỉ cache, media_cache, temp và emoji trong tdata. "
+            "Không xóa key_datas, map0 hay cả thư mục tdata. Không cài thì 0 B."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "zalo_cache": _meta(
+        label_vi="Cache Zalo PC",
+        description_vi=(
+            "Chỉ Cache, Code Cache, GPUCache và Temp của Zalo trong LocalAppData hoặc Roaming. "
+            "Không xóa cơ sở dữ liệu tài khoản. Không cài thì 0 B."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "messenger_cache": _meta(
+        label_vi="Cache Facebook Messenger",
+        description_vi=(
+            "Chỉ thư mục cache của Messenger Desktop. Không xóa tin nhắn hay đăng nhập. "
+            "Không cài thì 0 B."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "steam_caches": _meta(
+        label_vi="Cache Steam (tắt mặc định)",
+        description_vi=(
+            "Chỉ appcache, shadercache, downloading và temp của Steam nếu tìm thấy thư viện. "
+            "Không xóa game trong steamapps\\common. Tắt mặc định."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+    ),
+    "epic_caches": _meta(
+        label_vi="Cache Epic Games Launcher (tắt mặc định)",
+        description_vi=(
+            "Chỉ webcache của Epic Games Launcher trong LocalAppData. "
+            "Không xóa game hay thư mục .egstore. Tắt mặc định."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+    ),
+    "empty_user_folders": _meta(
+        label_vi="Thư mục trống trong hồ sơ (tắt mặc định)",
+        description_vi=(
+            "Chỉ thư mục đang trống dưới Documents, Downloads, Desktop, Pictures, Music, "
+            "Videos và Temp. Bỏ qua OneDrive, thư mục gốc quan trọng và cây còn tệp. "
+            "Tắt mặc định — chỉ xóa sau khi xem trước và bấm «Dọn ngay»."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="empty_dirs",
     ),
     "toolchain_caches": _meta(
         label_vi="Cache công cụ build (Yarn, NuGet HTTP, Gradle tạm, Scoop, VS)",
@@ -1058,30 +1271,6 @@ def _package_scoped_dirs(
 def _app_cache_paths(local_app_data: str, app_data: str) -> List[str]:
     found: List[str] = []
     if app_data:
-        zalo_base = os.path.join(app_data, "ZaloData")
-        if _exists(zalo_base):
-            for sub in (
-                "Cache",
-                "Code Cache",
-                "GPUCache",
-                "DawnCache",
-                "logs",
-                os.path.join("media", "temp"),
-                os.path.join("media", "update"),
-                "resp_cache",
-                os.path.join("Partitions", "zalo", "Cache"),
-                os.path.join("Partitions", "zalo", "Code Cache"),
-                os.path.join("Partitions", "zalo", "GPUCache"),
-            ):
-                _append_if_dir(found, os.path.join(zalo_base, sub))
-        discord_base = os.path.join(app_data, "discord")
-        if _exists(discord_base):
-            for sub in ("Cache", "Code Cache", "GPUCache"):
-                _append_if_dir(found, os.path.join(discord_base, sub))
-        tele_base = os.path.join(app_data, "Telegram Desktop", "tdata")
-        if _exists(tele_base):
-            for sub in (os.path.join("user_data", "cache"), "temp"):
-                _append_if_dir(found, os.path.join(tele_base, sub))
         code_base = os.path.join(app_data, "Code")
         if _exists(code_base):
             for sub in ("Cache", "CachedData", "CachedExtensionVSIXs", "GPUCache", "logs"):
@@ -1094,7 +1283,6 @@ def _app_cache_paths(local_app_data: str, app_data: str) -> List[str]:
     if local_app_data:
         _append_if_dir(found, os.path.join(local_app_data, "pip", "cache"))
         _append_if_dir(found, os.path.join(local_app_data, "npm-cache"))
-        _append_if_dir(found, os.path.join(local_app_data, "Programs", "Zalo", "logs"))
         _append_if_dir(found, os.path.join(local_app_data, "Steam", "htmlcache"))
         _append_electron_caches(
             found,
@@ -1194,6 +1382,554 @@ def _toolchain_cache_paths(local_app_data: str, app_data: str, user_profile: str
         _append_if_dir(found, os.path.join(user_profile, "scoop", "cache"))
         found.extend(_gradle_tmp_dirs(user_profile))
     return found
+
+
+def _is_machine_vendor_tree(path: str) -> bool:
+    """Program Files / ProgramData — cache GPU ở đó cần Admin, không đụng."""
+    for part in _path_parts(path):
+        if part in {"program files", "program files (x86)", "programdata"}:
+            return True
+    return False
+
+
+def path_is_game_install(path: str) -> bool:
+    """True nếu path là game đã cài (steamapps\\common hoặc .egstore)."""
+    if not path:
+        return False
+    parts = _path_parts(path)
+    for index, part in enumerate(parts):
+        if part == ".egstore":
+            return True
+        if part == "steamapps" and index + 1 < len(parts) and parts[index + 1] == "common":
+            return True
+    return False
+
+
+def _named_cache_paths(bases: Iterable[str], dir_names: Sequence[str], subs: Sequence[str]) -> List[str]:
+    found: List[str] = []
+    for base in bases:
+        if not base or path_is_forbidden(base):
+            continue
+        for name in dir_names:
+            root = os.path.join(base, name)
+            for sub in subs:
+                _append_if_dir(found, os.path.join(root, sub))
+    return found
+
+
+def _discord_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    return _named_cache_paths(
+        (app_data, local_app_data),
+        _DISCORD_DIR_NAMES,
+        _DISCORD_CACHE_SUBS,
+    )
+
+
+def _telegram_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    """Chỉ cache/temp tạo lại được trong tdata. Không bao giờ cả tdata hay key_datas."""
+    found: List[str] = []
+    roots: List[str] = []
+    if app_data:
+        roots.append(os.path.join(app_data, "Telegram Desktop", "tdata"))
+    if local_app_data:
+        roots.append(os.path.join(local_app_data, "Telegram Desktop", "tdata"))
+    for tdata in roots:
+        if not _exists(tdata) or os.path.islink(tdata) or not os.path.isdir(tdata):
+            continue
+        if path_is_forbidden(tdata) or path_has_sensitive_data(tdata):
+            continue
+        _append_if_dir(found, os.path.join(tdata, "temp"))
+        _append_if_dir(found, os.path.join(tdata, "emoji"))
+        try:
+            names = list(os.listdir(tdata))
+        except OSError:
+            continue
+        for name in names:
+            if not name.lower().startswith("user_data"):
+                continue
+            user_dir = os.path.join(tdata, name)
+            if os.path.islink(user_dir) or not os.path.isdir(user_dir):
+                continue
+            if path_has_sensitive_data(user_dir) or path_is_forbidden(user_dir):
+                continue
+            for sub in _TELEGRAM_USER_CACHE_SUBS:
+                _append_if_dir(found, os.path.join(user_dir, sub))
+    return found
+
+
+def _zalo_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found: List[str] = []
+    if app_data:
+        zalo_base = os.path.join(app_data, "ZaloData")
+        for sub in _ZALO_ROAMING_SUBS:
+            _append_if_dir(found, os.path.join(zalo_base, sub))
+    if local_app_data:
+        for root_name in _ZALO_LOCAL_ROOTS:
+            base = os.path.join(local_app_data, root_name)
+            for sub in _ZALO_LOCAL_SUBS:
+                _append_if_dir(found, os.path.join(base, sub))
+        _append_if_dir(found, os.path.join(local_app_data, "Programs", "Zalo", "logs"))
+    return found
+
+
+def _messenger_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found = _named_cache_paths(
+        (app_data, local_app_data),
+        _MESSENGER_ROOTS,
+        _MESSENGER_CACHE_SUBS,
+    )
+    if local_app_data:
+        found.extend(
+            _package_scoped_dirs(local_app_data, _MESSENGER_PACKAGE_PREFIXES, ("TempState",))
+        )
+    return found
+
+
+def _collect_gpu_cache_dirs(bucket: List[str], vendor_root: str) -> None:
+    if (
+        not vendor_root
+        or not _exists(vendor_root)
+        or os.path.islink(vendor_root)
+        or not os.path.isdir(vendor_root)
+        or path_is_forbidden(vendor_root)
+        or path_has_sensitive_data(vendor_root)
+        or _is_machine_vendor_tree(vendor_root)
+    ):
+        return
+    if os.path.basename(vendor_root).lower() in _GPU_CACHE_DIR_NAMES:
+        _append_if_dir(bucket, vendor_root)
+        return
+    stack = [(os.path.abspath(vendor_root), 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > _GPU_VENDOR_WALK_DEPTH:
+            continue
+        try:
+            names = list(os.listdir(current))
+        except OSError:
+            continue
+        for name in names:
+            child = os.path.join(current, name)
+            if os.path.islink(child) or not os.path.isdir(child):
+                continue
+            if (
+                path_is_forbidden(child)
+                or path_has_sensitive_data(child)
+                or _is_machine_vendor_tree(child)
+                or path_is_game_install(child)
+            ):
+                continue
+            lowered = name.lower()
+            if lowered in _GPU_CACHE_DIR_NAMES:
+                _append_if_dir(bucket, child)
+                continue
+            if lowered in _BLOCKED_DIR_NAMES or lowered in _EMPTY_SKIP_DIR_NAMES:
+                continue
+            if depth < _GPU_VENDOR_WALK_DEPTH:
+                stack.append((child, depth + 1))
+
+
+def _local_low_dir(user_profile: str, local_app_data: str) -> str:
+    if user_profile:
+        return os.path.join(user_profile, "AppData", "LocalLow")
+    if local_app_data:
+        return os.path.join(os.path.dirname(local_app_data), "LocalLow")
+    return ""
+
+
+def _gpu_shader_cache_paths(local_app_data: str, user_profile: str) -> List[str]:
+    found: List[str] = []
+    bases = []
+    if local_app_data and not _is_machine_vendor_tree(local_app_data):
+        bases.append(local_app_data)
+    local_low = _local_low_dir(user_profile, local_app_data)
+    if local_low and not _is_machine_vendor_tree(local_low):
+        bases.append(local_low)
+    for base in bases:
+        if path_is_forbidden(base):
+            continue
+        for rel in _GPU_VENDOR_RELS:
+            _collect_gpu_cache_dirs(found, os.path.join(base, rel))
+    return found
+
+
+def _unescape_vdf(value: str) -> str:
+    return str(value or "").replace("\\\\", "\\").replace("\\/", os.sep).strip()
+
+
+def _accept_library_path(value: str) -> str:
+    raw = _unescape_vdf(value)
+    if not raw or raw in {"0", "-1"}:
+        return ""
+    if os.sep not in raw and "/" not in raw and "\\" not in raw:
+        return ""
+    return raw
+
+
+def _libraries_from_vdf(steam_root: str) -> List[str]:
+    found: List[str] = []
+    for rel in (
+        os.path.join("steamapps", "libraryfolders.vdf"),
+        os.path.join("config", "libraryfolders.vdf"),
+    ):
+        path = os.path.join(steam_root, rel)
+        if not _exists(path) or not os.path.isfile(path) or os.path.islink(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        for match in _VDF_PATH_RE.finditer(text):
+            library = _accept_library_path(match.group(1))
+            if library:
+                found.append(library)
+        for match in _VDF_LEGACY_RE.finditer(text):
+            library = _accept_library_path(match.group(2))
+            if library:
+                found.append(library)
+    return found
+
+
+def _steam_root_ok(path: str) -> bool:
+    if not path or not _exists(path) or os.path.islink(path) or not os.path.isdir(path):
+        return False
+    if path_is_forbidden(path) or path_is_too_broad(path) or path_is_game_install(path):
+        return False
+    markers = (
+        os.path.join(path, "steamapps"),
+        os.path.join(path, "appcache"),
+        os.path.join(path, "steam.exe"),
+        os.path.join(path, "Steam.exe"),
+        os.path.join(path, "steamapps", "libraryfolders.vdf"),
+        os.path.join(path, "config", "libraryfolders.vdf"),
+    )
+    return any(_exists(marker) for marker in markers)
+
+
+def _steam_roots_from_registry() -> List[str]:
+    """HKCU SteamPath. Ngoài Windows hoặc không có khóa thì bỏ qua."""
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            value, _kind = winreg.QueryValueEx(key, "SteamPath")
+    except Exception:
+        return []
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+def _steam_install_roots(
+    environ: Optional[Dict[str, str]],
+    local_app_data: str,
+    user_profile: str,
+) -> List[str]:
+    seeds: List[str] = []
+    for key in ("STEAM_PATH", "SteamPath", "STEAM_INSTALL"):
+        value = _env(environ, key)
+        if value:
+            seeds.append(value)
+    if local_app_data:
+        seeds.append(os.path.join(local_app_data, "Steam"))
+    if user_profile:
+        seeds.append(os.path.join(user_profile, "Steam"))
+    if environ is None:
+        seeds.extend(_steam_roots_from_registry())
+    roots: List[str] = []
+    seen = set()
+    for seed in seeds:
+        if not _steam_root_ok(seed):
+            continue
+        for candidate in (seed, *_libraries_from_vdf(seed)):
+            if not _steam_root_ok(candidate):
+                continue
+            try:
+                token = os.path.normcase(os.path.abspath(candidate))
+            except (OSError, ValueError):
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            roots.append(candidate)
+    return roots
+
+
+def _steam_cache_paths(
+    environ: Optional[Dict[str, str]],
+    local_app_data: str,
+    user_profile: str,
+) -> List[str]:
+    found: List[str] = []
+    for root in _steam_install_roots(environ, local_app_data, user_profile):
+        for rel in _STEAM_CACHE_RELS:
+            path = os.path.join(root, rel)
+            if path_is_game_install(path):
+                continue
+            _append_if_dir(found, path)
+    return found
+
+
+def _epic_cache_paths(local_app_data: str) -> List[str]:
+    found: List[str] = []
+    if not local_app_data or path_is_forbidden(local_app_data) or _is_machine_vendor_tree(local_app_data):
+        return found
+    saved = os.path.join(local_app_data, "EpicGamesLauncher", "Saved")
+    if not _exists(saved) or os.path.islink(saved) or not os.path.isdir(saved):
+        return found
+    try:
+        names = list(os.listdir(saved))
+    except OSError:
+        return found
+    for name in names:
+        lowered = name.lower()
+        if not (
+            lowered == "webcache"
+            or lowered.startswith("webcache_")
+            or lowered.startswith("webcache")
+            or lowered in {"cache", "gpucache", "code cache", "codecache"}
+        ):
+            continue
+        path = os.path.join(saved, name)
+        if path_is_game_install(path):
+            continue
+        _append_if_dir(found, path)
+    return found
+
+
+def _is_reparse_point(path: str) -> bool:
+    """Symlink, junction hoặc điểm OneDrive. Không đi theo và không xóa."""
+    if not path:
+        return False
+    if os.path.islink(path):
+        return True
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return True
+    attrs = int(getattr(info, "st_file_attributes", 0) or 0)
+    # FILE_ATTRIBUTE_REPARSE_POINT
+    return bool(attrs & 0x400)
+
+
+def _is_onedrive_dir_name(name: str) -> bool:
+    lowered = str(name or "").lower()
+    return lowered == "onedrive" or lowered.startswith("onedrive ")
+
+
+class _EmptyDirBudget:
+    """Giới hạn thời gian và số thư mục khi tìm thư mục trống."""
+
+    def __init__(
+        self,
+        *,
+        max_visited: int = DEFAULT_EMPTY_DIR_MAX_VISITED,
+        max_seconds: float = DEFAULT_EMPTY_DIR_MAX_SECONDS,
+    ) -> None:
+        self.max_visited = max(0, int(max_visited))
+        self.max_seconds = float(max_seconds)
+        self.visited = 0
+        self.start = time.monotonic()
+
+    def expired(self) -> bool:
+        if self.visited > self.max_visited:
+            return True
+        return (time.monotonic() - self.start) >= self.max_seconds
+
+    def visit(self) -> bool:
+        if self.expired():
+            return False
+        self.visited += 1
+        return self.visited <= self.max_visited
+
+
+def _empty_root_allowed(path: str, *, user_profile: str = "", system_root: str = "") -> bool:
+    if not path or not _exists(path) or not os.path.isdir(path):
+        return False
+    if os.path.islink(path) or _is_reparse_point(path):
+        return False
+    if path_is_forbidden(path) or path_has_sensitive_data(path) or path_is_game_install(path):
+        return False
+    if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
+        return False
+    if _is_onedrive_sync_path(path, user_profile) or _is_machine_vendor_tree(path):
+        return False
+    return True
+
+
+def _empty_folder_roots(
+    user_profile: str,
+    local_app_data: str,
+    user_temp: str,
+    system_root: str,
+) -> List[str]:
+    found: List[str] = []
+    if user_profile and not path_is_forbidden(user_profile):
+        for name in _EMPTY_PROFILE_DIRS:
+            candidate = os.path.join(user_profile, name)
+            if _empty_root_allowed(candidate, user_profile=user_profile, system_root=system_root):
+                found.append(candidate)
+    temps = [user_temp]
+    if local_app_data:
+        temps.append(os.path.join(local_app_data, "Temp"))
+    for candidate in temps:
+        if candidate and _empty_root_allowed(candidate, user_profile=user_profile, system_root=system_root):
+            found.append(candidate)
+    return _dedupe(found)
+
+
+def list_empty_directories(
+    root: str,
+    *,
+    budget: Optional[_EmptyDirBudget] = None,
+    user_profile: str = "",
+    system_root: str = "",
+    max_depth: int = DEFAULT_EMPTY_DIR_MAX_DEPTH,
+) -> List[str]:
+    """
+    Thư mục không còn tệp bên trong root. Không gồm chính root.
+    Không đi theo symlink / reparse, không vào OneDrive, node_modules, WinSxS.
+    Hết giờ hoặc quá sâu thì bỏ phần chưa kiểm tra — không coi là trống.
+    """
+    found: List[str] = []
+    if not _empty_root_allowed(root, user_profile=user_profile, system_root=system_root):
+        return found
+    limit = budget or _EmptyDirBudget()
+    depth_cap = max(0, int(max_depth))
+    try:
+        root_abs = os.path.abspath(root)
+    except (OSError, ValueError):
+        return found
+
+    def walk(path: str, depth: int) -> bool:
+        """True khi cả cây không có tệp và đã được xem hết."""
+        if limit.expired() or not limit.visit():
+            return False
+        if depth > depth_cap:
+            return False
+        if os.path.islink(path) or _is_reparse_point(path):
+            return False
+        if path_is_forbidden(path) or path_has_sensitive_data(path) or path_is_game_install(path):
+            return False
+        if _is_onedrive_sync_path(path, user_profile):
+            return False
+        try:
+            current_abs = os.path.abspath(path)
+        except (OSError, ValueError):
+            return False
+        if current_abs != root_abs and not _within_root(current_abs, root_abs):
+            return False
+        try:
+            names = list(os.listdir(path))
+        except OSError:
+            return False
+        if not names:
+            return True
+        fully_empty = True
+        for name in names:
+            lowered = name.lower()
+            child = os.path.join(path, name)
+            if (
+                lowered in _EMPTY_SKIP_DIR_NAMES
+                or lowered in _BLOCKED_DIR_NAMES
+                or _is_onedrive_dir_name(name)
+            ):
+                fully_empty = False
+                continue
+            if os.path.islink(child) or _is_reparse_point(child):
+                fully_empty = False
+                continue
+            if path_is_forbidden(child) or path_has_sensitive_data(child) or path_is_game_install(child):
+                fully_empty = False
+                continue
+            if not os.path.isdir(child):
+                fully_empty = False
+                continue
+            if walk(child, depth + 1):
+                found.append(child)
+            else:
+                fully_empty = False
+        return fully_empty
+
+    walk(root_abs, 0)
+    return _dedupe(found)
+
+
+def clean_empty_directories(
+    root: str,
+    *,
+    user_profile: str = "",
+    system_root: str = "",
+    budget: Optional[_EmptyDirBudget] = None,
+) -> Dict[str, int]:
+    """Xóa thư mục đang trống. Không xóa tệp, không xóa chính root, không đi theo reparse."""
+    result = {
+        "freed_bytes": 0,
+        "deleted_files": 0,
+        "skipped_locked": 0,
+        "errors": 0,
+        "protected": 0,
+        "too_broad": 0,
+        "sync_root": 0,
+    }
+    if path_is_forbidden(root):
+        result["errors"] = 1
+        result["protected"] = 1
+        return result
+    if path_is_too_broad(root, user_profile=user_profile, system_root=system_root):
+        result["errors"] = 1
+        result["too_broad"] = 1
+        return result
+    if _is_onedrive_sync_path(root, user_profile):
+        result["errors"] = 1
+        result["sync_root"] = 1
+        return result
+    if not _empty_root_allowed(root, user_profile=user_profile, system_root=system_root):
+        return result
+    try:
+        root_abs = os.path.abspath(root)
+    except (OSError, ValueError):
+        result["errors"] = 1
+        return result
+    directories = list_empty_directories(
+        root,
+        budget=budget,
+        user_profile=user_profile,
+        system_root=system_root,
+    )
+    for path in sorted(directories, key=len, reverse=True):
+        if os.path.islink(path) or _is_reparse_point(path) or path_is_forbidden(path):
+            result["errors"] += 1
+            result["protected"] += 1
+            continue
+        if path_is_game_install(path) or path_has_sensitive_data(path):
+            result["errors"] += 1
+            continue
+        if not _within_root(path, root_abs):
+            result["errors"] += 1
+            continue
+        try:
+            if os.path.abspath(path) == root_abs:
+                continue
+        except (OSError, ValueError):
+            result["errors"] += 1
+            continue
+        if _is_onedrive_sync_path(path, user_profile) or _is_onedrive_dir_name(os.path.basename(path)):
+            result["sync_root"] += 1
+            continue
+        try:
+            if os.listdir(path):
+                continue
+            os.rmdir(path)
+        except OSError:
+            result["skipped_locked"] += 1
+            continue
+        if _exists(path):
+            result["skipped_locked"] += 1
+            continue
+        result["deleted_files"] += 1
+    return result
 
 
 def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, List[str]]:
@@ -1302,6 +2038,16 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
             targets["browser_cache"].extend(_chromium_caches(root))
 
     targets["app_caches"].extend(_app_cache_paths(local_app_data, app_data))
+    targets["discord_cache"].extend(_discord_cache_paths(local_app_data, app_data))
+    targets["telegram_cache"].extend(_telegram_cache_paths(local_app_data, app_data))
+    targets["zalo_cache"].extend(_zalo_cache_paths(local_app_data, app_data))
+    targets["messenger_cache"].extend(_messenger_cache_paths(local_app_data, app_data))
+    targets["gpu_shader_caches"].extend(_gpu_shader_cache_paths(local_app_data, user_profile))
+    targets["steam_caches"].extend(_steam_cache_paths(environ, local_app_data, user_profile))
+    targets["epic_caches"].extend(_epic_cache_paths(local_app_data))
+    targets["empty_user_folders"].extend(
+        _empty_folder_roots(user_profile, local_app_data, user_temp, system_root)
+    )
     targets["toolchain_caches"].extend(
         _toolchain_cache_paths(local_app_data, app_data, user_profile)
     )
@@ -1378,11 +2124,17 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
     for key in list(targets.keys()):
         kept = []
         for path in _dedupe(targets[key]):
-            if path_is_forbidden(path) or path_has_sensitive_data(path):
+            if path_is_forbidden(path) or path_has_sensitive_data(path) or path_is_game_install(path):
+                continue
+            if key == "gpu_shader_caches" and _is_machine_vendor_tree(path):
                 continue
             if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
                 continue
             if _is_onedrive_sync_path(path, user_profile):
+                continue
+            if key == "empty_user_folders" and not _empty_root_allowed(
+                path, user_profile=user_profile, system_root=system_root
+            ):
                 continue
             kept.append(path)
         targets[key] = kept
@@ -1718,6 +2470,12 @@ def clean_one_path(
         return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 1, "too_broad": 1}
     if _is_onedrive_sync_path(path, user_profile):
         return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 1, "sync_root": 1}
+    if clean_mode == "empty_dirs":
+        return clean_empty_directories(
+            path,
+            user_profile=user_profile,
+            system_root=system_root,
+        )
     if clean_mode == "old_files":
         return clean_old_files(
             path,
@@ -1923,6 +2681,20 @@ def _estimate_target_size(
         if path and _exists(path) and os.path.isfile(path) and not path_is_forbidden(path):
             return {"size_bytes": _file_size(path), "file_count": 1}
         return {"size_bytes": 0, "file_count": 0}
+    if meta.get("clean_mode") == "empty_dirs":
+        env = os.environ if environ is None else environ
+        user_profile = str(env.get("USERPROFILE", "") or "")
+        system_root = str(env.get("SystemRoot", "") or env.get("SYSTEMROOT", "") or "")
+        budget = _EmptyDirBudget()
+        count = 0
+        for path in target_paths.get(key, []):
+            count += len(list_empty_directories(
+                path,
+                budget=budget,
+                user_profile=user_profile,
+                system_root=system_root,
+            ))
+        return {"size_bytes": 0, "file_count": count}
     total = 0
     count = 0
     for path in target_paths.get(key, []):
@@ -1941,9 +2713,15 @@ def prune_nested_target_paths(
 ) -> Dict[str, List[str]]:
     """Bỏ đường dẫn nằm trong đường dẫn khác để không cộng byte hai lần."""
     entries: List[tuple] = []
+    passthrough: List[tuple] = []
     for key in active_keys:
+        mode = str(TARGET_CATALOG.get(key, {}).get("clean_mode") or "")
         for path in target_paths.get(key, []) or []:
             if not path:
+                continue
+            # Thư mục trống không chứa byte tệp và không được nuốt cache lồng bên trong.
+            if mode == "empty_dirs":
+                passthrough.append((key, path))
                 continue
             try:
                 abs_path = os.path.normcase(os.path.abspath(path))
@@ -1966,6 +2744,16 @@ def prune_nested_target_paths(
     for index, (key, path, _abs_path) in enumerate(entries):
         if index not in drop:
             pruned[key].append(path)
+    seen_pass = set()
+    for key, path in passthrough:
+        try:
+            token = (key, os.path.normcase(os.path.abspath(path)))
+        except (OSError, ValueError):
+            continue
+        if token in seen_pass:
+            continue
+        seen_pass.add(token)
+        pruned.setdefault(key, []).append(path)
     return pruned
 
 
@@ -2090,6 +2878,12 @@ def format_scan_preview_vi(result: Dict[str, Any]) -> str:
             continue
         size = int(row.get("reclaimable_bytes") or 0)
         count = int(row.get("reclaimable_files") or 0)
+        if row.get("key") == "empty_user_folders":
+            if size <= 0 and count <= 0:
+                continue
+            lines.append(f"• {name}: {count} thư mục trống ({format_freed_vi(size)})")
+            shown += 1
+            continue
         if size <= 0 and count <= 0:
             if row.get("status") == "ready" and row.get("key") in _ALWAYS_PREVIEW_KEYS:
                 lines.append(f"• {name}: khoảng 0 B")

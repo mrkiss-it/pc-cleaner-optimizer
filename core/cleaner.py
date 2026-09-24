@@ -24,6 +24,8 @@ from core.c_drive_clean import (
     format_freed_vi,
     is_process_elevated,
     normalize_downloads_min_age_days,
+    _EmptyDirBudget,
+    list_empty_directories,
     prune_nested_target_paths,
     read_c_drive_free_bytes,
     resolve_clean_plan,
@@ -166,11 +168,22 @@ class JunkCleaner:
             "is_admin": bool(is_admin),
         }
         enabled = enabled_targets or {}
+        env = os.environ if environ is None else environ
+        user_profile = str(env.get("USERPROFILE", "") or "")
+        system_root = str(env.get("SystemRoot", "") or env.get("SYSTEMROOT", "") or "")
+        active_keys = [
+            key for key in TARGET_ORDER
+            if enabled.get(key, False)
+            and not (TARGET_CATALOG[key]["needs_admin"] and not is_admin)
+        ]
+        pruned_paths = prune_nested_target_paths(target_paths, active_keys)
+        empty_budget = _EmptyDirBudget()
         for cat_key in TARGET_ORDER:
             if not enabled.get(cat_key, False):
                 continue
             meta = TARGET_CATALOG[cat_key]
             will_skip = bool(meta["needs_admin"]) and not is_admin
+            sized_paths = target_paths if will_skip else pruned_paths
             if cat_key == "recycle_bin":
                 query = recycle_query or cls.get_recycle_bin_info
                 try:
@@ -182,14 +195,24 @@ class JunkCleaner:
             elif meta["clean_mode"] == "old_files":
                 cat_bytes = 0
                 cat_files = 0
-                for path in target_paths.get(cat_key, []):
+                for path in sized_paths.get(cat_key, []):
                     stat_info = scan_old_files(path, days, moment)
                     cat_bytes += stat_info["size_bytes"]
                     cat_files += stat_info["file_count"]
+            elif meta["clean_mode"] == "empty_dirs":
+                cat_bytes = 0
+                cat_files = 0
+                for path in sized_paths.get(cat_key, []):
+                    cat_files += len(list_empty_directories(
+                        path,
+                        budget=empty_budget,
+                        user_profile=user_profile,
+                        system_root=system_root,
+                    ))
             else:
                 cat_bytes = 0
                 cat_files = 0
-                for path in target_paths.get(cat_key, []):
+                for path in sized_paths.get(cat_key, []):
                     stat_info = scan_tree(path)
                     cat_bytes += stat_info["size_bytes"]
                     cat_files += stat_info["file_count"]
@@ -411,6 +434,11 @@ class JunkCleaner:
                     elif agg["too_broad"] and agg["freed_bytes"] <= 0:
                         status = "error"
                         reason = TOO_BROAD_REASON_VI
+                    elif meta.get("clean_mode") == "empty_dirs" and agg["deleted_files"] > 0:
+                        status = "cleaned"
+                        reason = f"Đã xóa {agg['deleted_files']} thư mục trống (0 B)."
+                        if agg["skipped_locked"]:
+                            reason += f" Bỏ qua {agg['skipped_locked']} thư mục chưa xóa được."
                     elif agg["freed_bytes"] <= 0 and agg["skipped_locked"] <= 0 and agg["errors"] <= 0:
                         status = "empty"
                     elif agg["skipped_locked"]:
