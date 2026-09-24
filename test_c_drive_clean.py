@@ -2243,6 +2243,393 @@ def test_ui_exposes_deep_clean_and_admin_label():
     assert "LowDiskToastGate" in scheduler
 
 
+def test_v7_profile_caches_and_performance_preset():
+    """WhatsApp/Signal/Skype/OBS/Zoom sâu, DaVinci và Flutter tắt mặc định, preset hiệu năng."""
+    from core.c_drive_clean import (
+        DAVINCI_OFFER_MIN_MB,
+        DEV_BUILD_OFFER_MIN_MB,
+        OBS_LOG_MIN_AGE_DAYS,
+        apply_performance_preset,
+        performance_priority_keys,
+        target_group_id,
+        target_group_label_vi,
+    )
+
+    assert APP_VERSION == "3.8.6"
+    grouped = [key for _group_id, _label, keys in TARGET_GROUPS for key in keys]
+    assert set(grouped) == set(TARGET_ORDER)
+    for key, enabled, group in (
+        ("whatsapp_cache", True, "chat"),
+        ("signal_cache", True, "chat"),
+        ("skype_cache", True, "chat"),
+        ("zoom_cache", True, "apps"),
+        ("obs_cache", True, "apps"),
+        ("davinci_caches", False, "creative"),
+        ("flutter_android_caches", False, "dev_tools"),
+    ):
+        meta = TARGET_CATALOG[key]
+        assert meta["needs_admin"] is False
+        assert meta["default_enabled"] is enabled
+        assert DEFAULT_CONFIG["targets"][key] is enabled
+        assert target_group_id(key) == group
+        assert target_group_label_vi(key)
+        if not enabled:
+            assert "tắt mặc định" in meta["label_vi"]
+    assert TARGET_CATALOG["davinci_caches"]["offer_min_mb"] == DAVINCI_OFFER_MIN_MB == 256
+    assert TARGET_CATALOG["flutter_android_caches"]["offer_min_mb"] == DEV_BUILD_OFFER_MIN_MB == 100
+    assert TARGET_CATALOG["obs_cache"]["log_min_age_days"] == OBS_LOG_MIN_AGE_DAYS == 7
+    assert TARGET_CATALOG["recycle_bin"]["default_enabled"] is False
+    assert "whatsapp_cache" in performance_priority_keys()
+    assert "obs_cache" in performance_priority_keys()
+    assert "davinci_caches" not in performance_priority_keys()
+    assert "flutter_android_caches" not in performance_priority_keys()
+    assert "recycle_bin" not in performance_priority_keys()
+    assert "system_temp" not in performance_priority_keys()
+    preset = apply_performance_preset({
+        "recycle_bin": True,
+        "downloads_old": True,
+        "davinci_caches": True,
+        "flutter_android_caches": True,
+        "adobe_caches": True,
+        "nuget_packages": True,
+        "steam_caches": True,
+        "system_temp": True,
+        "windows_update": True,
+        "whatsapp_cache": False,
+        "ram_optimize": False,
+    })
+    assert preset["whatsapp_cache"] is True
+    assert preset["signal_cache"] is True
+    assert preset["skype_cache"] is True
+    assert preset["zoom_cache"] is True
+    assert preset["obs_cache"] is True
+    assert preset["user_temp"] is True
+    assert preset["browser_cache"] is True
+    assert preset["discord_cache"] is True
+    assert preset["recycle_bin"] is False
+    assert preset["downloads_old"] is False
+    assert preset["davinci_caches"] is False
+    assert preset["flutter_android_caches"] is False
+    assert preset["adobe_caches"] is False
+    assert preset["nuget_packages"] is False
+    assert preset["steam_caches"] is False
+    assert preset["empty_user_folders"] is False
+    assert preset["system_temp"] is False
+    assert preset["windows_update"] is False
+    assert preset["ram_optimize"] is True
+
+    small_davinci = {
+        "key": "davinci_caches",
+        "status": "ready",
+        "reclaimable_bytes": 200 * 1024 * 1024,
+        "reclaimable_files": 2,
+    }
+    large_davinci = {
+        "key": "davinci_caches",
+        "status": "ready",
+        "reclaimable_bytes": 300 * 1024 * 1024,
+        "reclaimable_files": 2,
+    }
+    assert category_offered_by_default(small_davinci, 0) is False
+    assert category_offered_by_default(large_davinci, 0) is True
+    assert category_offered_by_default(large_davinci, 400) is False
+    assert category_offered_by_default(
+        {"key": "flutter_android_caches", "status": "ready", "reclaimable_bytes": 50 * 1024 * 1024, "reclaimable_files": 1},
+        0,
+    ) is False
+    assert category_offered_by_default(
+        {"key": "whatsapp_cache", "status": "ready", "reclaimable_bytes": 11 * 1024 * 1024, "reclaimable_files": 1},
+        10,
+    ) is True
+
+    root = tempfile.mkdtemp(prefix="pca-v7-")
+    basic_root = tempfile.mkdtemp(prefix="pca-v7-missing-")
+    try:
+        home = os.path.join(root, "Users", "alice")
+        local = os.path.join(home, "AppData", "Local")
+        roaming = os.path.join(home, "AppData", "Roaming")
+        windows = os.path.join(root, "Windows")
+        program_files = os.path.join(root, "Program Files")
+        now = 1_700_000_000
+
+        def put(path, payload, age_days=None):
+            _write(path, payload)
+            if age_days is not None:
+                stamp = now - int(age_days) * 86400
+                os.utime(path, (stamp, stamp))
+            return path
+
+        files = {
+            "wa_cache": put(os.path.join(roaming, "WhatsApp", "Cache", "a.bin"), b"W" * 11),
+            "wa_gpu": put(os.path.join(local, "WhatsApp", "GPUCache", "g.bin"), b"W" * 12),
+            "wa_idb": put(os.path.join(roaming, "WhatsApp", "IndexedDB", "idb.bin"), b"I" * 40),
+            "wa_state": put(
+                os.path.join(local, "Packages", "5319275A.WhatsAppDesktop_abc", "LocalState", "Cache", "keep.bin"),
+                b"K" * 33,
+            ),
+            "wa_temp": put(
+                os.path.join(local, "Packages", "5319275A.WhatsAppDesktop_abc", "TempState", "t.bin"),
+                b"W" * 13,
+            ),
+            "sig_cache": put(os.path.join(roaming, "Signal", "Cache", "s.bin"), b"S" * 14),
+            "sig_sql": put(os.path.join(roaming, "Signal", "sql", "db.sqlite"), b"Q" * 200),
+            "sig_att": put(os.path.join(roaming, "Signal", "attachments.noindex", "photo.bin"), b"A" * 80),
+            "sky_cache": put(
+                os.path.join(roaming, "Microsoft", "Skype for Desktop", "Code Cache", "c.bin"),
+                b"Y" * 15,
+            ),
+            "sky_db": put(os.path.join(roaming, "Skype", "live_user", "main.db"), b"D" * 90),
+            "sky_idb": put(
+                os.path.join(roaming, "Microsoft", "Skype for Desktop", "IndexedDB", "idb.bin"),
+                b"I" * 28,
+            ),
+            "sky_pkg": put(
+                os.path.join(local, "Packages", "Microsoft.SkypeApp_kzf8qxf38zg5c", "TempState", "p.bin"),
+                b"Y" * 16,
+            ),
+            "zoom_log": put(os.path.join(roaming, "Zoom", "logs", "z.log"), b"Z" * 3),
+            "zoom_web": put(os.path.join(roaming, "Zoom", "data", "WebviewCache", "w.bin"), b"Z" * 21),
+            "zoom_wait": put(os.path.join(roaming, "Zoom", "data", "WaitingRoom", "r.bin"), b"Z" * 4),
+            "zoom_custom": put(
+                os.path.join(roaming, "Zoom", "data", "VirtualBkgnd_Custom", "Cache", "me.jpg"),
+                b"C" * 50,
+            ),
+            "zoom_default": put(
+                os.path.join(roaming, "Zoom", "data", "VirtualBkgnd_Default", "stock.jpg"),
+                b"Z" * 6,
+            ),
+            "obs_old": put(os.path.join(roaming, "obs-studio", "logs", "old.log"), b"O" * 17, age_days=10),
+            "obs_new": put(os.path.join(roaming, "obs-studio", "logs", "new.log"), b"O" * 18, age_days=1),
+            "obs_cache": put(
+                os.path.join(roaming, "obs-studio", "plugin_config", "obs-browser", "Cache", "b.bin"),
+                b"B" * 19,
+                age_days=1,
+            ),
+            "obs_scene": put(os.path.join(roaming, "obs-studio", "basic", "scenes", "live.json"), b"N" * 60),
+            "obs_plug": put(
+                os.path.join(roaming, "obs-studio", "plugin_config", "obs-websocket", "config.json"),
+                b"P" * 22,
+            ),
+            "cursor": put(os.path.join(roaming, "Cursor", "Cache", "c.bin"), b"R" * 8),
+            "figma": put(os.path.join(roaming, "Figma", "Cache", "f.bin"), b"F" * 9),
+            "dv_cache": put(
+                os.path.join(local, "Blackmagic Design", "DaVinci Resolve", "Cache", "c.bin"),
+                b"V" * 31,
+            ),
+            "dv_log_old": put(
+                os.path.join(roaming, "Blackmagic Design", "DaVinci Resolve", "Support", "logs", "old.log"),
+                b"V" * 5,
+                age_days=10,
+            ),
+            "dv_log_new": put(
+                os.path.join(roaming, "Blackmagic Design", "DaVinci Resolve", "Support", "logs", "new.log"),
+                b"V" * 6,
+                age_days=1,
+            ),
+            "dv_db": put(
+                os.path.join(
+                    roaming, "Blackmagic Design", "DaVinci Resolve", "Support",
+                    "Resolve Disk Database", "db.bin",
+                ),
+                b"D" * 70,
+            ),
+            "dv_pf": put(
+                os.path.join(program_files, "Blackmagic Design", "DaVinci Resolve", "Cache", "pf.bin"),
+                b"P" * 99,
+            ),
+            "pub": put(os.path.join(local, "Pub", "Cache", "hosted", "pkg.bin"), b"U" * 23),
+            "android_cache": put(os.path.join(home, ".android", "cache", "a.bin"), b"A" * 24),
+            "android_sdk": put(os.path.join(local, "Android", "Sdk", "platform-tools", "adb.exe"), b"E" * 40),
+            "avd": put(os.path.join(home, ".android", "avd", "pixel", "disk.img"), b"M" * 80),
+            "flutter_bin": put(os.path.join(home, "flutter", "bin", "cache", "engine.bin"), b"L" * 25),
+            "fvm": put(os.path.join(home, "fvm", "versions", "3.24.0", "bin", "cache", "dart.bin"), b"L" * 7),
+            "go": put(os.path.join(local, "go-build", "b.bin"), b"G" * 26),
+            "gradle": put(os.path.join(home, ".gradle", "caches", "modules.bin"), b"H" * 27),
+            "flutter_pf": put(os.path.join(program_files, "flutter", "bin", "cache", "nope.bin"), b"N" * 44),
+        }
+        env = {
+            "USERPROFILE": home,
+            "LOCALAPPDATA": local,
+            "APPDATA": roaming,
+            "TEMP": os.path.join(local, "Temp"),
+            "SystemRoot": windows,
+        }
+        os.makedirs(env["TEMP"], exist_ok=True)
+        paths = build_target_paths(env)
+        flat = [path for group in paths.values() for path in group]
+        for path in flat:
+            parts = _path_parts(path)
+            assert "winsxs" not in parts
+            assert "indexeddb" not in parts
+            assert "localstate" not in parts
+            assert "sql" not in parts
+            assert "attachments.noindex" not in parts
+            assert not path_is_forbidden(path)
+        assert any(path.endswith(os.path.join("WhatsApp", "Cache")) for path in paths["whatsapp_cache"])
+        assert any(path.endswith(os.path.join("WhatsApp", "GPUCache")) for path in paths["whatsapp_cache"])
+        assert any("5319275a.whatsappdesktop_" in path.lower() and path.endswith("TempState") for path in paths["whatsapp_cache"])
+        assert not any("localstate" in _path_parts(path) for path in paths["whatsapp_cache"])
+        assert any(path.endswith(os.path.join("Signal", "Cache")) for path in paths["signal_cache"])
+        assert not any("sql" in _path_parts(path) or "attachments.noindex" in _path_parts(path) for path in flat)
+        assert any(path.endswith(os.path.join("Skype for Desktop", "Code Cache")) for path in paths["skype_cache"])
+        assert any("microsoft.skypeapp_" in path.lower() and path.endswith("TempState") for path in paths["skype_cache"])
+        assert not any(path.endswith("main.db") for path in flat)
+        assert any(path.endswith(os.path.join("Zoom", "logs")) for path in paths["app_caches"])
+        assert not any(path.endswith(os.path.join("Zoom", "logs")) for path in paths["zoom_cache"])
+        assert any(path.endswith("WebviewCache") for path in paths["zoom_cache"])
+        assert any(path.endswith("WaitingRoom") for path in paths["zoom_cache"])
+        assert any(path.endswith("VirtualBkgnd_Default") for path in paths["zoom_cache"])
+        assert not any("virtualbkgnd_custom" in _path_parts(path) for path in flat)
+        assert any(path.endswith(os.path.join("obs-studio", "logs")) for path in paths["obs_cache"])
+        assert any(path.endswith(os.path.join("obs-browser", "Cache")) for path in paths["obs_cache"])
+        assert not any("scenes" in _path_parts(path) for path in flat)
+        assert not any(path.endswith("config.json") for path in paths["obs_cache"])
+        assert any(path.endswith(os.path.join("Cursor", "Cache")) for path in paths["app_caches"])
+        assert any(path.endswith(os.path.join("Figma", "Cache")) for path in paths["app_caches"])
+        assert any(path.endswith(os.path.join("DaVinci Resolve", "Cache")) for path in paths["davinci_caches"])
+        assert any(path.endswith(os.path.join("Support", "logs")) for path in paths["davinci_caches"])
+        assert not any("resolve disk database" in _path_parts(path) for path in flat)
+        assert not any("program files" in _path_parts(path) for path in paths["davinci_caches"])
+        assert any(path.endswith(os.path.join("Pub", "Cache")) for path in paths["flutter_android_caches"])
+        assert any(path.endswith(os.path.join(".android", "cache")) for path in paths["flutter_android_caches"])
+        assert any(path.endswith(os.path.join("flutter", "bin", "cache")) for path in paths["flutter_android_caches"])
+        assert any("3.24.0" in _path_parts(path) and path.endswith("cache") for path in paths["flutter_android_caches"])
+        assert any(path.endswith("go-build") for path in paths["flutter_android_caches"])
+        assert not any("sdk" in _path_parts(path) and "android" in _path_parts(path) for path in paths["flutter_android_caches"])
+        assert not any("avd" in _path_parts(path) for path in flat)
+        assert not any("program files" in _path_parts(path) for path in paths["flutter_android_caches"])
+        assert any(path.endswith(os.path.join(".gradle", "caches")) for path in paths["gradle_caches"])
+        assert not any(".gradle" in _path_parts(path) for path in paths["flutter_android_caches"])
+
+        flags = default_target_flags()
+        plan = resolve_clean_plan(flags, is_admin=False, deep_user_safe=True)
+        assert "whatsapp_cache" in plan["to_run"]
+        assert "signal_cache" in plan["to_run"]
+        assert "skype_cache" in plan["to_run"]
+        assert "zoom_cache" in plan["to_run"]
+        assert "obs_cache" in plan["to_run"]
+        assert "davinci_caches" not in plan["to_run"]
+        assert "flutter_android_caches" not in plan["to_run"]
+        assert "recycle_bin" not in plan["to_run"]
+        assert "system_temp" not in plan["to_run"]
+        scan = estimate_reclaimable(
+            flags, is_admin=False, deep_user_safe=True, environ=env, now_ts=now,
+        )
+        ready = {row["key"]: row for row in scan["targets"] if row["status"] == "ready"}
+        assert ready["whatsapp_cache"]["group_vi"] == "Chat"
+        assert ready["whatsapp_cache"]["reclaimable_bytes"] == 11 + 12 + 13
+        assert ready["signal_cache"]["reclaimable_bytes"] == 14
+        assert ready["skype_cache"]["reclaimable_bytes"] == 15 + 16
+        assert ready["zoom_cache"]["reclaimable_bytes"] == 21 + 4 + 6
+        assert ready["obs_cache"]["reclaimable_bytes"] == 17 + 19
+        assert ready["obs_cache"]["log_min_age_days"] == 7
+        assert "log chỉ tính khi cũ hơn 7 ngày" in scan["preview_vi"]
+        assert "[Chat]" in scan["preview_vi"] or "Cache WhatsApp" in scan["preview_vi"]
+        assert ready["app_caches"]["reclaimable_bytes"] == 3 + 8 + 9
+        assert "davinci_caches" not in ready
+        assert "flutter_android_caches" not in ready
+        assert os.path.exists(files["obs_new"])
+        assert os.path.exists(files["sig_sql"])
+
+        exclude = [os.path.join(roaming, "WhatsApp", "Cache")]
+        excluded = estimate_reclaimable(
+            flags,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=env,
+            now_ts=now,
+            exclude_paths=exclude,
+        )
+        excluded_ready = {row["key"]: row for row in excluded["targets"] if row["status"] == "ready"}
+        assert excluded_ready["whatsapp_cache"]["reclaimable_bytes"] == 12 + 13
+
+        opted = dict(flags)
+        opted["davinci_caches"] = True
+        opted["flutter_android_caches"] = True
+        opted_scan = estimate_reclaimable(
+            opted, is_admin=False, deep_user_safe=True, environ=env, now_ts=now,
+        )
+        opted_ready = {row["key"]: row for row in opted_scan["targets"] if row["status"] == "ready"}
+        assert opted_ready["davinci_caches"]["reclaimable_bytes"] == 31 + 5
+        assert opted_ready["flutter_android_caches"]["reclaimable_bytes"] == 23 + 24 + 25 + 7 + 26
+        assert opted_ready["davinci_caches"]["group_vi"] == "Đồ họa"
+
+        obs_only = JunkCleaner.clean(
+            opted,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=env,
+            now_ts=now,
+            disk_free_bytes=lambda: None,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 0},
+            only_keys=["obs_cache"],
+        )
+        assert obs_only["total_freed_bytes"] == 17 + 19
+        assert not os.path.exists(files["obs_old"])
+        assert not os.path.exists(files["obs_cache"])
+        assert os.path.exists(files["obs_new"])
+        assert os.path.exists(files["obs_scene"])
+        assert os.path.exists(files["obs_plug"])
+        assert os.path.exists(files["wa_cache"])
+
+        chat = JunkCleaner.clean(
+            opted,
+            is_admin=False,
+            environ=env,
+            now_ts=now,
+            disk_free_bytes=lambda: None,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 0},
+            only_keys=["whatsapp_cache", "signal_cache", "skype_cache", "zoom_cache"],
+        )
+        assert chat["total_freed_bytes"] == (11 + 12 + 13) + 14 + (15 + 16) + (21 + 4 + 6)
+        for key in ("wa_idb", "wa_state", "sig_sql", "sig_att", "sky_db", "sky_idb", "zoom_custom", "zoom_log"):
+            assert os.path.exists(files[key]), key
+        for key in ("wa_cache", "wa_gpu", "wa_temp", "sig_cache", "sky_cache", "sky_pkg", "zoom_web", "zoom_wait", "zoom_default"):
+            assert not os.path.exists(files[key]), key
+
+        heavy = JunkCleaner.clean(
+            opted,
+            is_admin=False,
+            environ=env,
+            now_ts=now,
+            disk_free_bytes=lambda: None,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 0},
+            only_keys=["davinci_caches", "flutter_android_caches", "app_caches"],
+        )
+        assert heavy["total_freed_bytes"] == (31 + 5) + (23 + 24 + 25 + 7 + 26) + (3 + 8 + 9)
+        assert os.path.exists(files["dv_log_new"])
+        assert os.path.exists(files["dv_db"])
+        assert os.path.exists(files["dv_pf"])
+        assert os.path.exists(files["android_sdk"])
+        assert os.path.exists(files["avd"])
+        assert os.path.exists(files["gradle"])
+        assert os.path.exists(files["flutter_pf"])
+        assert not os.path.exists(files["dv_cache"])
+        assert not os.path.exists(files["dv_log_old"])
+        assert not os.path.exists(files["pub"])
+        assert not os.path.exists(files["go"])
+        assert not os.path.exists(files["cursor"])
+
+        info = _tree(basic_root)
+        missing = build_target_paths(info["env"])
+        for key in (
+            "whatsapp_cache", "signal_cache", "skype_cache", "zoom_cache",
+            "obs_cache", "davinci_caches", "flutter_android_caches",
+        ):
+            assert missing[key] == [], key
+
+        ui = open(os.path.join(os.path.dirname(__file__), "ui", "main_window.py"), encoding="utf-8").read()
+        module = open(os.path.join(os.path.dirname(__file__), "core", "c_drive_clean.py"), encoding="utf-8").read()
+        assert "Ưu tiên hiệu năng" in ui
+        assert "_apply_performance_preset" in ui
+        assert "WhatsApp, Signal, Skype" in ui
+        assert "runas" not in module.lower()
+        assert "shellexecute" not in module.lower()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(basic_root, ignore_errors=True)
+
+
 def _run():
     tests = [
         test_version_stays_386,
@@ -2266,6 +2653,7 @@ def _run():
         test_admin_deep_plan_respects_elevation_and_forbidden_paths,
         test_chat_gpu_launcher_and_empty_folders_do_not_double_count,
         test_v5_caches_groups_sort_and_min_size_filter,
+        test_v7_profile_caches_and_performance_preset,
         test_exclude_paths_downloads_age_and_recycle_bin,
         test_ui_exposes_deep_clean_and_admin_label,
     ]
