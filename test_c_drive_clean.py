@@ -48,13 +48,16 @@ from core.c_drive_clean import (
     default_hibernate_off,
     default_target_flags,
     delete_large_files,
+    _EmptyDirBudget,
     estimate_reclaimable,
     format_clean_history_line_vi,
     format_clean_history_vi,
     is_disk_space_low,
     is_process_elevated,
+    list_empty_directories,
     load_clean_history,
     path_is_forbidden,
+    path_is_game_install,
     resolve_clean_plan,
     scan_large_user_files,
 )
@@ -1340,6 +1343,354 @@ def test_admin_deep_plan_respects_elevation_and_forbidden_paths():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_chat_gpu_launcher_and_empty_folders_do_not_double_count():
+    """Cache chat/GPU mới, launcher tắt mặc định, thư mục trống — không cộng byte hai lần."""
+    root = tempfile.mkdtemp(prefix="pca-v4-")
+    basic_root = tempfile.mkdtemp(prefix="pca-v4-missing-")
+    try:
+        home = os.path.join(root, "Users", "alice")
+        local = os.path.join(home, "AppData", "Local")
+        roaming = os.path.join(home, "AppData", "Roaming")
+        local_low = os.path.join(home, "AppData", "LocalLow")
+        windows = os.path.join(root, "Windows")
+        program_data = os.path.join(root, "ProgramData")
+        program_files = os.path.join(root, "Program Files")
+        steam_root = os.path.join(root, "Steam")
+        steam_lib = os.path.join(root, "SteamLibrary")
+        outside = os.path.join(root, "outside.bin")
+
+        def put(path, payload):
+            _write(path, payload)
+            return path
+
+        files = {
+            "discord_cache": put(os.path.join(roaming, "discord", "Cache", "a.bin"), b"D" * 11),
+            "discord_code": put(os.path.join(roaming, "discord", "Code Cache", "b.bin"), b"D" * 12),
+            "discord_gpu": put(os.path.join(roaming, "discord", "GPUCache", "c.bin"), b"D" * 13),
+            "discord_dawn": put(os.path.join(roaming, "discord", "DawnCache", "d.bin"), b"D" * 1),
+            "discord_canary": put(os.path.join(roaming, "discordcanary", "Cache", "e.bin"), b"D" * 7),
+            "discord_leveldb": put(
+                os.path.join(roaming, "discord", "Local Storage", "leveldb", "data.ldb"),
+                b"L" * 500,
+            ),
+            "discord_idb": put(os.path.join(roaming, "discord", "IndexedDB", "idb.bin"), b"I" * 40),
+            "tele_cache": put(
+                os.path.join(roaming, "Telegram Desktop", "tdata", "user_data", "cache", "m.bin"),
+                b"T" * 9,
+            ),
+            "tele_media": put(
+                os.path.join(roaming, "Telegram Desktop", "tdata", "user_data", "media_cache", "m2.bin"),
+                b"T" * 8,
+            ),
+            "tele_temp": put(os.path.join(roaming, "Telegram Desktop", "tdata", "temp", "t.bin"), b"T" * 6),
+            "tele_emoji": put(os.path.join(roaming, "Telegram Desktop", "tdata", "emoji", "e.bin"), b"T" * 5),
+            "tele_user2": put(
+                os.path.join(roaming, "Telegram Desktop", "tdata", "user_data#2", "cache", "u.bin"),
+                b"T" * 4,
+            ),
+            "tele_key": put(os.path.join(roaming, "Telegram Desktop", "tdata", "key_datas"), b"K" * 400),
+            "tele_map": put(os.path.join(roaming, "Telegram Desktop", "tdata", "map0"), b"M" * 50),
+            "tele_account": put(
+                os.path.join(roaming, "Telegram Desktop", "tdata", "D877F783D5D3EF8C", "msgs.bin"),
+                b"A" * 80,
+            ),
+            "zalo_cache": put(os.path.join(roaming, "ZaloData", "Cache", "z.bin"), b"Z" * 10),
+            "zalo_temp": put(os.path.join(local, "ZaloPC", "Temp", "z.bin"), b"Z" * 4),
+            "zalo_logs": put(os.path.join(local, "Programs", "Zalo", "logs", "z.log"), b"Z" * 2),
+            "zalo_db": put(os.path.join(roaming, "ZaloData", "accounts", "accounts.db"), b"Z" * 300),
+            "zalo_ls": put(
+                os.path.join(roaming, "ZaloData", "Partitions", "zalo", "Local Storage", "leveldb", "a.ldb"),
+                b"Z" * 20,
+            ),
+            "zalo_exe": put(os.path.join(local, "Programs", "Zalo", "Zalo.exe"), b"E" * 30),
+            "msgr_cache": put(os.path.join(roaming, "Messenger", "Cache", "m.bin"), b"F" * 14),
+            "msgr_ls": put(os.path.join(roaming, "Messenger", "Local Storage", "leveldb", "m.ldb"), b"F" * 21),
+            "msgr_pkg": put(
+                os.path.join(local, "Packages", "Facebook.Messenger_abc", "TempState", "t.bin"),
+                b"F" * 3,
+            ),
+            "msgr_state": put(
+                os.path.join(local, "Packages", "Facebook.Messenger_abc", "LocalState", "keep.bin"),
+                b"F" * 22,
+            ),
+            "dx": put(os.path.join(local, "NVIDIA", "DXCache", "dx.bin"), b"N" * 100),
+            "amd": put(os.path.join(local, "AMD", "DxCache", "amd.bin"), b"A" * 20),
+            "intel": put(os.path.join(local, "Intel", "ShaderCache", "i.bin"), b"I" * 40),
+            "compute": put(
+                os.path.join(local_low, "NVIDIA", "PerDriverVersion", "ComputeCache", "c.bin"),
+                b"C" * 30,
+            ),
+            "steam_shader_local": put(os.path.join(local, "Steam", "shadercache", "s.bin"), b"S" * 15),
+            "html": put(os.path.join(local, "Steam", "htmlcache", "h.bin"), b"H" * 8),
+            "decoy_dx": put(os.path.join(local, "SomeApp", "DXCache", "nope.bin"), b"X" * 77),
+            "pd_dx": put(os.path.join(program_data, "NVIDIA", "DXCache", "pd.bin"), b"P" * 999),
+            "pf_dx": put(os.path.join(program_files, "NVIDIA Corporation", "DXCache", "pf.bin"), b"P" * 999),
+            "sys_temp": put(os.path.join(windows, "Temp", "sys.tmp"), b"S" * 80),
+            "steam_app": put(os.path.join(steam_root, "appcache", "app.bin"), b"A" * 16),
+            "steam_down": put(os.path.join(steam_lib, "steamapps", "downloading", "part.bin"), b"D" * 17),
+            "steam_shader": put(os.path.join(steam_lib, "steamapps", "shadercache", "sh.bin"), b"S" * 18),
+            "steam_temp": put(os.path.join(steam_lib, "steamapps", "temp", "tmp.bin"), b"S" * 2),
+            "steam_game": put(os.path.join(steam_lib, "steamapps", "common", "Game", "data.bin"), b"G" * 1000),
+            "epic_web": put(
+                os.path.join(local, "EpicGamesLauncher", "Saved", "webcache", "w.bin"),
+                b"E" * 19,
+            ),
+            "epic_web2": put(
+                os.path.join(local, "EpicGamesLauncher", "Saved", "webcache_4430", "w.bin"),
+                b"E" * 6,
+            ),
+            "epic_cfg": put(
+                os.path.join(local, "EpicGamesLauncher", "Saved", "Config", "settings.ini"),
+                b"C" * 33,
+            ),
+            "egstore": put(os.path.join(local, "EpicGames", "Game", ".egstore", "manifest"), b"E" * 44),
+            "keep_doc": put(os.path.join(home, "Documents", "keep", "note.txt"), b"K" * 12),
+            "keep_dl": put(os.path.join(home, "Downloads", "new.bin"), b"N" * 9),
+            "node_mod": put(os.path.join(home, "Documents", "node_modules", "pkg", "index.js"), b"J" * 11),
+            "onedrive_secret": put(os.path.join(home, "Documents", "OneDrive", "secret.txt"), b"O" * 13),
+        }
+        _write(outside, b"O" * 7)
+        os.makedirs(os.path.join(home, "Documents", "empty_leaf"), exist_ok=True)
+        os.makedirs(os.path.join(home, "Documents", "empty_parent", "empty_child"), exist_ok=True)
+        os.makedirs(os.path.join(home, "Desktop", "empty_desk"), exist_ok=True)
+        os.makedirs(os.path.join(home, "Downloads", "empty_dl"), exist_ok=True)
+        os.makedirs(os.path.join(local, "Temp", "empty_tmp"), exist_ok=True)
+        os.makedirs(os.path.join(roaming, "EmptyNope"), exist_ok=True)
+        os.symlink(outside, os.path.join(home, "Documents", "jump"))
+        vdf = os.path.join(steam_root, "steamapps", "libraryfolders.vdf")
+        os.makedirs(os.path.dirname(vdf), exist_ok=True)
+        with open(vdf, "w", encoding="utf-8") as handle:
+            handle.write(
+                '"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"'
+                + steam_root.replace("\\", "\\\\")
+                + '"\n\t}\n\t"1"\n\t{\n\t\t"path"\t\t"'
+                + steam_lib.replace("\\", "\\\\")
+                + '"\n\t}\n}\n'
+            )
+        os.makedirs(os.path.join(steam_root, "appcache"), exist_ok=True)
+
+        env = {
+            "USERPROFILE": home,
+            "LOCALAPPDATA": local,
+            "APPDATA": roaming,
+            "TEMP": os.path.join(local, "Temp"),
+            "SystemRoot": windows,
+            "STEAM_PATH": steam_root,
+        }
+        paths = build_target_paths(env)
+        flat = [path for group in paths.values() for path in group]
+        for path in flat:
+            parts = _path_parts(path)
+            assert "winsxs" not in parts
+            assert "system32" not in parts
+            assert "leveldb" not in parts
+            assert "accounts" not in parts
+            assert "key_datas" not in parts
+            assert "key_data" not in parts
+            assert "map0" not in parts
+            assert "indexeddb" not in parts
+            assert "local storage" not in parts
+            assert not path_is_forbidden(path)
+            assert not path_is_game_install(path)
+        assert any(path.endswith(os.path.join("discord", "Cache")) for path in paths["discord_cache"])
+        assert any(path.endswith(os.path.join("discordcanary", "Cache")) for path in paths["discord_cache"])
+        assert not any("discord" in _path_parts(path) for path in paths["app_caches"])
+        assert any(path.endswith(os.path.join("user_data", "cache")) for path in paths["telegram_cache"])
+        assert any(path.endswith(os.path.join("media_cache")) for path in paths["telegram_cache"])
+        assert any(path.endswith(os.path.join("user_data#2", "cache")) for path in paths["telegram_cache"])
+        assert not any(path.rstrip("\\/").endswith(os.path.join("Telegram Desktop", "tdata")) for path in flat)
+        assert any(path.endswith(os.path.join("ZaloData", "Cache")) for path in paths["zalo_cache"])
+        assert any(path.endswith(os.path.join("ZaloPC", "Temp")) for path in paths["zalo_cache"])
+        assert not any("zalo" in _path_parts(path) for path in paths["app_caches"])
+        assert any(path.endswith(os.path.join("Messenger", "Cache")) for path in paths["messenger_cache"])
+        assert any("Facebook.Messenger_" in path and path.endswith("TempState") for path in paths["messenger_cache"])
+        assert any(path.endswith(os.path.join("NVIDIA", "DXCache")) for path in paths["gpu_shader_caches"])
+        assert any(path.endswith(os.path.join("Intel", "ShaderCache")) for path in paths["gpu_shader_caches"])
+        assert any("perdriverversion" in path.lower() and path.endswith("ComputeCache") for path in paths["gpu_shader_caches"])
+        assert not any("programdata" in _path_parts(path) or "program files" in _path_parts(path) for path in paths["gpu_shader_caches"])
+        assert not any("someapp" in _path_parts(path) for path in flat)
+        assert any(path.endswith("htmlcache") for path in paths["app_caches"])
+        assert any(path.endswith(os.path.join("Steam", "shadercache")) for path in paths["shader_cache"])
+        assert any(path.endswith("appcache") for path in paths["steam_caches"])
+        assert any(path.endswith("downloading") for path in paths["steam_caches"])
+        assert any(path.endswith(os.path.join("steamapps", "shadercache")) for path in paths["steam_caches"])
+        assert not any(path.endswith("common") or "common" in _path_parts(path) for path in paths["steam_caches"])
+        assert any(path.endswith("webcache") for path in paths["epic_caches"])
+        assert any(path.endswith("webcache_4430") for path in paths["epic_caches"])
+        assert not any("config" in _path_parts(path) for path in paths["epic_caches"])
+        assert not any(".egstore" in _path_parts(path) for path in flat)
+        assert os.path.join(home, "Documents") in paths["empty_user_folders"]
+        assert os.path.join(local, "Temp") in paths["empty_user_folders"]
+        assert home not in paths["empty_user_folders"]
+
+        for key in (
+            "discord_cache", "telegram_cache", "zalo_cache", "messenger_cache", "gpu_shader_caches",
+            "steam_caches", "epic_caches", "empty_user_folders",
+        ):
+            assert TARGET_CATALOG[key]["needs_admin"] is False
+        for key in ("discord_cache", "telegram_cache", "zalo_cache", "messenger_cache", "gpu_shader_caches"):
+            assert TARGET_CATALOG[key]["default_enabled"] is True
+            assert DEFAULT_CONFIG["targets"][key] is True
+        for key in ("steam_caches", "epic_caches", "empty_user_folders"):
+            assert TARGET_CATALOG[key]["default_enabled"] is False
+            assert DEFAULT_CONFIG["targets"][key] is False
+        assert "Cache Discord" in TARGET_CATALOG["discord_cache"]["label_vi"]
+        assert "Telegram" in TARGET_CATALOG["telegram_cache"]["label_vi"]
+        assert "Zalo" in TARGET_CATALOG["zalo_cache"]["label_vi"]
+        assert "Messenger" in TARGET_CATALOG["messenger_cache"]["label_vi"]
+        assert "GPU" in TARGET_CATALOG["gpu_shader_caches"]["label_vi"]
+        assert "tắt mặc định" in TARGET_CATALOG["steam_caches"]["label_vi"]
+        assert "tắt mặc định" in TARGET_CATALOG["empty_user_folders"]["label_vi"]
+
+        flags = default_target_flags()
+        flags["recycle_bin"] = False
+        flags["downloads_old"] = False
+        plan = resolve_clean_plan(flags, is_admin=False, deep_user_safe=True)
+        assert "discord_cache" in plan["to_run"]
+        assert "gpu_shader_caches" in plan["to_run"]
+        assert "steam_caches" not in plan["to_run"]
+        assert "epic_caches" not in plan["to_run"]
+        assert "empty_user_folders" not in plan["to_run"]
+        assert "system_temp" not in plan["to_run"]
+
+        before = {
+            os.path.join(dirpath, filename)
+            for dirpath, _dirs, filenames in os.walk(root)
+            for filename in filenames
+        }
+        scan = estimate_reclaimable(flags, is_admin=False, deep_user_safe=True, environ=env)
+        after = {
+            os.path.join(dirpath, filename)
+            for dirpath, _dirs, filenames in os.walk(root)
+            for filename in filenames
+        }
+        assert before == after
+        ready = {row["key"]: row for row in scan["targets"] if row["status"] == "ready"}
+        shader_bytes = 100 + 20 + 15
+        gpu_bytes = 40 + 30
+        assert ready["shader_cache"]["reclaimable_bytes"] == shader_bytes
+        assert ready["gpu_shader_caches"]["reclaimable_bytes"] == gpu_bytes
+        assert ready["discord_cache"]["reclaimable_bytes"] == 11 + 12 + 13 + 1 + 7
+        assert ready["telegram_cache"]["reclaimable_bytes"] == 9 + 8 + 6 + 5 + 4
+        assert ready["zalo_cache"]["reclaimable_bytes"] == 10 + 4 + 2
+        assert ready["messenger_cache"]["reclaimable_bytes"] == 14 + 3
+        assert ready["app_caches"]["reclaimable_bytes"] == 8
+        assert "steam_caches" not in ready
+        assert "epic_caches" not in ready
+        assert "empty_user_folders" not in ready
+        default_gone = (
+            "discord_cache", "discord_code", "discord_gpu", "discord_dawn", "discord_canary",
+            "tele_cache", "tele_media", "tele_temp", "tele_emoji", "tele_user2",
+            "zalo_cache", "zalo_temp", "zalo_logs",
+            "msgr_cache", "msgr_pkg",
+            "dx", "amd", "intel", "compute", "steam_shader_local", "html",
+        )
+        assert scan["total_bytes"] == sum(len(open(files[key], "rb").read()) for key in default_gone)
+        assert "Cache Discord" in scan["preview_vi"]
+        assert "Cache shader GPU" in scan["preview_vi"]
+        quick = JunkCleaner.scan(flags, is_admin=False, environ=env)
+        assert quick["total_bytes"] == scan["total_bytes"]
+
+        only_gpu = estimate_reclaimable(
+            {"gpu_shader_caches": True},
+            is_admin=False,
+            deep_user_safe=False,
+            environ=env,
+        )
+        only_gpu_ready = {row["key"]: row for row in only_gpu["targets"] if row["status"] == "ready"}
+        assert only_gpu_ready["gpu_shader_caches"]["reclaimable_bytes"] == 100 + 20 + 40 + 30
+        assert only_gpu["total_bytes"] == 100 + 20 + 40 + 30
+        only_shader = estimate_reclaimable(
+            {"shader_cache": True},
+            is_admin=False,
+            deep_user_safe=False,
+            environ=env,
+        )
+        only_shader_ready = {row["key"]: row for row in only_shader["targets"] if row["status"] == "ready"}
+        assert only_shader_ready["shader_cache"]["reclaimable_bytes"] == shader_bytes
+        assert "gpu_shader_caches" not in only_shader_ready
+
+        opted = dict(flags)
+        opted["steam_caches"] = True
+        opted["epic_caches"] = True
+        opted["empty_user_folders"] = True
+        opted_scan = estimate_reclaimable(opted, is_admin=False, deep_user_safe=True, environ=env)
+        opted_ready = {row["key"]: row for row in opted_scan["targets"] if row["status"] == "ready"}
+        assert opted_ready["steam_caches"]["reclaimable_bytes"] == 16 + 17 + 18 + 2
+        assert opted_ready["epic_caches"]["reclaimable_bytes"] == 19 + 6
+        assert opted_ready["empty_user_folders"]["reclaimable_bytes"] == 0
+        assert opted_ready["empty_user_folders"]["reclaimable_files"] >= 4
+        assert "thư mục trống" in opted_scan["preview_vi"]
+        extra = 16 + 17 + 18 + 2 + 19 + 6
+        assert opted_scan["total_bytes"] == scan["total_bytes"] + extra
+
+        shallow = list_empty_directories(
+            os.path.join(home, "Documents"),
+            user_profile=home,
+            system_root=windows,
+            max_depth=1,
+        )
+        assert os.path.join(home, "Documents", "empty_leaf") in shallow
+        assert not any(path.endswith("empty_child") for path in shallow)
+        assert list_empty_directories(
+            os.path.join(home, "Documents"),
+            budget=_EmptyDirBudget(max_seconds=0),
+            user_profile=home,
+            system_root=windows,
+        ) == []
+
+        result = JunkCleaner.clean(
+            opted,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=env,
+            disk_free_bytes=lambda: None,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 1},
+        )
+        assert result["total_freed_bytes"] == scan["total_bytes"] + extra
+        assert "Đã xóa" in result["details"]["empty_user_folders"]["reason"]
+        assert "thư mục trống" in result["details"]["empty_user_folders"]["reason"]
+        for key in default_gone + ("steam_app", "steam_down", "steam_shader", "steam_temp", "epic_web", "epic_web2"):
+            assert not os.path.exists(files[key]), key
+        for key in (
+            "discord_leveldb", "discord_idb", "tele_key", "tele_map", "tele_account",
+            "zalo_db", "zalo_ls", "zalo_exe", "msgr_ls", "msgr_state",
+            "decoy_dx", "pd_dx", "pf_dx", "sys_temp", "steam_game", "epic_cfg", "egstore",
+            "keep_doc", "keep_dl", "node_mod", "onedrive_secret",
+        ):
+            assert os.path.exists(files[key]), key
+        assert os.path.exists(outside)
+        assert os.path.islink(os.path.join(home, "Documents", "jump"))
+        assert os.path.isdir(home)
+        assert os.path.isdir(os.path.join(home, "Documents"))
+        assert os.path.isdir(os.path.join(home, "Documents", "keep"))
+        assert os.path.isdir(os.path.join(home, "Documents", "node_modules"))
+        assert os.path.isdir(os.path.join(home, "Documents", "OneDrive"))
+        assert os.path.isdir(os.path.join(roaming, "EmptyNope"))
+        assert not os.path.isdir(os.path.join(home, "Documents", "empty_leaf"))
+        assert not os.path.isdir(os.path.join(home, "Documents", "empty_parent"))
+        assert not os.path.isdir(os.path.join(home, "Desktop", "empty_desk"))
+        assert not os.path.isdir(os.path.join(home, "Downloads", "empty_dl"))
+        assert os.path.exists(files["sys_temp"])
+        assert result["details"]["system_temp"]["status"] == "skipped"
+        assert result["details"]["system_temp"]["freed_bytes"] == 0
+
+        info = _tree(basic_root)
+        missing = build_target_paths(info["env"])
+        for key in ("discord_cache", "telegram_cache", "zalo_cache", "messenger_cache", "steam_caches", "epic_caches"):
+            assert missing[key] == []
+        ui = open(os.path.join(os.path.dirname(__file__), "ui", "main_window.py"), encoding="utf-8").read()
+        assert "Discord, Telegram, Zalo, Messenger" in ui
+        assert "cache Steam/Epic" in ui
+        assert "thư mục trống" in ui
+        module = open(os.path.join(os.path.dirname(__file__), "core", "c_drive_clean.py"), encoding="utf-8").read()
+        assert "runas" not in module.lower()
+        assert "shellexecute" not in module.lower()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(basic_root, ignore_errors=True)
+
+
 def test_ui_exposes_deep_clean_and_admin_label():
     base = os.path.dirname(__file__)
     text = open(os.path.join(base, "ui", "main_window.py"), encoding="utf-8").read()
@@ -1394,6 +1745,7 @@ def _run():
         test_large_file_scan_does_not_delete_until_confirmed_paths,
         test_clean_history_round_trip,
         test_admin_deep_plan_respects_elevation_and_forbidden_paths,
+        test_chat_gpu_launcher_and_empty_folders_do_not_double_count,
         test_ui_exposes_deep_clean_and_admin_label,
     ]
     failed = 0

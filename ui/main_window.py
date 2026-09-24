@@ -726,10 +726,12 @@ class MainWindow(QMainWindow):
         self.btn_deep_c.setCursor(Qt.PointingHandCursor)
         self.btn_deep_c.setToolTip(
             "Quét trước, hiện dung lượng từng mục, chỉ xóa sau khi bạn bấm «Dọn ngay». "
-            "Gồm temp, cache trình duyệt, WebView2, thumbnail, shader, crash dump, "
-            "cache ứng dụng và cache công cụ build tạo lại được của tài khoản này. "
+            "Gồm temp, cache trình duyệt, WebView2, thumbnail, shader GPU, crash dump, "
+            "cache ứng dụng, cache chat (Discord, Telegram, Zalo, Messenger) "
+            "và cache công cụ build tạo lại được của tài khoản này. "
             "Không cần quyền Administrator. "
-            "Thùng rác và tệp cũ trong Downloads chỉ chạy khi bạn đang bật các mục đó. "
+            "Thùng rác, tệp cũ trong Downloads, cache Steam/Epic và thư mục trống "
+            "chỉ chạy khi bạn đang bật các mục đó. "
             "Mục «Cần Admin» bị bỏ qua và không được tính là đã giải phóng."
         )
         self.btn_deep_c.setStyleSheet("""
