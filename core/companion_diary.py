@@ -140,6 +140,10 @@ ALLOWED_METRIC_KEYS = frozenset({
     "thermal_c",
     "stage",
     "helpful",
+    "unhelpful",
+    "skills_saved",
+    "skills_declined",
+    "muted",
     "count",
 })
 

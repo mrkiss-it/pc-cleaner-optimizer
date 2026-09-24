@@ -68,6 +68,17 @@ Phase 3 stays on this same file. Still no training.
   and the existing C: preview tap stay as they are for a PC that already has
   Có ích / Chưa. Downloads and the recycle bin are targets inside that preview,
   not a second topic, so there is no extra one-tap.
+
+Phase 4 still uses this file. No training.
+
+- A saved disk or focus skill can show one confirm tap (C: preview, or
+  Trước thi/họp) when that topic is already trusted. Other saved skills
+  are not given a new button. Quiet hours and an open focus session hide it.
+- Trí nhớ crossings (0→1, 1→2, 2→3) and the first saved skill each get one
+  short line. The first observation only records the baseline, so an upgrade
+  does not celebrate a stage the PC already had. Shown ids stay here.
+- Quiet hours stay the existing opt-in window (default suggestion 23:00–07:00).
+  This phase does not turn that window on by itself.
 """
 from __future__ import annotations
 
@@ -102,6 +113,22 @@ ONE_TAP_HELPFUL_MIN = 2
 _ONE_TAP_BY_TOPIC = {
     "disk": "preview_c_drive",
     "focus": "enable_exam_focus",
+}
+# Saved skill → the same confirm taps. Disk never becomes Dọn nhẹ from this row.
+SAVED_SKILL_TAP = {
+    "disk_low": "preview_c_drive",
+    "focus": "enable_exam_focus",
+}
+_SKILL_TAP_TEXT = {
+    "preview_c_drive": "Kỹ năng dọn máy đã lưu. Bấm để quét ổ C xem trước — mình không tự xóa.",
+    "enable_exam_focus": "Kỹ năng tập trung đã lưu. Bấm để bật Trước thi / họp — mình không tự bật.",
+}
+GROWTH_MOMENT_IDS = ("growth_1", "growth_2", "growth_3", "first_skill")
+GROWTH_MOMENT_VI = {
+    "growth_1": "Trí nhớ vừa sang Đang nghe. Mình bắt đầu nhớ Có ích và Chưa trên máy này.",
+    "growth_2": "Trí nhớ vừa sang Đã nhớ. Mình giữ những gì bạn thấy có ích.",
+    "growth_3": "Trí nhớ vừa sang Gắn bó. Cảm ơn bạn đã dùng đều máy này.",
+    "first_skill": "Bạn vừa lưu kỹ năng đầu tiên trên máy này. Mình sẽ giữ mẹo đó.",
 }
 _MAX_OUTCOMES = 8
 # Feedback maturity for the badge. Separate from the day-based giai đoạn.
@@ -234,6 +261,14 @@ def _empty_model() -> Dict[str, Any]:
         "history": [],
         "last_rebuild_at": "",
         "action_outcomes": [],
+        "growth_stage_seen": None,
+        "first_skill_seen": None,
+        "growth_queue": [],
+        "shown_growth_ids": [],
+        "pending_growth_moment": None,
+        "growth_moment_date": "",
+        "learn_line_day": "",
+        "pending_learn_line": None,
         "note_vi": _NOTE_VI,
     }
 
@@ -797,6 +832,60 @@ def _clean_signal(value: Any, confidence: float) -> str:
     return "familiar"
 
 
+def _clean_growth_stage_seen(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return max(0, min(3, int(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_optional_bool(value: Any) -> Optional[bool]:
+    if value is None or value == "":
+        return None
+    return bool(value)
+
+
+def _clean_growth_ids(raw: Any) -> List[str]:
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for item in raw:
+        key = str(item or "").strip()
+        if key in GROWTH_MOMENT_IDS and key not in out:
+            out.append(key)
+    return out
+
+
+def _clean_growth_moment(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    moment_id = str(raw.get("id") or "").strip()
+    if moment_id not in GROWTH_MOMENT_VI:
+        return None
+    return {
+        "id": moment_id,
+        "text": GROWTH_MOMENT_VI[moment_id],
+        "date": str(raw.get("date") or "")[:10],
+    }
+
+
+def _clean_learn_line(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    text = " ".join(str(raw.get("text") or "").split())
+    if not text.startswith("Hôm qua mình học được"):
+        return None
+    if len(text) > 180:
+        text = text[:179].rstrip() + "…"
+    return {
+        "date": str(raw.get("date") or "")[:10],
+        "about": str(raw.get("about") or "")[:10],
+        "text": text,
+    }
+
+
 def _clean_model(raw: Any) -> Dict[str, Any]:
     base = _empty_model()
     if not isinstance(raw, dict):
@@ -833,6 +922,14 @@ def _clean_model(raw: Any) -> Dict[str, Any]:
     base["yesterday_lesson"] = " ".join(str(raw.get("yesterday_lesson") or "").split())[:90]
     base["history"] = _clean_history(raw.get("history"))
     base["action_outcomes"] = _clean_outcomes(raw.get("action_outcomes"))
+    base["growth_stage_seen"] = _clean_growth_stage_seen(raw.get("growth_stage_seen"))
+    base["first_skill_seen"] = _clean_optional_bool(raw.get("first_skill_seen"))
+    base["growth_queue"] = _clean_growth_ids(raw.get("growth_queue"))
+    base["shown_growth_ids"] = _clean_growth_ids(raw.get("shown_growth_ids"))
+    base["pending_growth_moment"] = _clean_growth_moment(raw.get("pending_growth_moment"))
+    base["growth_moment_date"] = str(raw.get("growth_moment_date") or "")[:10]
+    base["learn_line_day"] = str(raw.get("learn_line_day") or "")[:10]
+    base["pending_learn_line"] = _clean_learn_line(raw.get("pending_learn_line"))
     rebuilt = _parse_stamp(raw.get("last_rebuild_at"))
     base["last_rebuild_at"] = rebuilt.replace(microsecond=0).isoformat(timespec="seconds") if rebuilt else ""
     base["note_vi"] = _NOTE_VI
@@ -1598,6 +1695,14 @@ def update_daily_model(
         _IN_REBUILD = False
     built["history"] = _merge_history(history, built)
     built["action_outcomes"] = _clean_outcomes(current.get("action_outcomes"))
+    built["growth_stage_seen"] = current.get("growth_stage_seen")
+    built["first_skill_seen"] = current.get("first_skill_seen")
+    built["growth_queue"] = list(current.get("growth_queue") or [])
+    built["shown_growth_ids"] = list(current.get("shown_growth_ids") or [])
+    built["pending_growth_moment"] = current.get("pending_growth_moment")
+    built["growth_moment_date"] = current.get("growth_moment_date")
+    built["learn_line_day"] = current.get("learn_line_day")
+    built["pending_learn_line"] = current.get("pending_learn_line")
     built["last_rebuild_at"] = stamp.replace(microsecond=0).isoformat(timespec="seconds")
     saved = save_daily_model(built, base_dir=base_dir)
     try:
@@ -2736,6 +2841,303 @@ def refresh_learned_skill_offer(
         state["pending_skill_offer"] = None
         save_state(state, base_dir=base_dir)
     return None
+
+
+def _companion_enabled(config_manager: Optional[Any]) -> bool:
+    if config_manager is None:
+        return True
+    try:
+        from core.companion import is_enabled
+        return bool(is_enabled(config_manager))
+    except Exception:
+        return True
+
+
+def _save_rhythm(
+    base_dir: Optional[str],
+    now: Optional[datetime],
+    updates: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Patch Phase 4 fields. A new calendar day rebuilds first so they are not dropped."""
+    stamp = now or datetime.now()
+    current = load_daily_model(base_dir)
+    if str(current.get("date") or "") != stamp.strftime("%Y-%m-%d"):
+        current = update_daily_model(now=stamp, base_dir=base_dir, force=False)
+    current.update(updates)
+    return save_daily_model(current, base_dir=base_dir)
+
+
+def _quiet_or_focus(stamp: datetime, base_dir: Optional[str]) -> bool:
+    try:
+        from core.companion_profile import in_quiet_hours
+        if in_quiet_hours(stamp, base_dir=base_dir):
+            return True
+    except Exception:
+        pass
+    try:
+        from core.companion_moment import exam_focus_is_live
+        if exam_focus_is_live():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def saved_skill_one_tap(
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, str]]:
+    """One confirm button from a saved skill. Disk → C: preview, focus → Trước thi/họp.
+
+    The topic must already pass the Phase 2 trust bar. RAM, Wi-Fi, and nhiệt
+    skills are skipped. Quiet hours hide it unless the user allowed actions.
+    An open Trước thi / họp session hides it. Nothing runs from here.
+    """
+    if not _companion_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    try:
+        from core.companion_profile import in_quiet_hours, quiet_hours_allow_actions
+        if in_quiet_hours(stamp, base_dir=base_dir) and not quiet_hours_allow_actions(
+            stamp, base_dir=base_dir
+        ):
+            return None
+    except Exception:
+        pass
+    try:
+        from core.companion_moment import exam_focus_is_live
+        if exam_focus_is_live():
+            return None
+    except Exception:
+        pass
+    try:
+        from core.companion_moment import INSIGHT_ACTION_ALLOWLIST
+        from core.companion_profile import topic_for_issue
+        from core.companion_skills import load_skills
+    except Exception:
+        return None
+    best: Optional[Dict[str, str]] = None
+    best_rank = (-1, 99)
+    for skill in load_skills(base_dir):
+        action = SAVED_SKILL_TAP.get(str(skill.issue_class or ""))
+        if not action:
+            continue
+        topic = topic_for_issue(skill.issue_class)
+        if learned_one_tap_key(topic, base_dir=base_dir, now=stamp) != action:
+            continue
+        spec = INSIGHT_ACTION_ALLOWLIST.get(action) or {}
+        label = str(spec.get("label_vi") or "").strip()
+        text = _SKILL_TAP_TEXT.get(action) or ""
+        if not label or not text:
+            continue
+        counts = _topic_feedback_counts(topic, load_daily_model(base_dir))
+        rank = (int(counts.get("helpful") or 0), -list(SAVED_SKILL_TAP).index(skill.issue_class))
+        if rank <= best_rank:
+            continue
+        best_rank = rank
+        best = {
+            "action_key": action,
+            "label_vi": label,
+            "text": text,
+            "topic": topic,
+            "skill_id": str(skill.id or ""),
+            "issue_class": str(skill.issue_class or ""),
+        }
+    return best
+
+
+def _stage_banner_open(base_dir: Optional[str], today: str) -> bool:
+    try:
+        from core.companion_maturity import load_state
+        pending = load_state(base_dir).get("pending_stage_up")
+    except Exception:
+        return False
+    if not isinstance(pending, dict) or not str(pending.get("text") or "").strip():
+        return False
+    day = str(pending.get("date") or "")[:10]
+    return (not day) or day >= today
+
+
+def sync_growth_moment(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """One short Trí nhớ line. The first look only stores the baseline.
+
+    A later crossing, or the first skill saved after that baseline, is queued.
+    Quiet hours, Trước thi / họp, and an open giai-đoạn banner wait without
+    marking the line shown. At most one new line per calendar day.
+    """
+    if not _companion_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    today = stamp.strftime("%Y-%m-%d")
+    model = load_daily_model(base_dir)
+    growth = learning_growth(base_dir=base_dir, now=stamp, model=model if model.get("date") else None)
+    stage = int(growth.get("stage") or 0)
+    skills_n = int(growth.get("skills") or 0)
+    seen = model.get("growth_stage_seen")
+    skill_seen = model.get("first_skill_seen")
+    queue = list(model.get("growth_queue") or [])
+    shown = list(model.get("shown_growth_ids") or [])
+    pending = model.get("pending_growth_moment") if isinstance(model.get("pending_growth_moment"), dict) else None
+    changed = False
+
+    def _queue(moment_id: str) -> None:
+        nonlocal changed
+        if moment_id in shown or moment_id in queue:
+            return
+        if isinstance(pending, dict) and pending.get("id") == moment_id:
+            return
+        queue.append(moment_id)
+        changed = True
+
+    if seen is None:
+        seen = stage
+        changed = True
+    else:
+        seen_n = int(seen)
+        if stage > seen_n:
+            for mid in range(seen_n + 1, stage):
+                skipped = f"growth_{mid}"
+                if skipped not in shown:
+                    shown.append(skipped)
+                    changed = True
+            _queue(f"growth_{stage}")
+            seen = stage
+            changed = True
+        elif stage < seen_n:
+            seen = stage
+            changed = True
+    if skill_seen is None:
+        skill_seen = skills_n >= 1
+        changed = True
+    elif skill_seen is False and skills_n >= 1:
+        _queue("first_skill")
+        skill_seen = True
+        changed = True
+
+    held = _quiet_or_focus(stamp, base_dir) or _stage_banner_open(base_dir, today)
+    if not held and not (isinstance(pending, dict) and pending.get("text")):
+        if str(model.get("growth_moment_date") or "") != today and queue:
+            moment_id = queue.pop(0)
+            pending = {
+                "id": moment_id,
+                "text": GROWTH_MOMENT_VI.get(moment_id) or "",
+                "date": today,
+            }
+            if moment_id not in shown:
+                shown.append(moment_id)
+            model["growth_moment_date"] = today
+            changed = True
+    if changed:
+        saved = _save_rhythm(base_dir, stamp, {
+            "growth_stage_seen": seen,
+            "first_skill_seen": skill_seen,
+            "growth_queue": queue,
+            "shown_growth_ids": shown,
+            "pending_growth_moment": pending,
+            "growth_moment_date": str(model.get("growth_moment_date") or ""),
+        })
+        pending = saved.get("pending_growth_moment")
+    if held:
+        return None
+    if isinstance(pending, dict) and pending.get("text"):
+        return pending
+    return None
+
+
+def dismiss_growth_moment(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    """Hide today's Trí nhớ line. The id stays shown."""
+    stamp = now or datetime.now()
+    current = load_daily_model(base_dir)
+    _save_rhythm(base_dir, stamp, {
+        "growth_stage_seen": current.get("growth_stage_seen"),
+        "first_skill_seen": current.get("first_skill_seen"),
+        "growth_queue": list(current.get("growth_queue") or []),
+        "shown_growth_ids": list(current.get("shown_growth_ids") or []),
+        "pending_growth_moment": None,
+        "growth_moment_date": stamp.strftime("%Y-%m-%d"),
+        "learn_line_day": current.get("learn_line_day"),
+        "pending_learn_line": current.get("pending_learn_line"),
+    })
+
+
+def top_topic_by_score(
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    muted: Optional[Set[str]] = None,
+    model: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Highest decayed topic, skipping muted names. Empty when nothing scores."""
+    payload = _clean_model(model) if isinstance(model, dict) else load_daily_model(base_dir)
+    stamp = now or datetime.now()
+    hidden = set(muted or [])
+    scores = payload.get("topic_scores") if isinstance(payload.get("topic_scores"), dict) else {}
+    micro = payload.get("micro") if isinstance(payload.get("micro"), dict) else {}
+    topics = micro.get("topics") if isinstance(micro.get("topics"), dict) else {}
+    best = ""
+    best_score = 0
+    for topic in set(scores) | set(topics):
+        key = str(topic or "")
+        if not key or key in hidden:
+            continue
+        score = _effective_topic_score(key, payload, now=stamp)
+        if score > best_score or (score == best_score and score > 0 and (not best or key < best)):
+            if score > 0:
+                best = key
+                best_score = score
+    return best
+
+
+def store_learn_line(
+    text: str,
+    *,
+    about: str,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Remember that today's «Hôm qua mình học được» line was shown."""
+    stamp = now or datetime.now()
+    clean = " ".join(str(text or "").split())
+    if not clean.startswith("Hôm qua mình học được"):
+        return None
+    pending = {
+        "date": stamp.strftime("%Y-%m-%d"),
+        "about": str(about or "")[:10],
+        "text": clean[:180],
+    }
+    saved = _save_rhythm(base_dir, stamp, {
+        "learn_line_day": pending["date"],
+        "pending_learn_line": pending,
+    })
+    return saved.get("pending_learn_line")
+
+
+def dismiss_learn_line(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    stamp = now or datetime.now()
+    current = load_daily_model(base_dir)
+    _save_rhythm(base_dir, stamp, {
+        "growth_stage_seen": current.get("growth_stage_seen"),
+        "first_skill_seen": current.get("first_skill_seen"),
+        "growth_queue": list(current.get("growth_queue") or []),
+        "shown_growth_ids": list(current.get("shown_growth_ids") or []),
+        "pending_growth_moment": current.get("pending_growth_moment"),
+        "growth_moment_date": current.get("growth_moment_date"),
+        "learn_line_day": stamp.strftime("%Y-%m-%d"),
+        "pending_learn_line": None,
+    })
 
 
 def merge_learning_models(local: Any, incoming: Any) -> Dict[str, Any]:

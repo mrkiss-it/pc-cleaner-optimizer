@@ -186,6 +186,19 @@ class CompanionInsightBar(QFrame):
         mile_row.addWidget(self.btn_milestone_ok)
         self.row_milestone.hide()
 
+        self.row_growth_moment = QWidget()
+        growth_moment_row = QHBoxLayout(self.row_growth_moment)
+        growth_moment_row.setContentsMargins(0, 0, 0, 0)
+        growth_moment_row.setSpacing(8)
+        self.lbl_growth_moment = _plain_label("#fde68a")
+        self.btn_growth_moment_ok = QPushButton("Đã rõ")
+        self.btn_growth_moment_ok.setStyleSheet(_BTN_STYLE)
+        self.btn_growth_moment_ok.setToolTip("Mình chỉ chúc mừng mốc trí nhớ này một lần.")
+        self.btn_growth_moment_ok.clicked.connect(self._dismiss_growth_moment)
+        growth_moment_row.addWidget(self.lbl_growth_moment, stretch=1)
+        growth_moment_row.addWidget(self.btn_growth_moment_ok)
+        self.row_growth_moment.hide()
+
         self.row_week = QWidget()
         week_row = QHBoxLayout(self.row_week)
         week_row.setContentsMargins(0, 0, 0, 0)
@@ -274,6 +287,38 @@ class CompanionInsightBar(QFrame):
         follow_row.addWidget(self.btn_follow_hide)
         self.row_follow.hide()
 
+        self.row_disk_next = QWidget()
+        disk_row = QHBoxLayout(self.row_disk_next)
+        disk_row.setContentsMargins(0, 0, 0, 0)
+        disk_row.setSpacing(8)
+        self.lbl_disk_next = _plain_label("#c7d2fe")
+        self.btn_disk_next = QPushButton("Mở xem trước")
+        self.btn_disk_next.setStyleSheet(_BTN_STYLE)
+        self.btn_disk_next.setToolTip("Mở quét ổ C xem trước. Mình không tự xóa và không xin Admin.")
+        self.btn_disk_next.clicked.connect(self._activate_disk_next)
+        self.btn_disk_next_hide = QPushButton("Ẩn")
+        self.btn_disk_next_hide.setStyleSheet(_BTN_STYLE)
+        self.btn_disk_next_hide.setToolTip("Ẩn gợi ý này. Mình không tự dọn.")
+        self.btn_disk_next_hide.clicked.connect(self._dismiss_disk_next)
+        disk_row.addWidget(self.lbl_disk_next, stretch=1)
+        disk_row.addWidget(self.btn_disk_next)
+        disk_row.addWidget(self.btn_disk_next_hide)
+        self.row_disk_next.hide()
+        self._disk_next_key = ""
+
+        self.row_learn = QWidget()
+        learn_row = QHBoxLayout(self.row_learn)
+        learn_row.setContentsMargins(0, 0, 0, 0)
+        learn_row.setSpacing(8)
+        self.lbl_learn = _plain_label("#ddd6fe")
+        self.btn_learn_hide = QPushButton("Ẩn")
+        self.btn_learn_hide.setStyleSheet(_BTN_STYLE)
+        self.btn_learn_hide.setToolTip("Ẩn dòng hôm qua. Mình không nhắc lại hôm nay.")
+        self.btn_learn_hide.clicked.connect(self._dismiss_learn_line)
+        learn_row.addWidget(self.lbl_learn, stretch=1)
+        learn_row.addWidget(self.btn_learn_hide)
+        self.row_learn.hide()
+
         self.row_eod = QWidget()
         eod_row = QHBoxLayout(self.row_eod)
         eod_row.setContentsMargins(0, 0, 0, 0)
@@ -354,14 +399,34 @@ class CompanionInsightBar(QFrame):
         row.addWidget(self.btn_dismiss)
         self.row_insight.hide()
 
+        self.row_skill_tap = QWidget()
+        skill_tap_row = QHBoxLayout(self.row_skill_tap)
+        skill_tap_row.setContentsMargins(0, 0, 0, 0)
+        skill_tap_row.setSpacing(8)
+        self.lbl_skill_tap = _plain_label("#e0e7ff")
+        self.btn_skill_tap = QPushButton("")
+        self.btn_skill_tap.setStyleSheet(_BTN_STYLE)
+        self.btn_skill_tap.setToolTip("Xác nhận một việc an toàn đã lưu. Mình không tự chạy.")
+        self.btn_skill_tap.clicked.connect(self._activate_skill_tap)
+        self.btn_skill_tap.hide()
+        skill_tap_row.addWidget(self.lbl_skill_tap, stretch=1)
+        skill_tap_row.addWidget(self.btn_skill_tap)
+        self.row_skill_tap.hide()
+        self._skill_tap_key = ""
+        self._skill_tap_id = ""
+
         root.addWidget(self.row_stage)
+        root.addWidget(self.row_growth_moment)
         root.addWidget(self.row_milestone)
         root.addWidget(self.row_week)
         root.addWidget(self.row_pins)
         root.addWidget(self.row_checkin)
         root.addWidget(self.row_follow)
+        root.addWidget(self.row_disk_next)
+        root.addWidget(self.row_learn)
         root.addWidget(self.row_eod)
         root.addWidget(self.row_conflict)
+        root.addWidget(self.row_skill_tap)
         root.addWidget(self.row_insight)
 
         self.lbl_learned_today = QLabel("")
@@ -407,26 +472,34 @@ class CompanionInsightBar(QFrame):
                 pass
         self._show_growth(enabled)
         self._show_stage(enabled)
+        self._show_growth_moment(enabled)
         self._show_milestone(enabled)
         self._show_week(enabled)
         self._show_pins(enabled)
         self._show_checkin(enabled)
         self._show_followup(enabled)
+        self._show_disk_next(enabled)
+        self._show_learn_line(enabled)
         self._show_eod(enabled)
         self._show_conflict(enabled)
         self._show_insight(enabled)
+        self._show_skill_tap(enabled)
         self._show_learned_today(enabled)
         self._show_model(enabled)
         # isVisible() is false while this frame is hidden, so decide from the text.
         labels = (
             self.lbl_stage,
+            self.lbl_growth_moment,
             self.lbl_milestone,
             self.lbl_week,
             self.lbl_pins,
             self.lbl_checkin,
             self.lbl_follow,
+            self.lbl_disk_next,
+            self.lbl_learn,
             self.lbl_eod,
             self.lbl_conflict,
+            self.lbl_skill_tap,
             self.lbl_insight,
             self.lbl_learned_today,
             self.lbl_model,
@@ -470,6 +543,30 @@ class CompanionInsightBar(QFrame):
             return
         self.lbl_stage.setText(text)
         self.row_stage.show()
+
+    def _show_growth_moment(self, enabled: bool):
+        self.lbl_growth_moment.setText("")
+        self.row_growth_moment.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_learning import sync_growth_moment
+            payload = sync_growth_moment(config_manager=self.config_manager)
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("text") or "").strip()
+        if not text:
+            return
+        self.lbl_growth_moment.setText(text)
+        self.row_growth_moment.show()
+
+    def _dismiss_growth_moment(self):
+        try:
+            from core.companion_learning import dismiss_growth_moment
+            dismiss_growth_moment()
+        except Exception:
+            pass
+        self.refresh()
 
     def _show_milestone(self, enabled: bool):
         self.lbl_milestone.setText("")
@@ -543,6 +640,103 @@ class CompanionInsightBar(QFrame):
         self.lbl_follow.setText(text)
         self._refresh_pin_button(self.btn_follow_pin, self._follow_action)
         self.row_follow.show()
+
+    def _show_disk_next(self, enabled: bool):
+        self.lbl_disk_next.setText("")
+        self._disk_next_key = ""
+        self.row_disk_next.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_moment import due_disk_next
+            payload = due_disk_next(config_manager=self.config_manager)
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("text") or "").strip()
+        key = str((payload or {}).get("action_key") or "")
+        if not text or key != "preview_c_drive":
+            return
+        self._disk_next_key = key
+        self.lbl_disk_next.setText(text)
+        self.btn_disk_next.setText(str((payload or {}).get("label_vi") or "Mở xem trước"))
+        self.row_disk_next.show()
+
+    def _activate_disk_next(self):
+        key = str(self._disk_next_key or "")
+        try:
+            from core.companion_moment import dismiss_disk_next
+            dismiss_disk_next()
+        except Exception:
+            pass
+        self._emit_allowed(key, "")
+
+    def _dismiss_disk_next(self):
+        try:
+            from core.companion_moment import dismiss_disk_next
+            dismiss_disk_next()
+        except Exception:
+            pass
+        self.refresh()
+
+    def _show_learn_line(self, enabled: bool):
+        self.lbl_learn.setText("")
+        self.row_learn.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_moment import sync_learn_line
+            payload = sync_learn_line(config_manager=self.config_manager)
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("text") or "").strip()
+        if not text.startswith("Hôm qua mình học được"):
+            return
+        self.lbl_learn.setText(text)
+        self.row_learn.show()
+
+    def _dismiss_learn_line(self):
+        try:
+            from core.companion_moment import dismiss_learn_line
+            dismiss_learn_line()
+        except Exception:
+            pass
+        self.refresh()
+
+    def _show_skill_tap(self, enabled: bool):
+        self.lbl_skill_tap.setText("")
+        self._skill_tap_key = ""
+        self._skill_tap_id = ""
+        self.btn_skill_tap.hide()
+        self.row_skill_tap.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_learning import saved_skill_one_tap
+            payload = saved_skill_one_tap(config_manager=self.config_manager)
+        except Exception:
+            payload = None
+        key = str((payload or {}).get("action_key") or "")
+        label = str((payload or {}).get("label_vi") or "")
+        text = str((payload or {}).get("text") or "").strip()
+        if not key or not label or not text:
+            return
+        if key == self._action_key and not self.btn_action.isHidden():
+            return
+        try:
+            from core.companion_moment import is_allowed_insight_action
+            if not is_allowed_insight_action(key):
+                return
+        except Exception:
+            return
+        self._skill_tap_key = key
+        self._skill_tap_id = str((payload or {}).get("skill_id") or "")
+        self.lbl_skill_tap.setText(text)
+        self.btn_skill_tap.setText(label)
+        self.btn_skill_tap.show()
+        self.row_skill_tap.show()
+
+    def _activate_skill_tap(self):
+        self._emit_allowed(self._skill_tap_key, self._skill_tap_id)
 
     def _show_eod(self, enabled: bool):
         self.lbl_eod.setText("")
@@ -1386,6 +1580,14 @@ class CompanionCard(QFrame):
         else:
             self.lbl_diary.setText(digest)
         offer = pending_skill_offer()
+        quiet_now = False
+        try:
+            from core.companion_profile import in_quiet_hours
+            quiet_now = bool(in_quiet_hours())
+        except Exception:
+            quiet_now = False
+        if offer and quiet_now:
+            offer = None
         if offer:
             message = " ".join(str(offer.get("message_vi") or "").split())
             if not message:

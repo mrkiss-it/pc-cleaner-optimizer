@@ -3826,4 +3826,435 @@ check(growth_bar.isHidden() or growth_bar.lbl_growth.text().startswith("Trí nh�
 growth_bar.deleteLater()
 print(" [PASS] phase 3 feedback / mute / growth")
 
+# ---------------------------------------------------------------------------
+# Phase 4 — saved-skill confirm tap, Trí nhớ moments, day note, disk next step
+# ---------------------------------------------------------------------------
+
+from core.companion_learning import (
+    SAVED_SKILL_TAP,
+    dismiss_growth_moment,
+    load_daily_model,
+    saved_skill_one_tap,
+    sync_growth_moment,
+    update_daily_model,
+)
+from core.companion_moment import (
+    dismiss_disk_next,
+    due_disk_next,
+    sync_day_note,
+    sync_learn_line,
+)
+from core.companion_profile import mute_topic, quiet_hours_settings, set_quiet_hours, topic_is_muted
+from core.exam_focus import ExamMeetingFocus
+
+check(APP_VERSION == "3.8.6", "phase 4 does not bump APP_VERSION")
+check(quiet_hours_settings(base_dir=_fresh_dir())["enabled"] is False, "quiet hours stay opt-in")
+check(quiet_hours_settings(base_dir=_fresh_dir())["start"] == "23:00", "existing quiet start stays 23:00")
+check(quiet_hours_settings(base_dir=_fresh_dir())["end"] == "07:00", "existing quiet end stays 07:00")
+check(set(SAVED_SKILL_TAP) == {"disk_low", "focus"}, "only disk and focus skills map to a confirm tap")
+check(SAVED_SKILL_TAP["disk_low"] == "preview_c_drive", "a saved disk skill maps to preview, not a delete")
+check(SAVED_SKILL_TAP["focus"] == "enable_exam_focus", "a saved focus skill maps to Trước thi / họp")
+
+phase4_day = datetime(2026, 9, 24, 11, 0, 0)
+
+
+def _trusted_model(topic: str, helpful: int = 3, day: str = "2026-09-24") -> dict:
+    return {
+        "version": 2,
+        "date": day,
+        "topic_scores": {
+            topic: {
+                "helpful": helpful,
+                "unhelpful": 0,
+                "diary": 1,
+                "last_signal": day,
+            },
+        },
+    }
+
+
+tap_skill = _fresh_dir()
+check(saved_skill_one_tap(base_dir=tap_skill, now=phase4_day, config_manager=_Cfg()) is None, "no saved skill means no Phase 4 tap")
+save_daily_model(_trusted_model("disk"), base_dir=tap_skill)
+save_skill("disk_low", hit_count=3, base_dir=tap_skill)
+disk_skill_tap = saved_skill_one_tap(base_dir=tap_skill, now=phase4_day, config_manager=_Cfg())
+check(disk_skill_tap and disk_skill_tap.get("action_key") == "preview_c_drive", "a trusted saved disk skill offers C: preview")
+check(disk_skill_tap.get("action_key") != "clean_light", "the saved disk skill does not one-tap Dọn nhẹ")
+check(disk_skill_tap.get("action_key") not in BLOCKED_ACTION_KEYS, "the saved-skill tap stays off the block list")
+check("không tự xóa" in disk_skill_tap.get("text", ""), "the disk tap says it will not delete")
+check(ExamMeetingFocus.is_active() is False, "offering the disk tap does not enable Trước thi / họp")
+
+weak_disk = _fresh_dir()
+save_daily_model(
+    {
+        "version": 2,
+        "date": "2026-09-24",
+        "topic_scores": {
+            "disk": {"helpful": 0, "unhelpful": 4, "diary": 1, "last_signal": "2026-09-24"},
+        },
+    },
+    base_dir=weak_disk,
+)
+save_skill("disk_low", base_dir=weak_disk)
+check(saved_skill_one_tap(base_dir=weak_disk, now=phase4_day, config_manager=_Cfg()) is None, "a Chưa-heavy disk skill does not get a tap")
+
+muted_disk = _fresh_dir()
+save_daily_model(_trusted_model("disk"), base_dir=muted_disk)
+save_skill("disk_low", base_dir=muted_disk)
+mute_topic("disk", base_dir=muted_disk, now=phase4_day)
+check(saved_skill_one_tap(base_dir=muted_disk, now=phase4_day, config_manager=_Cfg()) is None, "a muted disk skill does not get a tap")
+
+other_skill = _fresh_dir()
+save_daily_model(_trusted_model("ram"), base_dir=other_skill)
+save_skill("high_ram", base_dir=other_skill)
+save_skill("wifi_weak", base_dir=other_skill)
+check(saved_skill_one_tap(base_dir=other_skill, now=phase4_day, config_manager=_Cfg()) is None, "RAM and Wi-Fi skills are not given a new tap")
+
+focus_skill_root = _fresh_dir()
+save_daily_model(_trusted_model("focus"), base_dir=focus_skill_root)
+save_skill("focus", base_dir=focus_skill_root)
+focus_skill_tap = saved_skill_one_tap(base_dir=focus_skill_root, now=phase4_day, config_manager=_Cfg())
+check(focus_skill_tap and focus_skill_tap.get("action_key") == "enable_exam_focus", "a trusted focus skill offers Trước thi / họp")
+focus_follow = schedule_action_followup(
+    focus_skill_tap["action_key"],
+    skill_id=focus_skill_tap.get("skill_id") or "",
+    now=phase4_day,
+    base_dir=focus_skill_root,
+    config_manager=_Cfg(),
+)
+check(focus_follow and "Trước thi" in focus_follow.get("question_vi", ""), "the focus tap reuses the Có ích question")
+check(ExamMeetingFocus.is_active() is False, "scheduling the focus question does not turn the mode on")
+try:
+    ExamMeetingFocus._is_active = True
+    check(
+        saved_skill_one_tap(base_dir=tap_skill, now=phase4_day, config_manager=_Cfg()) is None,
+        "an open Trước thi / họp session hides the saved-skill tap",
+    )
+finally:
+    ExamMeetingFocus._is_active = False
+
+quiet_tap = _fresh_dir()
+save_daily_model(_trusted_model("disk"), base_dir=quiet_tap)
+save_skill("disk_low", base_dir=quiet_tap)
+set_quiet_hours(True, base_dir=quiet_tap)
+check(
+    saved_skill_one_tap(base_dir=quiet_tap, now=datetime(2026, 9, 24, 23, 30), config_manager=_Cfg()) is None,
+    "quiet hours hide the saved-skill tap",
+)
+check(load_skills(quiet_tap), "hiding the tap does not delete the skill")
+set_quiet_hours(True, allow_actions=True, base_dir=quiet_tap)
+check(
+    saved_skill_one_tap(base_dir=quiet_tap, now=datetime(2026, 9, 24, 23, 30), config_manager=_Cfg()),
+    "opt-in actions keep the confirm tap during quiet hours",
+)
+set_quiet_hours(False, base_dir=quiet_tap)
+
+preview_again = note_one_tap_outcome(
+    "preview_c_drive",
+    topic="disk",
+    bytes_found=4096,
+    target_count=1,
+    label_vi="4 KB",
+    now=phase4_day,
+    base_dir=tap_skill,
+    config_manager=_Cfg(),
+)
+check(preview_again and preview_again.get("asked") is True, "the saved-skill preview still asks Có ích after a real result")
+check(
+    schedule_action_followup("preview_c_drive", now=phase4_day, base_dir=_fresh_dir(), config_manager=_Cfg()) is None,
+    "the preview tap still waits for a finished result",
+)
+
+grow_root = _fresh_dir()
+check(sync_growth_moment(now=phase4_day, base_dir=grow_root, config_manager=_Cfg()) is None, "the first look only records the Trí nhớ baseline")
+check(load_daily_model(grow_root).get("growth_stage_seen") == 0, "baseline stage is 0")
+check(load_daily_model(grow_root).get("first_skill_seen") is False, "baseline has no skill yet")
+for _ in range(2):
+    note_user_feedback(True, note="Có ích.", base_dir=grow_root, now=phase4_day, topic="wifi", config_manager=_Cfg())
+heard_moment = sync_growth_moment(now=phase4_day, base_dir=grow_root, config_manager=_Cfg())
+check(heard_moment and heard_moment.get("id") == "growth_1", "2 Có ích crosses Trí nhớ 0→1")
+check("Đang nghe" in (heard_moment.get("text") or ""), "the 0→1 line names Đang nghe")
+check("lên giai đoạn" not in (heard_moment.get("text") or ""), "the Trí nhớ line is not the day-based stage banner")
+check(
+    sync_growth_moment(now=phase4_day.replace(hour=15), base_dir=grow_root, config_manager=_Cfg()).get("id") == "growth_1",
+    "the same crossing does not stack a second line that day",
+)
+dismiss_growth_moment(base_dir=grow_root, now=phase4_day.replace(hour=16))
+check(sync_growth_moment(now=phase4_day.replace(hour=17), base_dir=grow_root, config_manager=_Cfg()) is None, "Đã rõ keeps the crossing shown")
+check(
+    sync_growth_moment(now=phase4_day + timedelta(days=1), base_dir=grow_root, config_manager=_Cfg()) is None,
+    "growth_1 does not fire again the next day",
+)
+kept_growth = update_daily_model(now=phase4_day, base_dir=grow_root, force=True)
+check("growth_1" in (kept_growth.get("shown_growth_ids") or []), "a rebuild keeps the shown Trí nhớ id")
+
+upgrade_root = _fresh_dir()
+save_daily_model(_trusted_model("wifi", helpful=6), base_dir=upgrade_root)
+check(sync_growth_moment(now=phase4_day, base_dir=upgrade_root, config_manager=_Cfg()) is None, "an existing Trí nhớ stage is not celebrated on upgrade")
+check(load_daily_model(upgrade_root).get("growth_stage_seen") == 2, "upgrade records the stage already reached")
+check(not load_daily_model(upgrade_root).get("shown_growth_ids"), "upgrade does not mark a celebration shown")
+
+skill_moment = _fresh_dir()
+check(sync_growth_moment(now=phase4_day, base_dir=skill_moment, config_manager=_Cfg()) is None, "skill baseline is quiet")
+save_skill("focus", base_dir=skill_moment)
+first_skill_line = sync_growth_moment(now=phase4_day, base_dir=skill_moment, config_manager=_Cfg())
+check(first_skill_line and first_skill_line.get("id") == "first_skill", "the first saved skill gets one line")
+check("kỹ năng đầu tiên" in (first_skill_line.get("text") or ""), "the first-skill line is friendly Vietnamese")
+dismiss_growth_moment(base_dir=skill_moment, now=phase4_day)
+check(
+    sync_growth_moment(now=phase4_day + timedelta(days=2), base_dir=skill_moment, config_manager=_Cfg()) is None,
+    "the first-skill line does not return",
+)
+already_skilled = _fresh_dir()
+save_skill("disk_low", base_dir=already_skilled)
+check(sync_growth_moment(now=phase4_day, base_dir=already_skilled, config_manager=_Cfg()) is None, "a skill that was already saved is not celebrated on upgrade")
+
+quiet_moment = _fresh_dir()
+sync_growth_moment(now=phase4_day, base_dir=quiet_moment, config_manager=_Cfg())
+for _ in range(2):
+    note_user_feedback(True, note="Có ích.", base_dir=quiet_moment, now=phase4_day, topic="wifi", config_manager=_Cfg())
+set_quiet_hours(True, base_dir=quiet_moment)
+check(
+    sync_growth_moment(now=datetime(2026, 9, 24, 23, 20), base_dir=quiet_moment, config_manager=_Cfg()) is None,
+    "quiet hours hold the Trí nhớ line",
+)
+check("growth_1" not in (load_daily_model(quiet_moment).get("shown_growth_ids") or []), "a held Trí nhớ line is not marked shown")
+check("growth_1" in (load_daily_model(quiet_moment).get("growth_queue") or []), "the crossing waits in the queue")
+set_quiet_hours(False, base_dir=quiet_moment)
+after_quiet = sync_growth_moment(now=phase4_day.replace(hour=10), base_dir=quiet_moment, config_manager=_Cfg())
+check(after_quiet and after_quiet.get("id") == "growth_1", "the Trí nhớ line shows once quiet hours end")
+
+focus_hold = _fresh_dir()
+sync_growth_moment(now=phase4_day, base_dir=focus_hold, config_manager=_Cfg())
+save_skill("focus", base_dir=focus_hold)
+try:
+    ExamMeetingFocus._is_active = True
+    check(
+        sync_growth_moment(now=phase4_day, base_dir=focus_hold, config_manager=_Cfg()) is None,
+        "Trước thi / họp holds the first-skill line",
+    )
+    check("first_skill" not in (load_daily_model(focus_hold).get("shown_growth_ids") or []), "a held first-skill line is not shown yet")
+finally:
+    ExamMeetingFocus._is_active = False
+check(
+    sync_growth_moment(now=phase4_day, base_dir=focus_hold, config_manager=_Cfg()).get("id") == "first_skill",
+    "the first-skill line shows after Trước thi / họp",
+)
+
+journal_root = _fresh_dir()
+journal_evening = datetime(2026, 9, 23, 19, 0, 0)
+note_user_feedback(True, note="Có ích.", base_dir=journal_root, now=journal_evening, topic="disk", config_manager=_Cfg())
+note_user_feedback(True, note="Có ích.", base_dir=journal_root, now=journal_evening.replace(minute=4), topic="disk", config_manager=_Cfg())
+note_user_feedback(False, base_dir=journal_root, now=journal_evening.replace(minute=8), topic="wifi", config_manager=_Cfg())
+record_app_event(
+    "skill_saved",
+    "Đã lưu kỹ năng: ổ C",
+    now=journal_evening,
+    base_dir=journal_root,
+    config_manager=_Cfg(),
+    coalesce=False,
+)
+record_app_event(
+    "suggestion_rejected",
+    "Người dùng bỏ qua kỹ năng: RAM",
+    now=journal_evening.replace(minute=20),
+    base_dir=journal_root,
+    config_manager=_Cfg(),
+    outcome="rejected",
+    tags=["suggestion", "high_ram"],
+    coalesce=False,
+)
+mute_topic("thermal", base_dir=journal_root, now=journal_evening)
+set_quiet_hours(True, base_dir=journal_root)
+written = sync_day_note(now=journal_evening.replace(hour=23, minute=30), base_dir=journal_root, config_manager=_Cfg())
+check(written and written.get("kind") == "reflection", "quiet hours still write the day note")
+check("day_note" in (written.get("tags") or []), "the day note is tagged")
+summary = str(written.get("summary") or "")
+check("2 Có ích" in summary and "1 Chưa" in summary, "the day note counts Có ích and Chưa")
+check("Đã lưu 1 kỹ năng" in summary, "the day note mentions a saved skill")
+check("bỏ qua 1" in summary, "the day note mentions a declined skill")
+check("dọn máy" in summary, "the day note names the top topic")
+check("2 chủ đề đang im" in summary, "the day note counts muted topics, including the Chưa soft-mute")
+again_note = sync_day_note(now=journal_evening.replace(hour=21), base_dir=journal_root, config_manager=_Cfg())
+notes = [
+    event for event in read_events(base_dir=journal_root, limit=0, kinds=["reflection"])
+    if "day_note" in (event.get("tags") or [])
+]
+check(len(notes) == 1, "the day note is written once")
+check(again_note and again_note.get("ts") == written.get("ts"), "a second evening open reuses the same note")
+set_quiet_hours(False, base_dir=journal_root)
+morning = datetime(2026, 9, 24, 8, 30, 0)
+save_daily_model(
+    {
+        "version": 2,
+        "date": "2026-09-24",
+        "yesterday_topic": "disk",
+        "yesterday_lesson": "dọn máy hay được Có ích",
+        "yesterday_vi": "Hôm qua mình học từ máy này: dọn máy hay được Có ích.",
+    },
+    base_dir=journal_root,
+)
+check(sync_learn_line(now=morning, base_dir=journal_root, config_manager=_Cfg()) is None, "the new line yields when the morning lesson already speaks")
+check(not load_daily_model(journal_root).get("learn_line_day"), "yielding does not consume the day")
+save_daily_model({"version": 2, "date": "2026-09-24"}, base_dir=journal_root)
+mute_topic("disk", base_dir=journal_root, now=morning)
+learned = sync_learn_line(now=morning, base_dir=journal_root, config_manager=_Cfg())
+check(learned and str(learned.get("text") or "").startswith("Hôm qua mình học được"), "the next morning can say what was learned")
+check("dọn" not in (learned.get("text") or "").lower(), "a muted topic is left out of the morning line")
+check("2 Có ích" in (learned.get("text") or ""), "the line still counts yesterday's Có ích")
+set_quiet_hours(True, base_dir=journal_root)
+check(
+    sync_learn_line(now=datetime(2026, 9, 24, 23, 10), base_dir=journal_root, config_manager=_Cfg()) is None,
+    "quiet hours hide the học được line",
+)
+set_quiet_hours(False, base_dir=journal_root)
+check(
+    sync_learn_line(now=morning.replace(hour=9), base_dir=journal_root, config_manager=_Cfg()).get("text") == learned.get("text"),
+    "the học được line stays the same that day",
+)
+
+missed = _fresh_dir()
+missed_evening = datetime(2026, 9, 22, 18, 30, 0)
+note_user_feedback(True, note="Có ích.", base_dir=missed, now=missed_evening, topic="wifi", config_manager=_Cfg())
+backfill = sync_day_note(now=datetime(2026, 9, 23, 9, 0, 0), base_dir=missed, config_manager=_Cfg())
+check(backfill and str(backfill.get("ts") or "").startswith("2026-09-22"), "a missed evening is written on the next open")
+check(
+    not any(str(event.get("ts") or "").startswith("2026-09-23") and "day_note" in (event.get("tags") or [])
+            for event in read_events(base_dir=missed, limit=0, kinds=["reflection"])),
+    "the morning open does not invent a note for the new day",
+)
+empty_journal = _fresh_dir()
+check(sync_day_note(now=datetime(2026, 9, 23, 20, 0), base_dir=empty_journal, config_manager=_Cfg()) is None, "an empty day does not get a journal line")
+
+small_preview = _fresh_dir()
+note_one_tap_outcome(
+    "preview_c_drive",
+    topic="disk",
+    bytes_found=10 * 1024 * 1024,
+    target_count=1,
+    label_vi="10 MB",
+    now=phase4_day,
+    base_dir=small_preview,
+    config_manager=_Cfg(),
+)
+answer_action_followup(True, now=phase4_day, base_dir=small_preview, config_manager=_Cfg())
+check(due_disk_next(now=phase4_day, base_dir=small_preview, config_manager=_Cfg()) is None, "a small preview does not offer a next step")
+
+big_preview = _fresh_dir()
+note_one_tap_outcome(
+    "preview_c_drive",
+    topic="disk",
+    bytes_found=80 * 1024 * 1024,
+    target_count=3,
+    label_vi="80 MB",
+    now=phase4_day,
+    base_dir=big_preview,
+    config_manager=_Cfg(),
+)
+answer_action_followup(False, now=phase4_day, base_dir=big_preview, config_manager=_Cfg())
+check(due_disk_next(now=phase4_day, base_dir=big_preview, config_manager=_Cfg()) is None, "Chưa does not offer a clean next step")
+
+useful_preview = _fresh_dir()
+note_one_tap_outcome(
+    "preview_c_drive",
+    topic="disk",
+    bytes_found=80 * 1024 * 1024,
+    target_count=3,
+    label_vi="80 MB",
+    now=phase4_day,
+    base_dir=useful_preview,
+    config_manager=_Cfg(),
+)
+answer_action_followup(True, now=phase4_day, base_dir=useful_preview, config_manager=_Cfg())
+nxt = due_disk_next(now=phase4_day, base_dir=useful_preview, config_manager=_Cfg())
+check(nxt and nxt.get("action_key") == "preview_c_drive", "Có ích points at the existing preview flow")
+check("80 MB" in (nxt.get("text") or ""), "the next step names the reclaimable size")
+check("không tự xóa" in (nxt.get("text") or "") and "Admin" in (nxt.get("text") or ""), "the next step refuses auto-clean and Admin")
+check(nxt.get("action_key") not in BLOCKED_ACTION_KEYS, "the next step is not a blocked cleaner")
+check(ExamMeetingFocus.is_active() is False, "the next step does not enable Trước thi / họp")
+set_quiet_hours(True, base_dir=useful_preview)
+check(
+    due_disk_next(now=datetime(2026, 9, 24, 23, 40), base_dir=useful_preview, config_manager=_Cfg()) is None,
+    "quiet hours hide the disk next step",
+)
+check(load_state(useful_preview).get("pending_disk_next"), "quiet hours keep the next step pending")
+set_quiet_hours(False, base_dir=useful_preview)
+check(due_disk_next(now=phase4_day, base_dir=useful_preview, config_manager=_Cfg()), "the next step returns after quiet hours")
+mute_topic("disk", base_dir=useful_preview, now=phase4_day)
+check(due_disk_next(now=phase4_day, base_dir=useful_preview, config_manager=_Cfg()) is None, "muting disk drops the next step")
+check(not load_state(useful_preview).get("pending_disk_next"), "a muted disk next step is not kept")
+check(topic_is_muted("disk", base_dir=useful_preview, now=phase4_day), "the mute itself stays")
+
+once_more = _fresh_dir()
+note_one_tap_outcome(
+    "preview_c_drive",
+    topic="disk",
+    bytes_found=80 * 1024 * 1024,
+    target_count=2,
+    label_vi="80 MB",
+    now=phase4_day,
+    base_dir=once_more,
+    config_manager=_Cfg(),
+)
+answer_action_followup(True, now=phase4_day, base_dir=once_more, config_manager=_Cfg())
+dismiss_disk_next(base_dir=once_more, now=phase4_day)
+check(due_disk_next(now=phase4_day, base_dir=once_more, config_manager=_Cfg()) is None, "Ẩn retires that next step")
+
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = tap_skill
+skill_bar = CompanionInsightBar(config_manager=_Cfg())
+skill_bar.refresh()
+check(not skill_bar.btn_skill_tap.isHidden(), "the companion card shows the saved-skill tap")
+check(skill_bar.btn_skill_tap.text() == "Quét ổ C (xem trước)", "the tap uses the existing preview label")
+skill_fired = []
+skill_bar.action_requested.connect(lambda key: skill_fired.append(key))
+skill_bar.btn_skill_tap.click()
+check(skill_fired == ["preview_c_drive"], "the tap emits the existing preview action")
+check(ExamMeetingFocus.is_active() is False, "clicking the tap does not enable Trước thi / họp")
+skill_bar.deleteLater()
+
+moment_ui = _fresh_dir()
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = moment_ui
+sync_growth_moment(now=datetime.now().replace(microsecond=0), base_dir=moment_ui, config_manager=_Cfg())
+for _ in range(2):
+    note_user_feedback(
+        True,
+        note="Có ích.",
+        base_dir=moment_ui,
+        now=datetime.now().replace(microsecond=0),
+        topic="wifi",
+        config_manager=_Cfg(),
+    )
+moment_bar = CompanionInsightBar(config_manager=_Cfg())
+moment_bar.refresh()
+check(moment_bar.lbl_growth_moment.text().startswith("Trí nhớ vừa sang"), "the card shows one Trí nhớ line")
+moment_bar.btn_growth_moment_ok.click()
+check(moment_bar.lbl_growth_moment.text() == "", "Đã rõ clears the Trí nhớ line")
+moment_bar.deleteLater()
+
+offer_ui = _fresh_dir()
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = offer_ui
+offer_state = load_state(offer_ui)
+offer_state["pending_skill_offer"] = {
+    "issue_class": "wifi_weak",
+    "title": "Wi-Fi yếu",
+    "message_vi": "Lưu thành kỹ năng trên máy này?",
+    "hit_count": 3,
+    "action_key": "repair_network_now",
+    "source": "repeat",
+}
+save_state(offer_state, base_dir=offer_ui)
+offer_card = CompanionCard(config_manager=_Cfg(), compact=False)
+offer_card.refresh()
+check(not offer_card.btn_save_skill.isHidden(), "the skill offer is visible outside quiet hours")
+set_quiet_hours(True, start="00:00", end="23:59", base_dir=offer_ui)
+offer_card.refresh()
+check(offer_card.btn_save_skill.isHidden(), "quiet hours hide the promote-skill offer")
+check(pending_skill_offer(base_dir=offer_ui) is not None, "quiet hours keep the offer for later")
+set_quiet_hours(False, base_dir=offer_ui)
+offer_card.refresh()
+check(not offer_card.btn_save_skill.isHidden(), "the skill offer returns after quiet hours")
+offer_card.deleteLater()
+
+print(" [PASS] phase 4 skill tap / trí nhớ / day note / disk next")
+
 print(" [PASS] companion AI suite")
