@@ -35,10 +35,16 @@ from config_manager import DEFAULT_CONFIG
 from core.c_drive_clean import (
     ADMIN_DEEP_DISABLED_VI,
     ADMIN_SKIP_REASON_VI,
+    DEFAULT_MIN_CLEAN_MB,
     SYNC_ROOT_REASON_VI,
     LowDiskToastGate,
     TARGET_CATALOG,
+    TARGET_GROUPS,
     TARGET_ORDER,
+    category_offered_by_default,
+    format_scan_preview_vi,
+    normalize_min_clean_mb,
+    preview_rows_for_display,
     append_clean_history,
     build_low_disk_notice,
     build_target_paths,
@@ -1691,6 +1697,360 @@ def test_chat_gpu_launcher_and_empty_folders_do_not_double_count():
         shutil.rmtree(basic_root, ignore_errors=True)
 
 
+def test_v5_caches_groups_sort_and_min_size_filter():
+    """Cache Adobe/TikTok/Viber/Teams/Blender/Unity, nhóm, xếp size, ngưỡng Dọn ngay."""
+    grouped = [key for _group_id, _label, keys in TARGET_GROUPS for key in keys]
+    assert len(grouped) == len(set(grouped)) == len(TARGET_ORDER)
+    assert set(grouped) == set(TARGET_ORDER)
+    labels = [label for _group_id, label, _keys in TARGET_GROUPS]
+    for expected in ("Trình duyệt & Web", "Chat", "GPU & Game", "Công cụ lập trình", "Khác"):
+        assert expected in labels
+    assert DEFAULT_CONFIG["c_drive_min_clean_mb"] == DEFAULT_MIN_CLEAN_MB == 10
+    assert normalize_min_clean_mb(None) == 10
+    assert normalize_min_clean_mb("nope") == 10
+    assert normalize_min_clean_mb(-3) == 10
+    assert normalize_min_clean_mb(0) == 0
+    assert normalize_min_clean_mb(99999) == 10240
+
+    for key, enabled in (
+        ("adobe_caches", False),
+        ("tiktok_cache", True),
+        ("viber_cache", True),
+        ("teams_cache", True),
+        ("blender_caches", False),
+        ("unity_caches", False),
+    ):
+        assert TARGET_CATALOG[key]["needs_admin"] is False
+        assert TARGET_CATALOG[key]["default_enabled"] is enabled
+        assert DEFAULT_CONFIG["targets"][key] is enabled
+        assert "tắt mặc định" in TARGET_CATALOG[key]["label_vi"] or enabled
+
+    small = {
+        "key": "tiktok_cache",
+        "status": "ready",
+        "reclaimable_bytes": 1024,
+        "reclaimable_files": 1,
+    }
+    large = {
+        "key": "adobe_caches",
+        "status": "ready",
+        "reclaimable_bytes": 11 * 1024 * 1024,
+        "reclaimable_files": 2,
+    }
+    assert category_offered_by_default(large, 10) is True
+    assert category_offered_by_default(small, 10) is False
+    assert category_offered_by_default(small, 0) is True
+    assert category_offered_by_default(
+        {"key": "component_cleanup", "status": "ready", "reclaimable_bytes": 0, "reclaimable_files": 0},
+        10,
+    ) is True
+    assert category_offered_by_default({"key": "user_temp", "status": "skipped", "reclaimable_bytes": 999999}, 0) is False
+
+    preview = format_scan_preview_vi({
+        "total_bytes": 500,
+        "total_files": 3,
+        "is_admin": False,
+        "deep_admin": False,
+        "targets": [
+            {
+                "key": "browser_cache",
+                "name": "Bộ nhớ đệm trình duyệt",
+                "group_vi": "Trình duyệt & Web",
+                "status": "ready",
+                "reclaimable_bytes": 100,
+                "reclaimable_files": 1,
+                "size_bytes": 100,
+            },
+            {
+                "key": "zalo_cache",
+                "name": "Cache Zalo",
+                "group_vi": "Chat",
+                "status": "ready",
+                "reclaimable_bytes": 200,
+                "reclaimable_files": 1,
+                "size_bytes": 200,
+            },
+            {
+                "key": "discord_cache",
+                "name": "Cache Discord",
+                "group_vi": "Chat",
+                "status": "ready",
+                "reclaimable_bytes": 200,
+                "reclaimable_files": 1,
+                "size_bytes": 200,
+            },
+        ],
+    })
+    assert preview.find("Cache Discord") < preview.find("Cache Zalo") < preview.find("Bộ nhớ đệm trình duyệt")
+    assert "[Chat]" in preview
+    assert "lớn đến nhỏ" in preview
+    assert "chưa xóa" in preview.lower()
+    ordered = [row["key"] for row in preview_rows_for_display({
+        "targets": [
+            {"key": "b_key", "status": "ready", "reclaimable_bytes": 50, "reclaimable_files": 1, "size_bytes": 50},
+            {"key": "a_key", "status": "ready", "reclaimable_bytes": 50, "reclaimable_files": 1, "size_bytes": 50},
+            {"key": "z_key", "status": "ready", "reclaimable_bytes": 80, "reclaimable_files": 1, "size_bytes": 80},
+        ],
+    })]
+    assert ordered == ["z_key", "a_key", "b_key"]
+
+    root = tempfile.mkdtemp(prefix="pca-v5-")
+    basic_root = tempfile.mkdtemp(prefix="pca-v5-missing-")
+    try:
+        home = os.path.join(root, "Users", "alice")
+        local = os.path.join(home, "AppData", "Local")
+        roaming = os.path.join(home, "AppData", "Roaming")
+        windows = os.path.join(root, "Windows")
+        program_files = os.path.join(root, "Program Files")
+
+        def put(path, payload):
+            _write(path, payload)
+            return path
+
+        files = {
+            "adobe_media": put(os.path.join(local, "Adobe", "Common", "Media Cache", "a.bin"), b"A" * 51),
+            "adobe_files": put(os.path.join(local, "Adobe", "Common", "Media Cache Files", "b.bin"), b"A" * 52),
+            "adobe_peak": put(os.path.join(roaming, "Adobe", "Common", "Peak Files", "c.bin"), b"A" * 53),
+            "adobe_common": put(os.path.join(roaming, "Adobe", "Common", "Cache", "d.bin"), b"A" * 54),
+            "adobe_lib": put(
+                os.path.join(roaming, "Adobe", "Creative Cloud Libraries", "library.bin"),
+                b"L" * 80,
+            ),
+            "adobe_doc": put(os.path.join(home, "Documents", "Adobe", "poster.psd"), b"P" * 90),
+            "adobe_pf": put(
+                os.path.join(program_files, "Adobe", "Common", "Media Cache", "pf.bin"),
+                b"Z" * 70,
+            ),
+            "tiktok": put(os.path.join(local, "TikTok", "Cache", "t.bin"), b"T" * 31),
+            "tiktok_profile": put(
+                os.path.join(local, "TikTok", "User Data", "Default", "Cache", "p.bin"),
+                b"T" * 32,
+            ),
+            "tiktok_idb": put(
+                os.path.join(local, "TikTok", "User Data", "Default", "IndexedDB", "idb.bin"),
+                b"I" * 40,
+            ),
+            "tiktok_ls": put(
+                os.path.join(local, "TikTok", "User Data", "Default", "Local Storage", "leveldb", "a.ldb"),
+                b"S" * 33,
+            ),
+            "capcut": put(os.path.join(local, "CapCut", "User Data", "Cache", "cc.bin"), b"C" * 15),
+            "viber_media": put(os.path.join(roaming, "ViberPC", "8490", "Media Cache", "m.bin"), b"V" * 41),
+            "viber_temp": put(os.path.join(roaming, "ViberPC", "8490", "Temp", "t.bin"), b"V" * 42),
+            "viber_db": put(os.path.join(roaming, "ViberPC", "8490", "viber.db"), b"D" * 120),
+            "viber_root_db": put(os.path.join(roaming, "ViberPC", "viber.db"), b"D" * 60),
+            "teams_classic": put(os.path.join(roaming, "Microsoft", "Teams", "Cache", "c.bin"), b"M" * 21),
+            "teams_idb": put(os.path.join(roaming, "Microsoft", "Teams", "IndexedDB", "idb.bin"), b"I" * 44),
+            "teams_level": put(
+                os.path.join(roaming, "Microsoft", "Teams", "Local Storage", "leveldb", "x.ldb"),
+                b"L" * 28,
+            ),
+            "teams_wv": put(
+                os.path.join(
+                    local, "Packages", "MSTeams_8wekyb3d8bbwe", "LocalCache", "Microsoft",
+                    "MSTeams", "EBWebView", "Default", "Cache", "a.bin",
+                ),
+                b"M" * 22,
+            ),
+            "teams_wv2": put(
+                os.path.join(
+                    local, "Packages", "MSTeams_8wekyb3d8bbwe", "LocalCache", "Microsoft",
+                    "MSTeams", "EBWebView", "WV2Profile_tfw", "GPUCache", "g.bin",
+                ),
+                b"M" * 23,
+            ),
+            "teams_wv_idb": put(
+                os.path.join(
+                    local, "Packages", "MSTeams_8wekyb3d8bbwe", "LocalCache", "Microsoft",
+                    "MSTeams", "EBWebView", "Default", "IndexedDB", "secret.bin",
+                ),
+                b"I" * 55,
+            ),
+            "webview_other": put(
+                os.path.join(local, "Contoso", "Widget", "EBWebView", "Default", "Cache", "w.bin"),
+                b"W" * 11,
+            ),
+            "blend_cache": put(
+                os.path.join(roaming, "Blender Foundation", "Blender", "4.2", "cache", "c.bin"),
+                b"B" * 61,
+            ),
+            "blend_config": put(
+                os.path.join(roaming, "Blender Foundation", "Blender", "4.2", "config", "startup.blend"),
+                b"B" * 48,
+            ),
+            "blend_doc": put(os.path.join(home, "Documents", "scene.blend"), b"B" * 77),
+            "unity_cache": put(os.path.join(local, "Unity", "cache", "pkg.bin"), b"U" * 71),
+            "unity_gi": put(os.path.join(local, "Unity", "Caches", "GiCache", "g.bin"), b"U" * 72),
+            "unity_lib": put(os.path.join(home, "Documents", "MyGame", "Library", "Artifact.bin"), b"U" * 200),
+            "unity_temp": put(os.path.join(home, "Documents", "MyGame", "Temp", "tmp.bin"), b"U" * 88),
+            "unity_asset": put(os.path.join(home, "Documents", "MyGame", "Assets", "hero.fbx"), b"U" * 66),
+            "winsxs": put(os.path.join(windows, "WinSxS", "pending.bin"), b"X" * 40),
+        }
+        env = {
+            "USERPROFILE": home,
+            "LOCALAPPDATA": local,
+            "APPDATA": roaming,
+            "TEMP": os.path.join(local, "Temp"),
+            "SystemRoot": windows,
+        }
+        os.makedirs(env["TEMP"], exist_ok=True)
+        paths = build_target_paths(env)
+        flat = [path for group in paths.values() for path in group]
+        for path in flat:
+            parts = _path_parts(path)
+            assert "winsxs" not in parts
+            assert "system32" not in parts
+            assert "indexeddb" not in parts
+            assert "leveldb" not in parts
+            assert "local storage" not in parts
+            assert "library" not in parts
+            assert "assets" not in parts
+            assert not path_is_forbidden(path)
+            assert not path_is_game_install(path)
+        for key in (
+            "adobe_caches", "tiktok_cache", "viber_cache", "teams_cache",
+            "blender_caches", "unity_caches", "browser_cache", "app_caches",
+        ):
+            assert not any("documents" in _path_parts(path) for path in paths[key]), key
+        assert any(path.endswith(os.path.join("Media Cache")) for path in paths["adobe_caches"])
+        assert any(path.endswith("Peak Files") for path in paths["adobe_caches"])
+        assert any(path.endswith(os.path.join("Common", "Cache")) for path in paths["adobe_caches"])
+        assert not any("creative cloud libraries" in _path_parts(path) for path in flat)
+        assert not any("program files" in _path_parts(path) for path in paths["adobe_caches"])
+        assert any(path.endswith(os.path.join("TikTok", "Cache")) for path in paths["tiktok_cache"])
+        assert any(path.endswith(os.path.join("Default", "Cache")) and "tiktok" in _path_parts(path) for path in paths["tiktok_cache"])
+        assert not any("capcut" in _path_parts(path) for path in paths["tiktok_cache"])
+        assert any("capcut" in _path_parts(path) for path in paths["app_caches"])
+        assert any(path.endswith("Media Cache") and "viberpc" in _path_parts(path) for path in paths["viber_cache"])
+        assert any(path.endswith("Temp") and "viberpc" in _path_parts(path) for path in paths["viber_cache"])
+        assert not any(path.endswith("viber.db") for path in flat)
+        assert any(path.endswith(os.path.join("Teams", "Cache")) for path in paths["teams_cache"])
+        assert any(
+            any(part.startswith("msteams_") for part in _path_parts(path)) and path.endswith("Cache")
+            for path in paths["teams_cache"]
+        )
+        assert any("wv2profile_tfw" in _path_parts(path) and path.endswith("GPUCache") for path in paths["teams_cache"])
+        def _teams_owned(path):
+            parts = _path_parts(path)
+            if any(part.startswith("msteams_") for part in parts):
+                return True
+            return any(
+                part in {"teams", "msteams"} and index > 0 and parts[index - 1] == "microsoft"
+                for index, part in enumerate(parts)
+            )
+        assert not any(_teams_owned(path) for path in paths["browser_cache"])
+        assert not any(_teams_owned(path) for path in paths["app_caches"])
+        assert not any("teams" in _path_parts(path) for path in paths["app_caches"])
+        assert any("contoso" in _path_parts(path) for path in paths["browser_cache"])
+        assert any(path.endswith("cache") and "blender" in _path_parts(path) for path in paths["blender_caches"])
+        assert not any(path.endswith("config") for path in paths["blender_caches"])
+        assert any(path.endswith("cache") and "unity" in _path_parts(path) for path in paths["unity_caches"])
+        assert any(path.endswith("GiCache") for path in paths["unity_caches"])
+        assert not any(path.endswith("Library") or path.endswith("Assets") for path in flat)
+
+        flags = default_target_flags()
+        flags["recycle_bin"] = False
+        flags["downloads_old"] = False
+        plan = resolve_clean_plan(flags, is_admin=False, deep_user_safe=True)
+        assert "teams_cache" in plan["to_run"]
+        assert "tiktok_cache" in plan["to_run"]
+        assert "viber_cache" in plan["to_run"]
+        assert "adobe_caches" not in plan["to_run"]
+        assert "blender_caches" not in plan["to_run"]
+        assert "unity_caches" not in plan["to_run"]
+        scan = estimate_reclaimable(flags, is_admin=False, deep_user_safe=True, environ=env)
+        ready = {row["key"]: row for row in scan["targets"] if row["status"] == "ready"}
+        assert ready["teams_cache"]["reclaimable_bytes"] == 21 + 22 + 23
+        assert ready["tiktok_cache"]["reclaimable_bytes"] == 31 + 32
+        assert ready["viber_cache"]["reclaimable_bytes"] == 41 + 42
+        assert ready["app_caches"]["reclaimable_bytes"] == 15
+        assert ready["browser_cache"]["reclaimable_bytes"] == 11
+        assert "adobe_caches" not in ready
+        default_sum = 21 + 22 + 23 + 31 + 32 + 41 + 42 + 15 + 11
+        assert scan["total_bytes"] == default_sum
+        assert "Cache Microsoft Teams" in scan["preview_vi"] or "Cache TikTok" in scan["preview_vi"]
+        assert os.path.exists(files["adobe_media"])
+        assert os.path.exists(files["teams_wv_idb"])
+
+        opted = dict(flags)
+        opted["adobe_caches"] = True
+        opted["blender_caches"] = True
+        opted["unity_caches"] = True
+        opted_scan = estimate_reclaimable(opted, is_admin=False, deep_user_safe=True, environ=env)
+        opted_ready = {row["key"]: row for row in opted_scan["targets"] if row["status"] == "ready"}
+        assert opted_ready["adobe_caches"]["reclaimable_bytes"] == 51 + 52 + 53 + 54
+        assert opted_ready["blender_caches"]["reclaimable_bytes"] == 61
+        assert opted_ready["unity_caches"]["reclaimable_bytes"] == 71 + 72
+        extra = 51 + 52 + 53 + 54 + 61 + 71 + 72
+        assert opted_scan["total_bytes"] == default_sum + extra
+
+        only = JunkCleaner.clean(
+            opted,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=env,
+            disk_free_bytes=lambda: None,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 0},
+            only_keys=["tiktok_cache"],
+        )
+        assert only["total_freed_bytes"] == 31 + 32
+        assert not os.path.exists(files["tiktok"])
+        assert not os.path.exists(files["tiktok_profile"])
+        assert os.path.exists(files["teams_classic"])
+        assert os.path.exists(files["adobe_media"])
+        assert os.path.exists(files["capcut"])
+        assert os.path.exists(files["tiktok_idb"])
+        assert os.path.exists(files["tiktok_ls"])
+
+        result = JunkCleaner.clean(
+            opted,
+            is_admin=False,
+            deep_user_safe=True,
+            environ=env,
+            disk_free_bytes=lambda: None,
+            recycle_empty=lambda: {"success": False, "freed_bytes": 1, "items": 0},
+        )
+        assert result["total_freed_bytes"] == default_sum + extra - (31 + 32)
+        for key in (
+            "adobe_lib", "adobe_doc", "adobe_pf", "tiktok_idb", "tiktok_ls", "viber_db",
+            "viber_root_db", "teams_idb", "teams_level", "teams_wv_idb", "blend_config",
+            "blend_doc", "unity_lib", "unity_temp", "unity_asset", "winsxs",
+        ):
+            assert os.path.exists(files[key]), key
+        for key in (
+            "adobe_media", "adobe_files", "adobe_peak", "adobe_common",
+            "viber_media", "viber_temp", "teams_classic", "teams_wv", "teams_wv2",
+            "webview_other", "capcut", "blend_cache", "unity_cache", "unity_gi",
+        ):
+            assert not os.path.exists(files[key]), key
+
+        info = _tree(basic_root)
+        missing = build_target_paths(info["env"])
+        for key in (
+            "adobe_caches", "tiktok_cache", "viber_cache", "teams_cache",
+            "blender_caches", "unity_caches",
+        ):
+            assert missing[key] == [], key
+
+        ui = open(os.path.join(os.path.dirname(__file__), "ui", "main_window.py"), encoding="utf-8").read()
+        preview_ui = open(os.path.join(os.path.dirname(__file__), "ui", "c_drive_preview_dialog.py"), encoding="utf-8").read()
+        module = open(os.path.join(os.path.dirname(__file__), "core", "c_drive_clean.py"), encoding="utf-8").read()
+        assert "TARGET_GROUPS" in ui
+        assert "spin_min_clean_mb" in ui
+        assert "only_keys" in ui
+        assert "c_drive_min_clean_mb" in ui
+        assert "Discord, Telegram, Zalo, Messenger" in ui
+        assert "selected_keys" in preview_ui
+        assert "dưới ngưỡng" in preview_ui
+        assert "Dọn ngay" in preview_ui
+        assert "chưa xóa" in preview_ui.lower()
+        assert "runas" not in module.lower()
+        assert "shellexecute" not in module.lower()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(basic_root, ignore_errors=True)
+
+
 def test_ui_exposes_deep_clean_and_admin_label():
     base = os.path.dirname(__file__)
     text = open(os.path.join(base, "ui", "main_window.py"), encoding="utf-8").read()
@@ -1746,6 +2106,7 @@ def _run():
         test_clean_history_round_trip,
         test_admin_deep_plan_respects_elevation_and_forbidden_paths,
         test_chat_gpu_launcher_and_empty_folders_do_not_double_count,
+        test_v5_caches_groups_sort_and_min_size_filter,
         test_ui_exposes_deep_clean_and_admin_label,
     ]
     failed = 0

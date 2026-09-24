@@ -67,6 +67,7 @@ class CleanWorker(QThread):
         downloads_min_age_days: int = 30,
         deep_preview: bool = False,
         deep_admin: bool = False,
+        only_keys=None,
     ):
         super().__init__()
         self.targets = targets
@@ -76,6 +77,7 @@ class CleanWorker(QThread):
         self.downloads_min_age_days = int(downloads_min_age_days or 30)
         self.deep_preview = bool(deep_preview)
         self.deep_admin = bool(deep_admin)
+        self.only_keys = None if only_keys is None else [str(key) for key in only_keys]
 
     def run(self):
         if self.deep_preview:
@@ -112,6 +114,7 @@ class CleanWorker(QThread):
                 deep_user_safe=self.deep_user_safe,
                 deep_admin=self.deep_admin,
                 downloads_min_age_days=self.downloads_min_age_days,
+                only_keys=self.only_keys,
             )
 
             ram_res = {}
@@ -727,7 +730,8 @@ class MainWindow(QMainWindow):
         self.btn_deep_c.setToolTip(
             "Quét trước, hiện dung lượng từng mục, chỉ xóa sau khi bạn bấm «Dọn ngay». "
             "Gồm temp, cache trình duyệt, WebView2, thumbnail, shader GPU, crash dump, "
-            "cache ứng dụng, cache chat (Discord, Telegram, Zalo, Messenger) "
+            "cache ứng dụng, cache chat (Discord, Telegram, Zalo, Messenger, Teams, Viber), "
+            "cache TikTok nếu có, "
             "và cache công cụ build tạo lại được của tài khoản này. "
             "Không cần quyền Administrator. "
             "Thùng rác, tệp cũ trong Downloads, cache Steam/Epic và thư mục trống "
@@ -960,7 +964,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        from core.c_drive_clean import TARGET_CATALOG, TARGET_ORDER
+        from core.c_drive_clean import (
+            DEFAULT_MIN_CLEAN_MB,
+            TARGET_CATALOG,
+            TARGET_GROUPS,
+            normalize_min_clean_mb,
+        )
 
         elevated = JunkCleaner.is_admin()
         if elevated:
@@ -982,21 +991,27 @@ class MainWindow(QMainWindow):
         cfg_targets = self.config_manager.get("targets", {})
 
         self.target_rows = {}
-        for key in TARGET_ORDER:
-            meta = TARGET_CATALOG[key]
-            title = meta["label_vi"]
-            desc = meta["description_vi"]
-            if meta["needs_admin"]:
-                title = f"{title}  ·  Cần Admin"
-            checked = bool(cfg_targets.get(key, meta["default_enabled"]))
-            row = CleanerTargetRow(key, title, desc, checked=checked)
-            row.checkbox.stateChanged.connect(self._auto_save_targets)
-            if meta["needs_admin"] and not elevated:
-                row.set_badge("Cần Admin", is_warning=True)
-            elif not meta["default_enabled"]:
-                row.set_badge("Tắt mặc định", is_warning=True)
-            self.target_rows[key] = row
-            layout.addWidget(row)
+        for _group_id, group_label, group_keys in TARGET_GROUPS:
+            header = QLabel(group_label)
+            header.setStyleSheet(
+                "color: #5eead4; font-weight: 700; font-size: 13px; margin-top: 10px;"
+            )
+            layout.addWidget(header)
+            for key in group_keys:
+                meta = TARGET_CATALOG[key]
+                title = meta["label_vi"]
+                desc = meta["description_vi"]
+                if meta["needs_admin"]:
+                    title = f"{title}  ·  Cần Admin"
+                checked = bool(cfg_targets.get(key, meta["default_enabled"]))
+                row = CleanerTargetRow(key, title, desc, checked=checked)
+                row.checkbox.stateChanged.connect(self._auto_save_targets)
+                if meta["needs_admin"] and not elevated:
+                    row.set_badge("Cần Admin", is_warning=True)
+                elif not meta["default_enabled"]:
+                    row.set_badge("Tắt mặc định", is_warning=True)
+                self.target_rows[key] = row
+                layout.addWidget(row)
 
         ram_checked = bool(cfg_targets.get("ram_optimize", True))
         ram_row = CleanerTargetRow(
@@ -1029,6 +1044,25 @@ class MainWindow(QMainWindow):
         row_downloads_age.addStretch()
         layout.addLayout(row_downloads_age)
 
+        row_min_clean = QHBoxLayout()
+        lbl_min_clean = QLabel("Ngưỡng «Dọn ngay» — bỏ tick sẵn mục dưới:")
+        lbl_min_clean.setStyleSheet("color: #94a3b8;")
+        self.spin_min_clean_mb = QSpinBox()
+        self.spin_min_clean_mb.setRange(0, 10240)
+        self.spin_min_clean_mb.setSuffix(" MB")
+        self.spin_min_clean_mb.setSpecialValueText("0 MB (tick mọi mục)")
+        self.spin_min_clean_mb.setValue(
+            normalize_min_clean_mb(self.config_manager.get("c_drive_min_clean_mb", DEFAULT_MIN_CLEAN_MB))
+        )
+        self.spin_min_clean_mb.valueChanged.connect(self._auto_save_targets)
+        lbl_min_hint = QLabel("Quét vẫn hiện mọi mục. 0 = tick tất cả mục có dữ liệu.")
+        lbl_min_hint.setStyleSheet("color: #64748b; font-size: 11px;")
+        row_min_clean.addWidget(lbl_min_clean)
+        row_min_clean.addWidget(self.spin_min_clean_mb)
+        row_min_clean.addWidget(lbl_min_hint)
+        row_min_clean.addStretch()
+        layout.addLayout(row_min_clean)
+
         layout.addStretch()
         scroll.setWidget(scroll_content)
         outer_layout.addWidget(scroll, 1)
@@ -1051,6 +1085,8 @@ class MainWindow(QMainWindow):
         self.config_manager.set("targets", new_targets)
         if hasattr(self, "spin_downloads_age"):
             self.config_manager.set("downloads_old_min_days", int(self.spin_downloads_age.value()))
+        if hasattr(self, "spin_min_clean_mb"):
+            self.config_manager.set("c_drive_min_clean_mb", int(self.spin_min_clean_mb.value()))
 
     def init_tab_automation(self):
         outer_layout = QVBoxLayout(self.tab_automation)
@@ -2490,6 +2526,17 @@ class MainWindow(QMainWindow):
         msg += "Chi tiết đã được ghi vào file app.log!"
         QMessageBox.information(self, "Chẩn Đoán Hệ Thống Hoàn Tất", msg)
 
+    def _min_clean_mb(self) -> int:
+        from core.c_drive_clean import DEFAULT_MIN_CLEAN_MB, normalize_min_clean_mb
+        try:
+            if hasattr(self, "spin_min_clean_mb"):
+                return normalize_min_clean_mb(self.spin_min_clean_mb.value())
+            return normalize_min_clean_mb(
+                self.config_manager.get("c_drive_min_clean_mb", DEFAULT_MIN_CLEAN_MB)
+            )
+        except (TypeError, ValueError):
+            return DEFAULT_MIN_CLEAN_MB
+
     def _downloads_min_age_days(self) -> int:
         try:
             if hasattr(self, "spin_downloads_age"):
@@ -2593,7 +2640,13 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._on_worker_finished)
         self.worker.start()
 
-    def _start_deep_c_clean_confirmed(self, targets: dict, downloads_min_age_days: int, deep_admin: bool = False):
+    def _start_deep_c_clean_confirmed(
+        self,
+        targets: dict,
+        downloads_min_age_days: int,
+        deep_admin: bool = False,
+        only_keys=None,
+    ):
         self._set_buttons_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(5)
@@ -2609,6 +2662,7 @@ class MainWindow(QMainWindow):
             deep_user_safe=True,
             deep_admin=bool(deep_admin),
             downloads_min_age_days=int(downloads_min_age_days or 30),
+            only_keys=only_keys,
         )
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.finished.connect(self._on_worker_finished)
@@ -2619,13 +2673,27 @@ class MainWindow(QMainWindow):
         data = result.get("data") or {}
         total = str(data.get("total_label_vi") or "0 B")
         self.lbl_status.setText(f"Quét ổ C xong: khoảng {total} — chưa xóa")
-        dialog = CDrivePreviewDialog(data, self)
+        dialog = CDrivePreviewDialog(data, self, min_clean_mb=self._min_clean_mb())
         if dialog.exec_() != dialog.Accepted:
             self.lbl_status.setText("Đã đóng xem trước ổ C. Chưa xóa tệp nào.")
             return
+        selected = dialog.selected_keys()
+        chosen_mb = dialog.min_clean_mb()
+        self.config_manager.set("c_drive_min_clean_mb", chosen_mb)
+        if hasattr(self, "spin_min_clean_mb") and int(self.spin_min_clean_mb.value()) != chosen_mb:
+            self.spin_min_clean_mb.blockSignals(True)
+            self.spin_min_clean_mb.setValue(chosen_mb)
+            self.spin_min_clean_mb.blockSignals(False)
+        if not selected:
+            self.lbl_status.setText("Không có mục nào được chọn. Chưa xóa tệp nào.")
+            return
         rows = data.get("targets") or []
+        selected_set = set(selected)
         old_ready = any(
-            isinstance(row, dict) and row.get("key") == "windows_old" and row.get("status") == "ready"
+            isinstance(row, dict)
+            and row.get("key") == "windows_old"
+            and row.get("status") == "ready"
+            and row.get("key") in selected_set
             for row in rows
         )
         if old_ready:
@@ -2643,7 +2711,12 @@ class MainWindow(QMainWindow):
         targets = result.get("targets") or {}
         days = int(result.get("downloads_min_age_days") or self._downloads_min_age_days())
         deep_admin = bool(result.get("deep_admin") or data.get("deep_admin"))
-        self._start_deep_c_clean_confirmed(targets, days, deep_admin=deep_admin)
+        self._start_deep_c_clean_confirmed(
+            targets,
+            days,
+            deep_admin=deep_admin,
+            only_keys=selected,
+        )
 
     def optimize_ram_only(self):
         self.lbl_status.setText("Đang giải phóng bộ nhớ RAM...")

@@ -51,6 +51,9 @@ DEFAULT_LARGE_FILE_MAX_DEPTH = 8
 DEFAULT_LARGE_FILE_MAX_RESULTS = 300
 DEFAULT_LARGE_FILE_MAX_VISITED = 20000
 DEFAULT_LARGE_FILE_MAX_SECONDS = 12.0
+# Ngưỡng «Dọn ngay»: quét vẫn hiện mọi mục; mục nhỏ hơn ngưỡng không được tick sẵn.
+DEFAULT_MIN_CLEAN_MB = 10
+MAX_MIN_CLEAN_MB = 10240
 CLEAN_HISTORY_KEEP = 8
 CLEAN_HISTORY_ENV = "PCAUTOCLEANER_C_DRIVE_HISTORY_PATH"
 
@@ -224,6 +227,79 @@ _CAPCUT_CACHE_RELS = (
     os.path.join("CapCut", "User Data", "CEF", "GPUCache"),
     os.path.join("CapCut", "User Data", "CEF", "Service Worker", "CacheStorage"),
 )
+# Chỉ cache Adobe tạo lại được. Không gồm Creative Cloud Libraries hay Documents.
+_ADOBE_CACHE_RELS = (
+    os.path.join("Adobe", "Common", "Media Cache"),
+    os.path.join("Adobe", "Common", "Media Cache Files"),
+    os.path.join("Adobe", "Common", "Peak Files"),
+    os.path.join("Adobe", "Common", "Cache"),
+)
+_ADOBE_BLOCK_PARTS = frozenset({
+    "documents",
+    "creative cloud libraries",
+    "libraries",
+    "coresync",
+})
+_TIKTOK_DIR_NAMES = (
+    "TikTok",
+    "tiktok",
+    "TikTok LIVE Studio",
+    "TikTokLiveStudio",
+)
+_TIKTOK_CACHE_SUBS = (
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    "tmp",
+    "Temp",
+    os.path.join("Service Worker", "CacheStorage"),
+    os.path.join("User Data", "Cache"),
+    os.path.join("User Data", "Code Cache"),
+    os.path.join("User Data", "GPUCache"),
+    os.path.join("User Data", "tmp"),
+    os.path.join("User Data", "Temp"),
+)
+_TIKTOK_PACKAGE_PREFIXES = (
+    "TikTok_",
+    "ByteDancePte.Ltd.TikTok_",
+    "ByteDance.TikTok_",
+)
+_VIBER_ROOT_NAMES = ("ViberPC", "Viber", "ViberMedia")
+_VIBER_CACHE_DIR_NAMES = frozenset({
+    "cache",
+    "code cache",
+    "gpucache",
+    "media cache",
+    "temp",
+    "tmp",
+})
+_TEAMS_CLASSIC_SUBS = (
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    "tmp",
+    "Temp",
+    "logs",
+    os.path.join("Service Worker", "CacheStorage"),
+)
+_TEAMS_PACKAGE_PREFIXES = ("MSTeams_",)
+_BLENDER_CACHE_SUBS = ("cache", "Cache", "temp", "tmp", "GPUCache")
+_UNITY_CACHE_RELS = (
+    "cache",
+    "Caches",
+    os.path.join("Caches", "GiCache"),
+    "ShaderCache",
+    "GiCache",
+    "Temp",
+    "tmp",
+)
+_UNITY_PROJECT_PARTS = frozenset({"assets", "projectsettings", "library"})
 _OFFICE_SAFE_RELS = (
     os.path.join("Microsoft", "Office", "16.0", "WebServiceCache"),
     os.path.join("Microsoft", "Office", "16.0", "SmartLookupCache"),
@@ -384,8 +460,14 @@ TARGET_ORDER: Sequence[str] = (
     "telegram_cache",
     "zalo_cache",
     "messenger_cache",
+    "teams_cache",
+    "tiktok_cache",
+    "viber_cache",
     "steam_caches",
     "epic_caches",
+    "adobe_caches",
+    "blender_caches",
+    "unity_caches",
     "empty_user_folders",
     "toolchain_caches",
     "nuget_packages",
@@ -491,12 +573,12 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
     ),
     "app_caches": _meta(
         label_vi=(
-            "Bộ nhớ đệm ứng dụng (VS Code, Teams, Spotify, Slack, "
+            "Bộ nhớ đệm ứng dụng (VS Code, Spotify, Slack, "
             "Zoom, Notion, CapCut, JetBrains)"
         ),
         description_vi=(
             "Chỉ cache hoặc log đã biết, kể cả htmlcache của Steam. "
-            "Cache Discord, Telegram, Zalo và Messenger nằm ở mục riêng. "
+            "Cache Discord, Telegram, Zalo, Messenger và Teams nằm ở mục riêng. "
             "Không xóa tin nhắn, dự án CapCut, nhạc Spotify đã tải, "
             "cấu hình IDE hay thư mục AppData lạ."
         ),
@@ -555,6 +637,42 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
         default_enabled=True,
         clean_mode="contents",
     ),
+    "teams_cache": _meta(
+        label_vi="Cache Microsoft Teams",
+        description_vi=(
+            "Cache, GPUCache, tmp và log tạm của Teams cổ điển, cùng cache WebView2 của Teams mới. "
+            "Không xóa IndexedDB, leveldb hay đăng nhập. Không cài thì 0 B."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "tiktok_cache": _meta(
+        label_vi="Cache TikTok",
+        description_vi=(
+            "Chỉ Cache, Code Cache và GPUCache của TikTok Desktop. "
+            "Không gồm CapCut, IndexedDB hay phiên đăng nhập. Không cài thì 0 B."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "viber_cache": _meta(
+        label_vi="Cache Viber",
+        description_vi=(
+            "Chỉ Media Cache, Cache và Temp của Viber. "
+            "Không xóa viber.db hay tin nhắn. Không cài thì 0 B."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
     "steam_caches": _meta(
         label_vi="Cache Steam (tắt mặc định)",
         description_vi=(
@@ -572,6 +690,44 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
         description_vi=(
             "Chỉ webcache của Epic Games Launcher trong LocalAppData. "
             "Không xóa game hay thư mục .egstore. Tắt mặc định."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+    ),
+    "adobe_caches": _meta(
+        label_vi="Cache Adobe (tắt mặc định)",
+        description_vi=(
+            "Chỉ Media Cache, Media Cache Files, Peak Files và Common\\Cache "
+            "trong AppData\\Adobe. Không xóa Creative Cloud Libraries, tài liệu "
+            "hay file trong Documents. Tắt mặc định vì cache có thể rất lớn và dựng lại mất thời gian. "
+            "Không cài thì 0 B."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+    ),
+    "blender_caches": _meta(
+        label_vi="Cache Blender (tắt mặc định)",
+        description_vi=(
+            "Chỉ thư mục cache hoặc temp trong AppData\\Blender Foundation. "
+            "Không xóa file .blend trong Documents. Tắt mặc định. Không cài thì 0 B."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+    ),
+    "unity_caches": _meta(
+        label_vi="Cache Unity (tắt mặc định)",
+        description_vi=(
+            "Chỉ cache toàn cục trong AppData\\Unity (cache, Caches, GiCache, ShaderCache). "
+            "Không xóa dự án, thư mục Library hay Temp nằm trong project. Tắt mặc định. Không cài thì 0 B."
         ),
         needs_admin=False,
         scope="user",
@@ -862,6 +1018,100 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
         clean_mode="hibernate",
     ),
 }
+
+
+# Nhóm hiển thị. Mỗi khóa catalog đúng một nhóm. Thứ tự nhóm dùng cho màn Cài đặt.
+TARGET_GROUPS: Sequence[tuple] = (
+    ("browser_web", "Trình duyệt & Web", (
+        "browser_cache",
+        "inet_cache",
+    )),
+    ("chat", "Chat", (
+        "discord_cache",
+        "telegram_cache",
+        "zalo_cache",
+        "messenger_cache",
+        "teams_cache",
+        "viber_cache",
+        "tiktok_cache",
+    )),
+    ("gpu_game", "GPU & Game", (
+        "shader_cache",
+        "gpu_shader_caches",
+        "steam_caches",
+        "epic_caches",
+    )),
+    ("dev_tools", "Công cụ lập trình", (
+        "toolchain_caches",
+        "nuget_packages",
+        "gradle_caches",
+        "cargo_cache",
+        "unity_caches",
+    )),
+    ("creative", "Đồ họa", (
+        "adobe_caches",
+        "blender_caches",
+    )),
+    ("apps", "Ứng dụng", (
+        "app_caches",
+        "office_cache",
+        "office_file_cache",
+        "store_cache",
+    )),
+    ("other", "Khác", (
+        "user_temp",
+        "thumbnail_cache",
+        "shell_font_cache",
+        "crash_dumps",
+        "delivery_cache",
+        "recycle_bin",
+        "downloads_old",
+        "empty_user_folders",
+    )),
+    ("system", "Hệ thống", (
+        "system_temp",
+        "windows_update",
+        "system_delivery_opt",
+        "windows_setup_temp",
+        "windows_logs",
+        "system_wer",
+        "system_dumps",
+        "prefetch",
+        "windows_old",
+        "component_cleanup",
+        "hibernate_file",
+    )),
+)
+
+_TARGET_GROUP_BY_KEY: Dict[str, tuple] = {}
+for _group_id, _group_label, _group_keys in TARGET_GROUPS:
+    for _group_key in _group_keys:
+        if _group_key in _TARGET_GROUP_BY_KEY:
+            raise RuntimeError(f"Nhóm dọn ổ C bị trùng khóa {_group_key}")
+        _TARGET_GROUP_BY_KEY[_group_key] = (_group_id, _group_label)
+if set(_TARGET_GROUP_BY_KEY) != set(TARGET_ORDER):
+    raise RuntimeError("TARGET_GROUPS không khớp TARGET_ORDER")
+
+
+def target_group_id(key: str) -> str:
+    found = _TARGET_GROUP_BY_KEY.get(str(key or ""))
+    return found[0] if found else "other"
+
+
+def target_group_label_vi(key: str) -> str:
+    found = _TARGET_GROUP_BY_KEY.get(str(key or ""))
+    return found[1] if found else "Khác"
+
+
+def normalize_min_clean_mb(value: Any) -> int:
+    """0 = không lọc. Giá trị âm hoặc chữ được đưa về mặc định."""
+    try:
+        mb = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_CLEAN_MB
+    if mb < 0:
+        return DEFAULT_MIN_CLEAN_MB
+    return min(MAX_MIN_CLEAN_MB, mb)
 
 
 def is_process_elevated() -> bool:
@@ -1276,10 +1526,6 @@ def _app_cache_paths(local_app_data: str, app_data: str) -> List[str]:
             for sub in ("Cache", "CachedData", "CachedExtensionVSIXs", "GPUCache", "logs"):
                 _append_if_dir(found, os.path.join(code_base, sub))
         _append_if_dir(found, os.path.join(app_data, "npm-cache"))
-        teams_base = os.path.join(app_data, "Microsoft", "Teams")
-        if _exists(teams_base):
-            for sub in ("Cache", "Code Cache", "GPUCache", "tmp"):
-                _append_if_dir(found, os.path.join(teams_base, sub))
     if local_app_data:
         _append_if_dir(found, os.path.join(local_app_data, "pip", "cache"))
         _append_if_dir(found, os.path.join(local_app_data, "npm-cache"))
@@ -1306,10 +1552,6 @@ def _app_cache_paths(local_app_data: str, app_data: str) -> List[str]:
             os.path.join(local_app_data, "Google"),
             prefixes=("AndroidStudio",),
         )
-        teams_local = os.path.join(local_app_data, "Microsoft", "Teams")
-        if _exists(teams_local):
-            for sub in ("Cache", "Code Cache", "GPUCache", "tmp", "logs"):
-                _append_if_dir(found, os.path.join(teams_local, sub))
     if app_data:
         for name in ("Slack", "slack", "Notion"):
             _append_electron_caches(found, os.path.join(app_data, name))
@@ -1698,6 +1940,249 @@ def _epic_cache_paths(local_app_data: str) -> List[str]:
     return found
 
 
+def _path_has_part(path: str, names: Iterable[str]) -> bool:
+    blocked = {str(name).lower() for name in names}
+    return any(part in blocked for part in _path_parts(path))
+
+
+def _is_teams_tree(path: str) -> bool:
+    """Teams cổ điển (Microsoft\\Teams) hoặc gói MSTeams. Không phải app tên Teams bất kỳ."""
+    parts = _path_parts(path)
+    for index, part in enumerate(parts):
+        if part.startswith("msteams_"):
+            return True
+        if part in {"teams", "msteams"} and index > 0 and parts[index - 1] == "microsoft":
+            return True
+    return False
+
+
+def _webview_profile_caches(user_data_root: str) -> List[str]:
+    """Cache hồ sơ WebView2. Thêm WV2Profile_* ngoài Default / Profile N. Không lấy IndexedDB."""
+    found = list(_chromium_caches(user_data_root))
+    if not user_data_root or not _exists(user_data_root) or os.path.islink(user_data_root):
+        return found
+    if path_is_forbidden(user_data_root) or path_has_sensitive_data(user_data_root):
+        return found
+    try:
+        names = list(os.listdir(user_data_root))
+    except OSError:
+        return found
+    for name in names:
+        if not name.lower().startswith("wv2profile"):
+            continue
+        profile = os.path.join(user_data_root, name)
+        if os.path.islink(profile) or not os.path.isdir(profile):
+            continue
+        if path_is_forbidden(profile) or path_has_sensitive_data(profile):
+            continue
+        for sub in _CHROMIUM_CACHE_SUBS:
+            _append_if_dir(found, os.path.join(profile, sub))
+    return found
+
+
+def _package_webview_caches(local_app_data: str, prefixes: Sequence[str]) -> List[str]:
+    """TempState và cache EBWebView của gói Store. Không đụng LocalState hay IndexedDB."""
+    found: List[str] = []
+    if not local_app_data or path_is_forbidden(local_app_data):
+        return found
+    packages = os.path.join(local_app_data, "Packages")
+    if not _exists(packages) or os.path.islink(packages) or not os.path.isdir(packages):
+        return found
+    try:
+        names = list(os.listdir(packages))
+    except OSError:
+        return found
+    for name in names:
+        if "capcut" in name.lower():
+            continue
+        if not any(name.startswith(prefix) for prefix in prefixes):
+            continue
+        base = os.path.join(packages, name)
+        if os.path.islink(base) or not os.path.isdir(base) or path_is_forbidden(base):
+            continue
+        _append_if_dir(found, os.path.join(base, "TempState"))
+        for root in _find_ebwebview_roots(base, max_listdir_depth=6):
+            found.extend(_webview_profile_caches(root))
+    return found
+
+
+def _extend_browser_webview(bucket: List[str], base: str, max_listdir_depth: int) -> None:
+    for root in _find_ebwebview_roots(base, max_listdir_depth=max_listdir_depth):
+        if _is_teams_tree(root):
+            continue
+        bucket.extend(_chromium_caches(root))
+
+
+def _collect_named_dirs(
+    bucket: List[str],
+    root: str,
+    dir_names: Iterable[str],
+    *,
+    max_depth: int,
+) -> None:
+    """Lấy đúng thư mục có tên cache/temp. Không lấy chính root, không đi vào dữ liệu nhạy cảm."""
+    if not root or not _exists(root) or os.path.islink(root) or not os.path.isdir(root):
+        return
+    if path_is_forbidden(root) or path_has_sensitive_data(root) or path_is_game_install(root):
+        return
+    names = {str(name).lower() for name in dir_names}
+    try:
+        root_abs = os.path.abspath(root)
+    except (OSError, ValueError):
+        return
+    stack = [(root_abs, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > max_depth:
+            continue
+        try:
+            listing = list(os.listdir(current))
+        except OSError:
+            continue
+        for name in listing:
+            child = os.path.join(current, name)
+            if os.path.islink(child) or not os.path.isdir(child):
+                continue
+            if (
+                path_is_forbidden(child)
+                or path_has_sensitive_data(child)
+                or path_is_game_install(child)
+            ):
+                continue
+            lowered = name.lower()
+            if lowered in names and child != root_abs:
+                _append_if_dir(bucket, child)
+                continue
+            if lowered in _BLOCKED_DIR_NAMES or lowered in _EMPTY_SKIP_DIR_NAMES:
+                continue
+            if depth < max_depth:
+                stack.append((child, depth + 1))
+
+
+def _adobe_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found: List[str] = []
+    for base in (local_app_data, app_data):
+        if not base or path_is_forbidden(base) or _is_machine_vendor_tree(base):
+            continue
+        for rel in _ADOBE_CACHE_RELS:
+            path = os.path.join(base, rel)
+            if _path_has_part(path, _ADOBE_BLOCK_PARTS):
+                continue
+            _append_if_dir(found, path)
+    return found
+
+
+def _tiktok_install_roots(local_app_data: str, app_data: str) -> List[str]:
+    roots: List[str] = []
+    for base in (local_app_data, app_data):
+        if not base or path_is_forbidden(base):
+            continue
+        for name in _TIKTOK_DIR_NAMES:
+            roots.append(os.path.join(base, name))
+        bytedance = os.path.join(base, "ByteDance")
+        for child in _list_child_dirs(bytedance):
+            lowered = os.path.basename(child).lower()
+            if "tiktok" in lowered and "capcut" not in lowered:
+                roots.append(child)
+    return roots
+
+
+def _tiktok_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found: List[str] = []
+    for root in _tiktok_install_roots(local_app_data, app_data):
+        if _path_has_part(root, {"capcut"}):
+            continue
+        for sub in _TIKTOK_CACHE_SUBS:
+            _append_if_dir(found, os.path.join(root, sub))
+        user_data = os.path.join(root, "User Data")
+        found.extend(_chromium_caches(user_data))
+        found.extend(_chromium_caches(os.path.join(user_data, "CEF")))
+    if local_app_data:
+        found.extend(_package_webview_caches(local_app_data, _TIKTOK_PACKAGE_PREFIXES))
+    return [path for path in found if not _path_has_part(path, {"capcut"})]
+
+
+def _viber_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found: List[str] = []
+    for base in (local_app_data, app_data):
+        if not base or path_is_forbidden(base):
+            continue
+        for name in _VIBER_ROOT_NAMES:
+            _collect_named_dirs(
+                found,
+                os.path.join(base, name),
+                _VIBER_CACHE_DIR_NAMES,
+                max_depth=3,
+            )
+    return found
+
+
+def _teams_classic_dirs(base: str) -> List[str]:
+    found: List[str] = []
+    if not base or path_is_forbidden(base):
+        return found
+    for sub in _TEAMS_CLASSIC_SUBS:
+        _append_if_dir(found, os.path.join(base, sub))
+    for root in _find_ebwebview_roots(base, max_listdir_depth=3):
+        found.extend(_webview_profile_caches(root))
+    return found
+
+
+def _teams_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found: List[str] = []
+    if app_data and not path_is_forbidden(app_data):
+        found.extend(_teams_classic_dirs(os.path.join(app_data, "Microsoft", "Teams")))
+    if local_app_data and not path_is_forbidden(local_app_data):
+        found.extend(_teams_classic_dirs(os.path.join(local_app_data, "Microsoft", "Teams")))
+        found.extend(_teams_classic_dirs(os.path.join(local_app_data, "Microsoft", "MSTeams")))
+        found.extend(_package_webview_caches(local_app_data, _TEAMS_PACKAGE_PREFIXES))
+    return found
+
+
+def _blender_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found: List[str] = []
+    for base in (local_app_data, app_data):
+        if not base or path_is_forbidden(base) or _is_machine_vendor_tree(base):
+            continue
+        parent = os.path.join(base, "Blender Foundation", "Blender")
+        if path_is_forbidden(parent) or _path_has_part(parent, {"documents"}):
+            continue
+        for sub in _BLENDER_CACHE_SUBS:
+            _append_if_dir(found, os.path.join(parent, sub))
+        for version_dir in _list_child_dirs(parent):
+            if path_has_sensitive_data(version_dir):
+                continue
+            for sub in _BLENDER_CACHE_SUBS:
+                _append_if_dir(found, os.path.join(version_dir, sub))
+    return found
+
+
+def _is_unity_project_tree(path: str) -> bool:
+    """Library/Assets/ProjectSettings thuộc project. Không đụng, dù nằm dưới hồ sơ."""
+    return _path_has_part(path, _UNITY_PROJECT_PARTS)
+
+
+def _unity_cache_paths(local_app_data: str, app_data: str, user_profile: str) -> List[str]:
+    found: List[str] = []
+    roots: List[str] = []
+    if local_app_data and not path_is_forbidden(local_app_data):
+        roots.append(os.path.join(local_app_data, "Unity"))
+    if app_data and not path_is_forbidden(app_data):
+        roots.append(os.path.join(app_data, "Unity"))
+    local_low = _local_low_dir(user_profile, local_app_data)
+    if local_low and not path_is_forbidden(local_low) and not _is_machine_vendor_tree(local_low):
+        roots.append(os.path.join(local_low, "Unity"))
+    for root in roots:
+        if _is_unity_project_tree(root) or path_is_forbidden(root):
+            continue
+        for rel in _UNITY_CACHE_RELS:
+            path = os.path.join(root, rel)
+            if _is_unity_project_tree(path) or path_is_game_install(path):
+                continue
+            _append_if_dir(found, path)
+    return found
+
+
 def _is_reparse_point(path: str) -> bool:
     """Symlink, junction hoặc điểm OneDrive. Không đi theo và không xóa."""
     if not path:
@@ -1983,8 +2468,7 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
                 pass
         for rel in _OPERA_CACHE_RELS:
             _append_if_dir(targets["browser_cache"], os.path.join(local_app_data, rel))
-        for root in _find_ebwebview_roots(local_app_data, max_listdir_depth=3):
-            targets["browser_cache"].extend(_chromium_caches(root))
+        _extend_browser_webview(targets["browser_cache"], local_app_data, 3)
         _append_if_dir(
             targets["shell_font_cache"],
             os.path.join(local_app_data, "Microsoft", "FontCache"),
@@ -2034,17 +2518,22 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
     if app_data and not path_is_forbidden(app_data):
         for rel in _OPERA_CACHE_RELS:
             _append_if_dir(targets["browser_cache"], os.path.join(app_data, rel))
-        for root in _find_ebwebview_roots(app_data, max_listdir_depth=4):
-            targets["browser_cache"].extend(_chromium_caches(root))
+        _extend_browser_webview(targets["browser_cache"], app_data, 4)
 
     targets["app_caches"].extend(_app_cache_paths(local_app_data, app_data))
     targets["discord_cache"].extend(_discord_cache_paths(local_app_data, app_data))
     targets["telegram_cache"].extend(_telegram_cache_paths(local_app_data, app_data))
     targets["zalo_cache"].extend(_zalo_cache_paths(local_app_data, app_data))
     targets["messenger_cache"].extend(_messenger_cache_paths(local_app_data, app_data))
+    targets["teams_cache"].extend(_teams_cache_paths(local_app_data, app_data))
+    targets["tiktok_cache"].extend(_tiktok_cache_paths(local_app_data, app_data))
+    targets["viber_cache"].extend(_viber_cache_paths(local_app_data, app_data))
     targets["gpu_shader_caches"].extend(_gpu_shader_cache_paths(local_app_data, user_profile))
     targets["steam_caches"].extend(_steam_cache_paths(environ, local_app_data, user_profile))
     targets["epic_caches"].extend(_epic_cache_paths(local_app_data))
+    targets["adobe_caches"].extend(_adobe_cache_paths(local_app_data, app_data))
+    targets["blender_caches"].extend(_blender_cache_paths(local_app_data, app_data))
+    targets["unity_caches"].extend(_unity_cache_paths(local_app_data, app_data, user_profile))
     targets["empty_user_folders"].extend(
         _empty_folder_roots(user_profile, local_app_data, user_temp, system_root)
     )
@@ -2128,6 +2617,13 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
                 continue
             if key == "gpu_shader_caches" and _is_machine_vendor_tree(path):
                 continue
+            if key == "unity_caches" and _is_unity_project_tree(path):
+                continue
+            if key in {"adobe_caches", "blender_caches", "unity_caches", "tiktok_cache", "viber_cache"}:
+                if _path_has_part(path, {"documents", "creative cloud libraries"}):
+                    continue
+            if key == "tiktok_cache" and _path_has_part(path, {"capcut"}):
+                continue
             if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
                 continue
             if _is_onedrive_sync_path(path, user_profile):
@@ -2147,6 +2643,7 @@ def resolve_clean_plan(
     is_admin: bool,
     deep_user_safe: bool = False,
     deep_admin: bool = False,
+    only_keys: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """
     Chọn mục sẽ chạy và mục bỏ qua.
@@ -2164,8 +2661,12 @@ def resolve_clean_plan(
     to_run: Dict[str, bool] = {}
     skipped: List[Dict[str, Any]] = []
     broad = bool(deep_user_safe or deep_admin)
+    # None = không lọc. Tập rỗng = người dùng bỏ hết tick ở «Dọn ngay».
+    allowed = None if only_keys is None else {str(key) for key in only_keys}
 
     for key in TARGET_ORDER:
+        if allowed is not None and key not in allowed:
+            continue
         meta = TARGET_CATALOG[key]
         user_on = bool(enabled.get(key, False))
         if broad:
@@ -2819,6 +3320,8 @@ def estimate_reclaimable(
         rows.append({
             "key": key,
             "name": meta["label_vi"],
+            "group_id": target_group_id(key),
+            "group_vi": target_group_label_vi(key),
             "status": status,
             "reason": reason,
             "needs_admin": bool(meta["needs_admin"]),
@@ -2845,6 +3348,68 @@ def estimate_reclaimable(
     return result
 
 
+def preview_display_bytes(row: Dict[str, Any]) -> int:
+    """Byte dùng để xếp xem trước: mục bỏ qua lấy ước lượng, mục sẵn sàng lấy phần sẽ dọn."""
+    if str(row.get("status") or "") == "skipped":
+        return max(0, int(row.get("size_bytes") or 0))
+    return max(0, int(row.get("reclaimable_bytes") or 0))
+
+
+def preview_row_sort_key(row: Dict[str, Any]) -> tuple:
+    """Lớn nhất trước. Cùng kích thước thì khóa ổn định (tên khóa A→Z)."""
+    return (-preview_display_bytes(row), str(row.get("key") or ""))
+
+
+def preview_row_is_shown(row: Dict[str, Any], *, deep_admin: bool = False, is_admin: bool = False) -> bool:
+    """Cùng quy tắc ẩn dòng 0 B với format_scan_preview_vi. Quét vẫn đo những dòng này."""
+    if not isinstance(row, dict):
+        return False
+    if row.get("status") == "skipped":
+        estimated = int(row.get("size_bytes") or 0)
+        file_count = int(row.get("file_count") or 0)
+        show_admin_pending = bool(deep_admin) and not is_admin and bool(row.get("needs_admin"))
+        return estimated > 0 or file_count > 0 or show_admin_pending
+    size = int(row.get("reclaimable_bytes") or 0)
+    count = int(row.get("reclaimable_files") or 0)
+    if row.get("key") == "empty_user_folders":
+        return size > 0 or count > 0
+    if size <= 0 and count <= 0:
+        return row.get("status") == "ready" and row.get("key") in _ALWAYS_PREVIEW_KEYS
+    return True
+
+
+def preview_rows_for_display(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    deep_admin = bool(result.get("deep_admin"))
+    is_admin = bool(result.get("is_admin"))
+    rows = [
+        row for row in (result.get("targets") or [])
+        if preview_row_is_shown(row, deep_admin=deep_admin, is_admin=is_admin)
+    ]
+    return sorted(rows, key=preview_row_sort_key)
+
+
+def category_offered_by_default(row: Dict[str, Any], min_mb: Any) -> bool:
+    """
+    Tick sẵn cho «Dọn ngay». Quét vẫn hiện mục nhỏ hơn ngưỡng.
+    0 MB = tick mọi mục đang sẵn sàng và có gì để dọn.
+    Mục DISM / ngủ đông / Windows.old (khi đã bật) không bị ngưỡng dung lượng loại,
+    vì chúng không phải cache nhỏ.
+    """
+    if str(row.get("status") or "") != "ready":
+        return False
+    key = str(row.get("key") or "")
+    size = int(row.get("reclaimable_bytes") or 0)
+    files = int(row.get("reclaimable_files") or 0)
+    if key in _ALWAYS_PREVIEW_KEYS:
+        return True
+    if size <= 0 and files <= 0:
+        return False
+    threshold = normalize_min_clean_mb(min_mb) * 1024 * 1024
+    if threshold <= 0:
+        return True
+    return size >= threshold
+
+
 def format_scan_preview_vi(result: Dict[str, Any]) -> str:
     total = int(result.get("total_bytes") or 0)
     files = int(result.get("total_files") or 0)
@@ -2855,13 +3420,14 @@ def format_scan_preview_vi(result: Dict[str, Any]) -> str:
     lines.extend([
         f"Có thể giải phóng (ước lượng): {format_freed_vi(total)} ({files} tệp).",
         "Chỉ cộng mục sẽ dọn. Mục cần Admin không nằm trong tổng.",
+        "Danh sách xếp từ lớn đến nhỏ.",
         "",
     ])
     shown = 0
-    for row in result.get("targets") or []:
-        if not isinstance(row, dict):
-            continue
+    for row in preview_rows_for_display(result):
         name = str(row.get("name") or row.get("key") or "Mục")
+        group = str(row.get("group_vi") or target_group_label_vi(str(row.get("key") or "")))
+        name = f"[{group}] {name}" if group else name
         if row.get("status") == "skipped":
             estimated = int(row.get("size_bytes") or 0)
             file_count = int(row.get("file_count") or 0)
