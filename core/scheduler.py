@@ -243,6 +243,7 @@ class BackgroundScheduler(QObject):
         clean_res = JunkCleaner.clean(
             targets,
             downloads_min_age_days=config.get("downloads_old_min_days", 30),
+            exclude_paths=config.get("c_drive_exclude_paths", []),
         )
         junk_mb = clean_res.get("total_freed_mb", 0.0)
 

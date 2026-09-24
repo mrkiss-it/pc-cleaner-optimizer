@@ -7,6 +7,7 @@ Chỉ cộng byte đã xóa thật — không cộng ước lượng của mục
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -39,6 +40,12 @@ DOWNLOADS_DISABLED_REASON_VI = (
 )
 SYNC_ROOT_REASON_VI = (
     "Thư mục đồng bộ OneDrive — không xóa và không tính dung lượng."
+)
+EXCLUDED_REASON_VI = (
+    "Đường dẫn nằm trong danh sách loại trừ — không quét và không xóa."
+)
+RECYCLE_SIZE_UNKNOWN_VI = (
+    "Chưa ước lượng được dung lượng thùng rác — vẫn có thể dọn nếu bạn tick."
 )
 
 DEFAULT_LOW_DISK_FREE_GB = 10.0
@@ -863,21 +870,24 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
         clean_mode="contents",
     ),
     "recycle_bin": _meta(
-        label_vi="Thùng rác của tài khoản này",
+        label_vi="Thùng rác của tài khoản này (tắt mặc định)",
         description_vi=(
-            "Làm trống thùng rác người dùng hiện tại qua Windows. Không cần Admin. "
-            "Không đụng thùng rác tài khoản khác."
+            "Làm trống thùng rác của đúng tài khoản đang đăng nhập qua Windows. "
+            "Không cần Admin và không đụng thùng rác tài khoản khác. "
+            "Tắt mặc định. Nếu không đọc được dung lượng, xem trước nói rõ "
+            "và vẫn cho phép dọn sau khi bạn tick."
         ),
         needs_admin=False,
         scope="user",
-        risk="safe",
-        default_enabled=True,
+        risk="caution",
+        default_enabled=False,
         clean_mode="recycle",
     ),
     "downloads_old": _meta(
         label_vi="Tệp cũ trong Downloads (tắt mặc định)",
         description_vi=(
-            "Chỉ xóa tệp (không xóa thư mục) cũ hơn số ngày bạn chọn. "
+            "Chỉ xóa tệp (không xóa thư mục) trong Downloads cũ hơn số ngày bạn chọn "
+            "(mặc định 30). Bỏ qua tệp mới, thư mục OneDrive và điểm reparse. "
             "Mặc định tắt — không chạy nếu bạn không bật."
         ),
         needs_admin=False,
@@ -1281,6 +1291,147 @@ def path_is_forbidden(path: str) -> bool:
         return False
     parts = [part.lower() for part in os.path.normpath(path).split(os.sep) if part]
     return any(part in _BLOCKED_DIR_NAMES for part in parts)
+
+
+class _ExcludeState:
+    def __init__(self, paths: Sequence[str]) -> None:
+        self.paths = tuple(paths)
+        self.keys = tuple(_exclude_key(path) for path in paths)
+
+
+_EXCLUDE_STATE: contextvars.ContextVar[Optional[_ExcludeState]] = contextvars.ContextVar(
+    "c_drive_exclude_state",
+    default=None,
+)
+
+
+def _is_filesystem_root(path: str) -> bool:
+    """Gốc ổ đĩa hoặc gốc hệ thống — không nhận làm mục loại trừ."""
+    try:
+        absolute = os.path.abspath(path)
+    except (OSError, ValueError):
+        return True
+    trimmed = absolute.rstrip("\\/")
+    if not trimmed:
+        return True
+    parent = os.path.dirname(trimmed)
+    if os.path.normcase(parent) == os.path.normcase(trimmed):
+        return True
+    if len(trimmed) == 2 and trimmed[1] == ":":
+        return True
+    return False
+
+
+def _exclude_key(path: str) -> str:
+    """Khóa so khớp: tuyệt đối, không phân biệt hoa thường, đúng dấu phân cách."""
+    return os.path.normcase(os.path.abspath(os.path.normpath(path))).lower()
+
+
+def _same_or_child_key(child_key: str, root_key: str) -> bool:
+    if not child_key or not root_key:
+        return False
+    if child_key == root_key:
+        return True
+    prefix = root_key if root_key.endswith(os.sep) else root_key + os.sep
+    return child_key.startswith(prefix)
+
+
+def normalize_exclude_paths(value: Any) -> List[str]:
+    """Danh sách đường dẫn tuyệt đối, bỏ trùng, bỏ gốc ổ đĩa. Không phân biệt hoa thường."""
+    if isinstance(value, str):
+        raw_items: Iterable[Any] = [value]
+    elif isinstance(value, (list, tuple)):
+        raw_items = value
+    else:
+        return []
+    seen = set()
+    out: List[str] = []
+    for item in raw_items:
+        text = str(item or "").strip().strip('"')
+        if not text or not os.path.isabs(text):
+            continue
+        try:
+            absolute = os.path.abspath(text)
+        except (OSError, ValueError):
+            continue
+        if _is_filesystem_root(absolute):
+            continue
+        key = _exclude_key(absolute)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(absolute)
+    return out
+
+
+def active_exclude_paths() -> Sequence[str]:
+    state = _EXCLUDE_STATE.get()
+    if state is None:
+        return ()
+    return state.paths
+
+
+class exclude_paths_scope:
+    """Bật danh sách loại trừ cho quét/xóa lồng nhau trong luồng này."""
+
+    def __init__(self, paths: Any) -> None:
+        self.state = _ExcludeState(normalize_exclude_paths(paths))
+        self.token: Optional[contextvars.Token] = None
+
+    def __enter__(self) -> "_ExcludeState":
+        self.token = _EXCLUDE_STATE.set(self.state)
+        return self.state
+
+    def __exit__(self, *_exc: Any) -> None:
+        if self.token is not None:
+            _EXCLUDE_STATE.reset(self.token)
+
+
+def path_is_excluded(path: str, exclude_paths: Optional[Sequence[str]] = None) -> bool:
+    """
+    True nếu path trùng một mục loại trừ hoặc là thư mục con của mục đó.
+    So khớp theo tiền tố có dấu phân cách, không phân biệt hoa thường.
+    """
+    if not path:
+        return False
+    if exclude_paths is None:
+        state = _EXCLUDE_STATE.get()
+        keys = () if state is None else state.keys
+    else:
+        keys = tuple(_exclude_key(item) for item in normalize_exclude_paths(exclude_paths))
+    if not keys:
+        return False
+    try:
+        child = _exclude_key(path)
+    except (OSError, ValueError):
+        return False
+    return any(_same_or_child_key(child, root) for root in keys)
+
+
+def exclude_lies_within(path: str) -> bool:
+    """True nếu một mục loại trừ là chính path hoặc nằm bên trong path."""
+    state = _EXCLUDE_STATE.get()
+    if state is None or not state.keys or not path:
+        return False
+    try:
+        root = _exclude_key(path)
+    except (OSError, ValueError):
+        return False
+    return any(_same_or_child_key(key, root) for key in state.keys)
+
+
+def excluded_paths_touching(roots: Sequence[str], exclude_paths: Sequence[str]) -> List[str]:
+    """Mục loại trừ cắt một thư mục sẽ quét — dùng để hiện «đã bỏ qua» trên xem trước."""
+    hits: List[str] = []
+    normalized = normalize_exclude_paths(exclude_paths)
+    for excluded in normalized:
+        for root in roots:
+            if not root:
+                continue
+            if path_is_excluded(excluded, [root]) or path_is_excluded(root, [excluded]):
+                hits.append(excluded)
+                break
+    return hits
 
 
 def path_is_too_broad(path: str, *, user_profile: str = "", system_root: str = "") -> bool:
@@ -2234,7 +2385,9 @@ def _empty_root_allowed(path: str, *, user_profile: str = "", system_root: str =
         return False
     if os.path.islink(path) or _is_reparse_point(path):
         return False
-    if path_is_forbidden(path) or path_has_sensitive_data(path) or path_is_game_install(path):
+    if path_is_forbidden(path) or path_is_excluded(path):
+        return False
+    if path_has_sensitive_data(path) or path_is_game_install(path):
         return False
     if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
         return False
@@ -2295,7 +2448,9 @@ def list_empty_directories(
             return False
         if os.path.islink(path) or _is_reparse_point(path):
             return False
-        if path_is_forbidden(path) or path_has_sensitive_data(path) or path_is_game_install(path):
+        if path_is_forbidden(path) or path_is_excluded(path):
+            return False
+        if path_has_sensitive_data(path) or path_is_game_install(path):
             return False
         if _is_onedrive_sync_path(path, user_profile):
             return False
@@ -2322,7 +2477,7 @@ def list_empty_directories(
             ):
                 fully_empty = False
                 continue
-            if os.path.islink(child) or _is_reparse_point(child):
+            if os.path.islink(child) or _is_reparse_point(child) or path_is_excluded(child):
                 fully_empty = False
                 continue
             if path_is_forbidden(child) or path_has_sensitive_data(child) or path_is_game_install(child):
@@ -2384,6 +2539,8 @@ def clean_empty_directories(
         system_root=system_root,
     )
     for path in sorted(directories, key=len, reverse=True):
+        if path_is_excluded(path):
+            continue
         if os.path.islink(path) or _is_reparse_point(path) or path_is_forbidden(path):
             result["errors"] += 1
             result["protected"] += 1
@@ -2766,8 +2923,8 @@ def _file_size(path: str) -> int:
 
 
 def scan_tree(path: str) -> Dict[str, int]:
-    """Đếm byte và số tệp. Không đi theo symlink."""
-    if not path or not _exists(path) or path_is_forbidden(path):
+    """Đếm byte và số tệp. Không đi theo symlink và không vào đường dẫn loại trừ."""
+    if not path or not _exists(path) or path_is_forbidden(path) or path_is_excluded(path):
         return {"size_bytes": 0, "file_count": 0}
     if os.path.islink(path):
         return {"size_bytes": 0, "file_count": 0}
@@ -2780,11 +2937,12 @@ def scan_tree(path: str) -> Dict[str, int]:
             dirs[:] = [
                 name for name in dirs
                 if not path_is_forbidden(os.path.join(root, name))
+                and not path_is_excluded(os.path.join(root, name))
                 and not os.path.islink(os.path.join(root, name))
             ]
             for name in files:
                 file_path = os.path.join(root, name)
-                if os.path.islink(file_path) or path_is_forbidden(file_path):
+                if os.path.islink(file_path) or path_is_forbidden(file_path) or path_is_excluded(file_path):
                     continue
                 size = _file_size(file_path)
                 if size or _exists(file_path):
@@ -2797,6 +2955,14 @@ def scan_tree(path: str) -> Dict[str, int]:
 
 def try_delete_file(path: str) -> Dict[str, int]:
     """Xóa một tệp. Byte chỉ được cộng khi tệp không còn."""
+    if path and path_is_excluded(path):
+        return {
+            "freed_bytes": 0,
+            "deleted_files": 0,
+            "skipped_locked": 0,
+            "errors": 0,
+            "skipped_excluded": 1,
+        }
     if not path or path_is_forbidden(path) or os.path.isdir(path) and not os.path.islink(path):
         return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 1}
     if os.path.islink(path):
@@ -2825,7 +2991,7 @@ def try_delete_file(path: str) -> Dict[str, int]:
 
 
 def _merge_counts(total: Dict[str, int], part: Dict[str, int]) -> None:
-    for key in ("freed_bytes", "deleted_files", "skipped_locked", "errors"):
+    for key in ("freed_bytes", "deleted_files", "skipped_locked", "errors", "skipped_excluded"):
         total[key] = int(total.get(key, 0)) + int(part.get(key, 0))
 
 
@@ -2839,7 +3005,11 @@ def clean_children(path: str, *, user_profile: str = "", system_root: str = "") 
         "protected": 0,
         "too_broad": 0,
         "sync_root": 0,
+        "skipped_excluded": 0,
     }
+    if path_is_excluded(path):
+        result["skipped_excluded"] = 1
+        return result
     if path_is_forbidden(path):
         result["errors"] = 1
         result["protected"] = 1
@@ -2861,6 +3031,9 @@ def clean_children(path: str, *, user_profile: str = "", system_root: str = "") 
         return result
     for name in names:
         child = os.path.join(path, name)
+        if path_is_excluded(child):
+            result["skipped_excluded"] += 1
+            continue
         if path_is_forbidden(child):
             result["errors"] += 1
             result["protected"] += 1
@@ -2872,6 +3045,12 @@ def clean_children(path: str, *, user_profile: str = "", system_root: str = "") 
             _merge_counts(result, try_delete_file(child))
             continue
         if os.path.isdir(child):
+            if exclude_lies_within(child):
+                nested = clean_children(child, user_profile=user_profile, system_root=system_root)
+                _merge_counts(result, nested)
+                for field in ("protected", "too_broad", "sync_root"):
+                    result[field] += int(nested.get(field) or 0)
+                continue
             before = scan_tree(child)
             try:
                 import shutil
@@ -2887,6 +3066,21 @@ def clean_children(path: str, *, user_profile: str = "", system_root: str = "") 
             if still:
                 result["skipped_locked"] += max(1, after["file_count"])
     return result
+
+
+def _old_download_skip_dir(path: str, *, user_profile: str = "") -> bool:
+    """Không đi vào OneDrive, reparse, thư mục cấm hoặc đường dẫn loại trừ."""
+    if not path:
+        return True
+    if os.path.islink(path) or _is_reparse_point(path):
+        return True
+    if path_is_forbidden(path) or path_is_excluded(path):
+        return True
+    if _is_onedrive_dir_name(os.path.basename(path)):
+        return True
+    if user_profile and _is_onedrive_sync_path(path, user_profile):
+        return True
+    return False
 
 
 def file_is_old_enough(path: str, min_age_days: int, now_ts: float) -> bool:
@@ -2908,7 +3102,7 @@ def clean_old_files(
     user_profile: str = "",
     system_root: str = "",
 ) -> Dict[str, int]:
-    """Chỉ xóa tệp cũ hơn N ngày. Không xóa thư mục, không đụng symlink."""
+    """Chỉ xóa tệp cũ hơn N ngày. Không xóa thư mục, không đụng symlink/reparse/OneDrive."""
     result = {
         "freed_bytes": 0,
         "deleted_files": 0,
@@ -2918,7 +3112,11 @@ def clean_old_files(
         "too_broad": 0,
         "sync_root": 0,
         "protected": 0,
+        "skipped_excluded": 0,
     }
+    if path_is_excluded(root):
+        result["skipped_excluded"] = 1
+        return result
     if path_is_forbidden(root):
         result["errors"] = 1
         result["protected"] = 1
@@ -2927,23 +3125,35 @@ def clean_old_files(
         result["errors"] = 1
         result["too_broad"] = 1
         return result
-    if _is_onedrive_sync_path(root, user_profile) or int(min_age_days or 0) <= 0:
+    if int(min_age_days or 0) <= 0:
         result["errors"] = 1
-        if _is_onedrive_sync_path(root, user_profile):
-            result["sync_root"] = 1
         return result
     if not _exists(root) or not os.path.isdir(root):
         return result
+    if (
+        _is_onedrive_sync_path(root, user_profile)
+        or os.path.islink(root)
+        or _is_reparse_point(root)
+    ):
+        result["errors"] = 1
+        result["sync_root"] = 1
+        return result
     root_abs = os.path.abspath(root)
-    for dirpath, dirnames, filenames in os.walk(root_abs):
+    for dirpath, dirnames, filenames in os.walk(root_abs, followlinks=False):
         dirnames[:] = [
             name for name in dirnames
-            if not path_is_forbidden(os.path.join(dirpath, name))
-            and not os.path.islink(os.path.join(dirpath, name))
+            if not _old_download_skip_dir(os.path.join(dirpath, name), user_profile=user_profile)
         ]
         for name in filenames:
             file_path = os.path.join(dirpath, name)
-            if os.path.islink(file_path) or path_is_forbidden(file_path):
+            if (
+                os.path.islink(file_path)
+                or _is_reparse_point(file_path)
+                or path_is_forbidden(file_path)
+            ):
+                continue
+            if path_is_excluded(file_path):
+                result["skipped_excluded"] += 1
                 continue
             if not _within_root(file_path, root_abs):
                 result["errors"] += 1
@@ -2965,6 +3175,14 @@ def clean_one_path(
     user_profile: str = "",
     system_root: str = "",
 ) -> Dict[str, int]:
+    if path_is_excluded(path):
+        return {
+            "freed_bytes": 0,
+            "deleted_files": 0,
+            "skipped_locked": 0,
+            "errors": 0,
+            "skipped_excluded": 1,
+        }
     if path_is_forbidden(path):
         return {"freed_bytes": 0, "deleted_files": 0, "skipped_locked": 0, "errors": 1, "protected": 1}
     if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
@@ -2990,20 +3208,43 @@ def clean_one_path(
     return clean_children(path, user_profile=user_profile, system_root=system_root)
 
 
-def scan_old_files(root: str, min_age_days: int, now_ts: float) -> Dict[str, int]:
+def scan_old_files(
+    root: str,
+    min_age_days: int,
+    now_ts: float,
+    *,
+    user_profile: str = "",
+) -> Dict[str, int]:
     total = 0
     count = 0
-    if not _exists(root) or path_is_forbidden(root) or int(min_age_days or 0) <= 0:
+    if (
+        not _exists(root)
+        or not os.path.isdir(root)
+        or path_is_forbidden(root)
+        or path_is_excluded(root)
+        or int(min_age_days or 0) <= 0
+    ):
+        return {"size_bytes": 0, "file_count": 0}
+    if (
+        os.path.islink(root)
+        or _is_reparse_point(root)
+        or (user_profile and _is_onedrive_sync_path(root, user_profile))
+    ):
         return {"size_bytes": 0, "file_count": 0}
     root_abs = os.path.abspath(root)
-    for dirpath, dirnames, filenames in os.walk(root_abs):
+    for dirpath, dirnames, filenames in os.walk(root_abs, followlinks=False):
         dirnames[:] = [
             name for name in dirnames
-            if not path_is_forbidden(os.path.join(dirpath, name))
+            if not _old_download_skip_dir(os.path.join(dirpath, name), user_profile=user_profile)
         ]
         for name in filenames:
             file_path = os.path.join(dirpath, name)
-            if os.path.islink(file_path) or not _within_root(file_path, root_abs):
+            if (
+                os.path.islink(file_path)
+                or _is_reparse_point(file_path)
+                or path_is_excluded(file_path)
+                or not _within_root(file_path, root_abs)
+            ):
                 continue
             if not file_is_old_enough(file_path, min_age_days, now_ts):
                 continue
@@ -3171,9 +3412,17 @@ def _estimate_target_size(
 ) -> Dict[str, int]:
     if key == "recycle_bin":
         info = recycle_info or {}
+        known = info.get("size_known")
+        if known is None:
+            known = bool(info) and (
+                "size_bytes" in info or "items" in info or "file_count" in info
+            )
+        if not known:
+            return {"size_bytes": 0, "file_count": 0, "size_unknown": True}
         return {
             "size_bytes": max(0, int(info.get("size_bytes") or 0)),
             "file_count": max(0, int(info.get("items") or info.get("file_count") or 0)),
+            "size_unknown": False,
         }
     if key == "component_cleanup":
         return {"size_bytes": 0, "file_count": 0}
@@ -3200,7 +3449,9 @@ def _estimate_target_size(
     count = 0
     for path in target_paths.get(key, []):
         if meta.get("clean_mode") == "old_files":
-            stat_info = scan_old_files(path, min_age_days, now_ts)
+            env = os.environ if environ is None else environ
+            profile = str(env.get("USERPROFILE", "") or "")
+            stat_info = scan_old_files(path, min_age_days, now_ts, user_profile=profile)
         else:
             stat_info = scan_tree(path)
         total += int(stat_info.get("size_bytes") or 0)
@@ -3268,6 +3519,7 @@ def estimate_reclaimable(
     downloads_min_age_days: Optional[int] = None,
     now_ts: Optional[float] = None,
     recycle_info: Optional[Dict[str, Any]] = None,
+    exclude_paths: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """
     Ước lượng byte và số tệp của đúng tập resolve_clean_plan sẽ dọn.
@@ -3288,6 +3540,45 @@ def estimate_reclaimable(
     skipped_by_key = {item["key"]: item for item in plan["skipped"]}
     active_keys = [key for key in TARGET_ORDER if plan["to_run"].get(key)]
     pruned_paths = prune_nested_target_paths(target_paths, active_keys)
+    normalized_excludes = normalize_exclude_paths(exclude_paths)
+    scope = exclude_paths_scope(normalized_excludes)
+    scope.__enter__()
+    try:
+        return _estimate_reclaimable_rows(
+            plan=plan,
+            target_paths=target_paths,
+            pruned_paths=pruned_paths,
+            skipped_by_key=skipped_by_key,
+            days=days,
+            moment=moment,
+            recycle_info=recycle_info,
+            environ=environ,
+            is_admin=bool(is_admin),
+            deep_user_safe=bool(deep_user_safe),
+            deep_admin=bool(deep_admin),
+            exclude_paths=normalized_excludes,
+            active_keys=active_keys,
+        )
+    finally:
+        scope.__exit__(None, None, None)
+
+
+def _estimate_reclaimable_rows(
+    *,
+    plan: Dict[str, Any],
+    target_paths: Dict[str, List[str]],
+    pruned_paths: Dict[str, List[str]],
+    skipped_by_key: Dict[str, Any],
+    days: int,
+    moment: float,
+    recycle_info: Optional[Dict[str, Any]],
+    environ: Optional[Dict[str, str]],
+    is_admin: bool,
+    deep_user_safe: bool,
+    deep_admin: bool,
+    exclude_paths: Sequence[str],
+    active_keys: Sequence[str],
+) -> Dict[str, Any]:
     rows: List[Dict[str, Any]] = []
     total_bytes = 0
     total_files = 0
@@ -3317,7 +3608,7 @@ def estimate_reclaimable(
             reclaim_files = 0
             status = "skipped"
             reason = str((skipped or {}).get("reason") or ADMIN_SKIP_REASON_VI)
-        rows.append({
+        row = {
             "key": key,
             "name": meta["label_vi"],
             "group_id": target_group_id(key),
@@ -3330,10 +3621,20 @@ def estimate_reclaimable(
             "reclaimable_bytes": reclaim_bytes,
             "reclaimable_files": reclaim_files,
             "size_label_vi": format_freed_vi(reclaim_bytes if will_run else measured["size_bytes"]),
-        })
+            "size_unknown": bool(measured.get("size_unknown")),
+        }
+        if key == "downloads_old":
+            row["min_age_days"] = days
+        if row["size_unknown"] and will_run and not reason:
+            row["reason"] = RECYCLE_SIZE_UNKNOWN_VI
+        rows.append(row)
         total_bytes += reclaim_bytes
         total_files += reclaim_files
 
+    touched_roots: List[str] = []
+    for key in active_keys:
+        touched_roots.extend(pruned_paths.get(key) or [])
+    excluded_hits = excluded_paths_touching(touched_roots, exclude_paths)
     result = {
         "targets": rows,
         "total_bytes": total_bytes,
@@ -3343,6 +3644,8 @@ def estimate_reclaimable(
         "deep_user_safe": bool(deep_user_safe),
         "deep_admin": bool(deep_admin),
         "skipped": plan["skipped"],
+        "downloads_min_age_days": days,
+        "excluded_paths": excluded_hits,
     }
     result["preview_vi"] = format_scan_preview_vi(result)
     return result
@@ -3369,6 +3672,10 @@ def preview_row_is_shown(row: Dict[str, Any], *, deep_admin: bool = False, is_ad
         file_count = int(row.get("file_count") or 0)
         show_admin_pending = bool(deep_admin) and not is_admin and bool(row.get("needs_admin"))
         return estimated > 0 or file_count > 0 or show_admin_pending
+    if row.get("size_unknown"):
+        return True
+    if row.get("key") == "downloads_old" and row.get("status") == "ready":
+        return True
     size = int(row.get("reclaimable_bytes") or 0)
     count = int(row.get("reclaimable_files") or 0)
     if row.get("key") == "empty_user_folders":
@@ -3397,6 +3704,8 @@ def category_offered_by_default(row: Dict[str, Any], min_mb: Any) -> bool:
     """
     if str(row.get("status") or "") != "ready":
         return False
+    if row.get("size_unknown"):
+        return True
     key = str(row.get("key") or "")
     size = int(row.get("reclaimable_bytes") or 0)
     files = int(row.get("reclaimable_files") or 0)
@@ -3444,10 +3753,21 @@ def format_scan_preview_vi(result: Dict[str, Any]) -> str:
             continue
         size = int(row.get("reclaimable_bytes") or 0)
         count = int(row.get("reclaimable_files") or 0)
+        if row.get("size_unknown"):
+            lines.append(f"• {name}: {RECYCLE_SIZE_UNKNOWN_VI}")
+            shown += 1
+            continue
         if row.get("key") == "empty_user_folders":
             if size <= 0 and count <= 0:
                 continue
             lines.append(f"• {name}: {count} thư mục trống ({format_freed_vi(size)})")
+            shown += 1
+            continue
+        if row.get("key") == "downloads_old":
+            age_days = int(row.get("min_age_days") or result.get("downloads_min_age_days") or DEFAULT_DOWNLOADS_MIN_AGE_DAYS)
+            lines.append(
+                f"• {name}: khoảng {format_freed_vi(size)} ({count} tệp, cũ hơn {age_days} ngày)"
+            )
             shown += 1
             continue
         if size <= 0 and count <= 0:
@@ -3459,6 +3779,12 @@ def format_scan_preview_vi(result: Dict[str, Any]) -> str:
         shown += 1
     if shown == 0:
         lines.append("• Không có gì để xóa (0 B)")
+    excluded = [str(path) for path in (result.get("excluded_paths") or []) if str(path).strip()]
+    if excluded:
+        lines.append("")
+        lines.append("Đường dẫn loại trừ — không quét, không xóa:")
+        for path in excluded:
+            lines.append(f"• Đã bỏ qua: {path}")
     lines.append("")
     lines.append(
         "Bấm «Dọn ngay» để xóa các mục sẵn sàng. "
@@ -3593,6 +3919,8 @@ def _large_file_skip_reason(
         return "Đường dẫn trống — không xóa."
     if os.path.islink(path):
         return "Liên kết tượng trưng — không xóa."
+    if path_is_excluded(path):
+        return EXCLUDED_REASON_VI
     if path_is_forbidden(path):
         return PROTECTED_REASON_VI
     if path_is_too_broad(path, user_profile=user_profile, system_root=system_root):
@@ -3618,7 +3946,7 @@ def _large_scan_skip_dir(path: str, *, user_profile: str) -> bool:
     name = os.path.basename(path).lower()
     if name in _BLOCKED_DIR_NAMES or name in _LARGE_SKIP_DIR_NAMES:
         return True
-    if path_is_forbidden(path) or path_has_sensitive_data(path):
+    if path_is_forbidden(path) or path_is_excluded(path) or path_has_sensitive_data(path):
         return True
     if user_profile and _is_onedrive_sync_path(path, user_profile):
         return True
@@ -3667,6 +3995,7 @@ def scan_large_user_files(
     now_ts: Optional[float] = None,
     progress_callback: Optional[Callable[[str, int], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    exclude_paths: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """
     Tìm tệp lớn trong hồ sơ người dùng. Không xóa.
@@ -3699,6 +4028,46 @@ def scan_large_user_files(
     system_root = _env(environ, "SystemRoot") or _env(environ, "SYSTEMROOT")
     moment = time.time() if now_ts is None else float(now_ts)
     roots = large_file_scan_roots(environ, include_local_appdata=include_local_appdata)
+    scope = exclude_paths_scope(exclude_paths)
+    scope.__enter__()
+    try:
+        return _scan_large_user_files_inner(
+            user_profile=user_profile,
+            local_app_data=local_app_data,
+            system_root=system_root,
+            moment=moment,
+            roots=roots,
+            threshold=threshold,
+            age_limit=age_limit,
+            depth_cap=depth_cap,
+            result_cap=result_cap,
+            visit_cap=visit_cap,
+            time_cap=time_cap,
+            include_local_appdata=include_local_appdata,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
+    finally:
+        scope.__exit__(None, None, None)
+
+
+def _scan_large_user_files_inner(
+    *,
+    user_profile: str,
+    local_app_data: str,
+    system_root: str,
+    moment: float,
+    roots: Sequence[str],
+    threshold: int,
+    age_limit: int,
+    depth_cap: int,
+    result_cap: int,
+    visit_cap: int,
+    time_cap: float,
+    include_local_appdata: bool,
+    progress_callback: Optional[Callable[[str, int], None]],
+    cancel_check: Optional[Callable[[], bool]],
+) -> Dict[str, Any]:
     found: List[Dict[str, Any]] = []
     visited = 0
     truncated = False
@@ -3746,7 +4115,11 @@ def scan_large_user_files(
             seen_dirs.add(current_key)
             if current != root and _large_scan_skip_dir(current, user_profile=user_profile):
                 continue
-            if path_is_forbidden(current) or (user_profile and _is_onedrive_sync_path(current, user_profile)):
+            if (
+                path_is_forbidden(current)
+                or path_is_excluded(current)
+                or (user_profile and _is_onedrive_sync_path(current, user_profile))
+            ):
                 continue
             try:
                 names = list(os.listdir(current))
@@ -3835,11 +4208,32 @@ def delete_large_files(
     paths: Sequence[str],
     *,
     environ: Optional[Dict[str, str]] = None,
+    exclude_paths: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Xóa đúng các tệp được truyền vào. Quét không gọi hàm này."""
     user_profile = _env(environ, "USERPROFILE")
     local_app_data = _env(environ, "LOCALAPPDATA")
     system_root = _env(environ, "SystemRoot") or _env(environ, "SYSTEMROOT")
+    scope = exclude_paths_scope(exclude_paths)
+    scope.__enter__()
+    try:
+        return _delete_large_files_inner(
+            paths,
+            user_profile=user_profile,
+            local_app_data=local_app_data,
+            system_root=system_root,
+        )
+    finally:
+        scope.__exit__(None, None, None)
+
+
+def _delete_large_files_inner(
+    paths: Sequence[str],
+    *,
+    user_profile: str,
+    local_app_data: str,
+    system_root: str,
+) -> Dict[str, Any]:
     freed = 0
     deleted_files = 0
     skipped_locked = 0

@@ -45,8 +45,18 @@ class CDrivePreviewDialog(QDialog):
         """)
 
         data = preview if isinstance(preview, dict) else {}
+        self._preview = data
         self._rows = preview_rows_for_display(data)
         self._checks = []
+        self._downloads_present = any(
+            isinstance(row, dict) and row.get("key") == "downloads_old"
+            for row in (data.get("targets") or [])
+        )
+        try:
+            self._downloads_days = int(data.get("downloads_min_age_days") or 30)
+        except (TypeError, ValueError):
+            self._downloads_days = 30
+        self._downloads_days = max(1, min(365, self._downloads_days))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -88,6 +98,21 @@ class CDrivePreviewDialog(QDialog):
         threshold_row.addWidget(threshold_hint, 1)
         layout.addLayout(threshold_row)
 
+        if self._downloads_present:
+            age_row = QHBoxLayout()
+            age_label = QLabel("Tệp Downloads cũ hơn:")
+            age_label.setStyleSheet("color: #94a3b8;")
+            self.spin_downloads_age = QSpinBox()
+            self.spin_downloads_age.setRange(1, 365)
+            self.spin_downloads_age.setSuffix(" ngày")
+            self.spin_downloads_age.setValue(self._downloads_days)
+            age_hint = QLabel("Không xóa thư mục. Đổi số ngày có hiệu lực lúc Dọn ngay.")
+            age_hint.setStyleSheet("color: #64748b; font-size: 11px;")
+            age_row.addWidget(age_label)
+            age_row.addWidget(self.spin_downloads_age)
+            age_row.addWidget(age_hint, 1)
+            layout.addLayout(age_row)
+
         card = QFrame()
         card.setObjectName("CDrivePreviewCard")
         card.setStyleSheet("""
@@ -115,6 +140,11 @@ class CDrivePreviewDialog(QDialog):
             host_layout.addWidget(empty)
         for row in self._rows:
             host_layout.addWidget(self._build_row(row))
+        for path in self._preview.get("excluded_paths") or []:
+            skipped = QLabel(f"Đã bỏ qua: {path}")
+            skipped.setWordWrap(True)
+            skipped.setStyleSheet("color: #fbbf24; font-size: 12px;")
+            host_layout.addWidget(skipped)
         host_layout.addStretch()
         scroll.setWidget(host)
         card_layout.addWidget(scroll)
@@ -178,6 +208,11 @@ class CDrivePreviewDialog(QDialog):
     def min_clean_mb(self) -> int:
         return normalize_min_clean_mb(self.spin_min_clean_mb.value())
 
+    def downloads_min_age_days(self) -> int:
+        if hasattr(self, "spin_downloads_age"):
+            return max(1, min(365, int(self.spin_downloads_age.value())))
+        return int(self._downloads_days or 30)
+
     def selected_keys(self):
         keys = []
         for checkbox, row in self._checks:
@@ -213,8 +248,13 @@ class CDrivePreviewDialog(QDialog):
         name = str(row.get("name") or row.get("key") or "Mục")
         size = int(row.get("reclaimable_bytes") or 0)
         count = int(row.get("reclaimable_files") or 0)
-        if row.get("key") == "empty_user_folders":
+        if row.get("size_unknown"):
+            detail = "chưa ước lượng được dung lượng — vẫn có thể dọn"
+        elif row.get("key") == "empty_user_folders":
             detail = f"{count} thư mục trống ({format_freed_vi(size)})"
+        elif row.get("key") == "downloads_old":
+            days = int(row.get("min_age_days") or getattr(self, "_downloads_days", 30) or 30)
+            detail = f"khoảng {format_freed_vi(size)} ({count} tệp, cũ hơn {days} ngày)"
         elif size <= 0 and count <= 0:
             detail = "khoảng 0 B"
         else:

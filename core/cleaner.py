@@ -20,10 +20,12 @@ from core.c_drive_clean import (
     default_hibernate_off,
     empty_detail,
     estimate_reclaimable,
+    exclude_paths_scope,
     format_clean_report_vi,
     format_freed_vi,
     is_process_elevated,
     normalize_downloads_min_age_days,
+    normalize_exclude_paths,
     _EmptyDirBudget,
     list_empty_directories,
     prune_nested_target_paths,
@@ -73,21 +75,34 @@ class JunkCleaner:
     @staticmethod
     def get_recycle_bin_info() -> Dict[str, Any]:
         """
-        Lấy thông tin dung lượng và số lượng file trong Thùng Rác (Recycle Bin)
+        Dung lượng thùng rác của tài khoản hiện tại.
+        size_known=False khi không đọc được — không đoán 0 B là thùng trống.
         """
+        unknown = {
+            "size_bytes": 0,
+            "size_mb": 0.0,
+            "items": 0,
+            "size_known": False,
+            "reason": "Chưa ước lượng được dung lượng thùng rác. Vẫn có thể dọn nếu bạn bật.",
+        }
+        if os.name != "nt":
+            return unknown
         try:
             rb = SHQUERYRBINFO()
             rb.cbSize = ctypes.sizeof(SHQUERYRBINFO)
             res = ctypes.windll.shell32.SHQueryRecycleBinW(None, ctypes.byref(rb))
             if res == 0:
+                size = max(0, int(rb.i64Size))
+                items = max(0, int(rb.i64NumItems))
                 return {
-                    "size_bytes": rb.i64Size,
-                    "size_mb": round(rb.i64Size / (1024 ** 2), 2),
-                    "items": rb.i64NumItems
+                    "size_bytes": size,
+                    "size_mb": round(size / (1024 ** 2), 2),
+                    "items": items,
+                    "size_known": True,
                 }
         except Exception as e:
             print(f"[JunkCleaner] Error querying recycle bin: {e}")
-        return {"size_bytes": 0, "size_mb": 0.0, "items": 0}
+        return unknown
 
     @staticmethod
     def empty_recycle_bin() -> Dict[str, Any]:
@@ -146,6 +161,7 @@ class JunkCleaner:
         downloads_min_age_days: Optional[int] = None,
         now_ts: Optional[float] = None,
         recycle_query: Optional[Callable[[], Dict[str, Any]]] = None,
+        exclude_paths: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """
         Ước lượng dung lượng có thể xóa với quyền hiện tại.
@@ -178,6 +194,41 @@ class JunkCleaner:
         ]
         pruned_paths = prune_nested_target_paths(target_paths, active_keys)
         empty_budget = _EmptyDirBudget()
+        scope = exclude_paths_scope(exclude_paths)
+        scope.__enter__()
+        try:
+            return cls._scan_categories(
+                enabled=enabled,
+                is_admin=bool(is_admin),
+                target_paths=target_paths,
+                pruned_paths=pruned_paths,
+                days=days,
+                moment=moment,
+                user_profile=user_profile,
+                system_root=system_root,
+                recycle_query=recycle_query,
+                empty_budget=empty_budget,
+                results=results,
+            )
+        finally:
+            scope.__exit__(None, None, None)
+
+    @classmethod
+    def _scan_categories(
+        cls,
+        *,
+        enabled: Dict[str, bool],
+        is_admin: bool,
+        target_paths: Dict[str, List[str]],
+        pruned_paths: Dict[str, List[str]],
+        days: int,
+        moment: float,
+        user_profile: str,
+        system_root: str,
+        recycle_query: Optional[Callable[[], Dict[str, Any]]],
+        empty_budget: _EmptyDirBudget,
+        results: Dict[str, Any],
+    ) -> Dict[str, Any]:
         for cat_key in TARGET_ORDER:
             if not enabled.get(cat_key, False):
                 continue
@@ -189,14 +240,38 @@ class JunkCleaner:
                 try:
                     rb_info = query() or {}
                 except Exception:
-                    rb_info = {}
-                cat_bytes = max(0, int(rb_info.get("size_bytes") or 0))
-                cat_files = max(0, int(rb_info.get("items") or 0))
+                    rb_info = {"size_known": False, "size_bytes": 0, "items": 0}
+                known = rb_info.get("size_known")
+                if known is None:
+                    known = "size_bytes" in rb_info or "items" in rb_info
+                if known:
+                    cat_bytes = max(0, int(rb_info.get("size_bytes") or 0))
+                    cat_files = max(0, int(rb_info.get("items") or 0))
+                else:
+                    cat_bytes = 0
+                    cat_files = 0
+                results["categories"][cat_key] = {
+                    "name": meta["label_vi"],
+                    "size_bytes": cat_bytes,
+                    "size_mb": round(cat_bytes / (1024 ** 2), 2),
+                    "file_count": cat_files,
+                    "needs_admin": bool(meta["needs_admin"]),
+                    "will_skip": will_skip,
+                    "scope": meta["scope"],
+                    "risk": meta["risk"],
+                    "size_unknown": not bool(known),
+                }
+                if will_skip:
+                    results["admin_only_bytes"] += cat_bytes
+                elif known:
+                    results["total_bytes"] += cat_bytes
+                    results["total_files"] += cat_files
+                continue
             elif meta["clean_mode"] == "old_files":
                 cat_bytes = 0
                 cat_files = 0
                 for path in sized_paths.get(cat_key, []):
-                    stat_info = scan_old_files(path, days, moment)
+                    stat_info = scan_old_files(path, days, moment, user_profile=user_profile)
                     cat_bytes += stat_info["size_bytes"]
                     cat_files += stat_info["file_count"]
             elif meta["clean_mode"] == "empty_dirs":
@@ -249,6 +324,7 @@ class JunkCleaner:
         recycle_query: Optional[Callable[[], Dict[str, Any]]] = None,
         deep_user_safe: bool = True,
         deep_admin: bool = False,
+        exclude_paths: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """Quét xem trước cho «Dọn ổ C» hoặc «Dọn sâu (cần Admin)». Không xóa tệp."""
         if is_admin is None:
@@ -265,7 +341,12 @@ class JunkCleaner:
             try:
                 recycle_info = query() or {}
             except Exception:
-                recycle_info = {}
+                recycle_info = {"size_known": False, "size_bytes": 0, "items": 0}
+            if recycle_info.get("size_known") is None and not (
+                "size_bytes" in recycle_info or "items" in recycle_info or "file_count" in recycle_info
+            ):
+                recycle_info = dict(recycle_info)
+                recycle_info["size_known"] = False
         return estimate_reclaimable(
             enabled_targets,
             is_admin=bool(is_admin),
@@ -275,6 +356,7 @@ class JunkCleaner:
             downloads_min_age_days=downloads_min_age_days,
             now_ts=now_ts,
             recycle_info=recycle_info,
+            exclude_paths=exclude_paths,
         )
 
     @classmethod
@@ -339,6 +421,7 @@ class JunkCleaner:
         component_cleanup: Optional[Callable[[], Dict[str, Any]]] = None,
         hibernate_off: Optional[Callable[..., Dict[str, Any]]] = None,
         only_keys: Optional[Sequence[str]] = None,
+        exclude_paths: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """
         Dọn các mục được chọn. Mục cần Admin bị bỏ qua khi chưa elevated.
@@ -361,7 +444,49 @@ class JunkCleaner:
             DEFAULT_DOWNLOADS_MIN_AGE_DAYS if downloads_min_age_days is None else downloads_min_age_days
         )
         moment = time.time() if now_ts is None else float(now_ts)
+        scope = exclude_paths_scope(normalize_exclude_paths(exclude_paths))
+        scope.__enter__()
+        try:
+            return cls._clean_planned(
+                plan=plan,
+                target_paths=target_paths,
+                user_profile=user_profile,
+                system_root=system_root,
+                days=days,
+                moment=moment,
+                progress_callback=progress_callback,
+                is_admin=bool(is_admin),
+                deep_user_safe=bool(deep_user_safe),
+                deep_admin=bool(deep_admin),
+                environ=environ,
+                recycle_empty=recycle_empty,
+                disk_free_bytes=disk_free_bytes,
+                component_cleanup=component_cleanup,
+                hibernate_off=hibernate_off,
+            )
+        finally:
+            scope.__exit__(None, None, None)
 
+    @classmethod
+    def _clean_planned(
+        cls,
+        *,
+        plan: Dict[str, Any],
+        target_paths: Dict[str, List[str]],
+        user_profile: str,
+        system_root: str,
+        days: int,
+        moment: float,
+        progress_callback: Optional[Callable[[str, int], None]],
+        is_admin: bool,
+        deep_user_safe: bool,
+        deep_admin: bool,
+        environ: Optional[Dict[str, str]],
+        recycle_empty: Optional[Callable[[], Dict[str, Any]]],
+        disk_free_bytes: Optional[Callable[[], Optional[int]]],
+        component_cleanup: Optional[Callable[[], Dict[str, Any]]],
+        hibernate_off: Optional[Callable[..., Dict[str, Any]]],
+    ) -> Dict[str, Any]:
         details: Dict[str, Any] = {}
         detail_order: List[str] = []
         total_freed_bytes = 0

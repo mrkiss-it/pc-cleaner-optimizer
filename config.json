@@ -27,7 +27,7 @@
         "office_file_cache": false,
         "store_cache": true,
         "delivery_cache": true,
-        "recycle_bin": true,
+        "recycle_bin": false,
         "downloads_old": false,
         "system_temp": true,
         "windows_update": true,
@@ -43,6 +43,7 @@
         "ram_optimize": true
     },
     "downloads_old_min_days": 30,
+    "c_drive_exclude_paths": [],
     "low_disk_warn_enabled": true,
     "low_disk_free_gb": 10.0,
     "low_disk_free_percent": 10.0,
