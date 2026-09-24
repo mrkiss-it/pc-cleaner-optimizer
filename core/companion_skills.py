@@ -277,6 +277,69 @@ def issue_is_declined(issue_class: str, base_dir: Optional[str] = None, now=None
     return str(issue_class or "").strip().lower() in _declined_issues(base_dir, now=now)
 
 
+def decline_is_forever(until: str) -> bool:
+    return str(until or "").startswith("9999")
+
+
+def list_declined_offers(base_dir: Optional[str] = None, now=None) -> List[Dict[str, Any]]:
+    """Skill prompts the user asked not to see. Empty when the quiet period ended."""
+    try:
+        from core.companion_maturity import load_state
+        raw = load_state(base_dir).get("declined_skill_until") or {}
+    except Exception:
+        return []
+    if not isinstance(raw, dict):
+        return []
+    rows: List[Dict[str, Any]] = []
+    for issue, until in raw.items():
+        key = str(issue or "").strip().lower()
+        if key not in PLAYBOOKS or not issue_is_declined(key, base_dir=base_dir, now=now):
+            continue
+        text = str(until or "")
+        rows.append({
+            "issue_class": key,
+            "title": str(PLAYBOOKS[key].get("title") or key),
+            "until": text,
+            "forever": decline_is_forever(text),
+        })
+    rows.sort(key=lambda item: item["issue_class"])
+    return rows
+
+
+def clear_declined_offer(issue_class: str, base_dir: Optional[str] = None) -> bool:
+    """Let one skipped playbook be offered again. Does not save the skill."""
+    key = str(issue_class or "").strip().lower()
+    if not key:
+        return False
+    try:
+        from core.companion_maturity import load_state, save_state
+        state = load_state(base_dir)
+    except Exception:
+        return False
+    raw = state.get("declined_skill_until")
+    if not isinstance(raw, dict) or key not in raw:
+        return False
+    raw = dict(raw)
+    raw.pop(key, None)
+    state["declined_skill_until"] = raw
+    save_state(state, base_dir=base_dir)
+    return True
+
+
+def clear_declined_offers(base_dir: Optional[str] = None) -> int:
+    rows = list_declined_offers(base_dir=base_dir)
+    if not rows:
+        return 0
+    try:
+        from core.companion_maturity import load_state, save_state
+        state = load_state(base_dir)
+    except Exception:
+        return 0
+    state["declined_skill_until"] = {}
+    save_state(state, base_dir=base_dir)
+    return len(rows)
+
+
 def _declined_issues(base_dir: Optional[str] = None, now=None) -> set:
     """Issue classes the user skipped recently — don't nag the same offer."""
     try:

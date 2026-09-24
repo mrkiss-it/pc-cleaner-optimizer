@@ -3651,4 +3651,179 @@ check(phase_card.btn_save_skill.isHidden() is False, "Lưu kỹ năng stays visi
 phase_card.deleteLater()
 print(" [PASS] phase 2 promote / rank / decay / explain")
 
+# ---------------------------------------------------------------------------
+# Phase 3 — outcome feedback, mute clarity, growth badge, ranking
+# ---------------------------------------------------------------------------
+
+from app_meta import APP_VERSION
+from core.companion_learning import learning_growth, load_daily_model, record_action_outcome
+from core.companion_moment import _count_line, note_one_tap_outcome, schedule_action_followup
+from core.companion_profile import choose_today_insight, format_muted_browse, mute_is_forever
+from core.companion_skills import clear_declined_offer, list_declined_offers
+
+check(APP_VERSION == "3.8.6", "phase 3 does not bump APP_VERSION")
+
+grow_empty = _fresh_dir()
+empty_growth = learning_growth(base_dir=grow_empty, now=phase_day)
+check(empty_growth.get("stage") == 0, "almost no feedback is growth stage 0")
+check(empty_growth.get("badge_vi") == "Trí nhớ · Mới quen", "stage 0 badge is friendly Vietnamese")
+check("AGI" not in (empty_growth.get("blurb_vi") or ""), "the growth blurb does not claim AGI")
+
+for offset in range(2):
+    note_user_feedback(True, base_dir=grow_empty, now=phase_day, topic="disk")
+saved_growth = update_daily_model(now=phase_day, base_dir=grow_empty, force=True)
+heard = learning_growth(base_dir=grow_empty, now=phase_day, model=saved_growth)
+check(heard.get("stage") == 1, "a couple of Có ích reaches stage 1")
+check("Đang nghe" in (heard.get("badge_vi") or ""), "stage 1 badge says Đang nghe")
+check(learned_skill_offer(base_dir=grow_empty, now=phase_day) is None, "stage 1 still respects the promote bar")
+
+offer_root = _fresh_dir()
+save_daily_model(phase_model, base_dir=offer_root)
+refresh_learned_skill_offer(now=phase_day, base_dir=offer_root)
+decline_skill_offer(base_dir=offer_root, now=phase_day)
+check(pending_skill_offer(base_dir=offer_root, now=phase_day) is None, "Bỏ qua hides the offer immediately")
+check(
+    learned_skill_offer(base_dir=offer_root, now=phase_day + timedelta(days=1)) is None,
+    "Bỏ qua still hides the offer the next session",
+)
+check(
+    refresh_learned_skill_offer(now=phase_day + timedelta(days=1), base_dir=offer_root) is None,
+    "the next session does not put the declined skill back",
+)
+forever_root = _fresh_dir()
+save_daily_model(phase_model, base_dir=forever_root)
+refresh_learned_skill_offer(now=phase_day, base_dir=forever_root)
+decline_skill_offer(base_dir=forever_root, now=phase_day, forever=True)
+held = list_declined_offers(base_dir=forever_root, now=phase_day)
+check(held and held[0].get("forever") is True, "Đừng hỏi lại is stored as forever")
+check(
+    learned_skill_offer(base_dir=forever_root, now=phase_day + timedelta(days=40)) is None,
+    "a forever decline does not nag weeks later",
+)
+check(clear_declined_offer(held[0]["issue_class"], base_dir=forever_root), "Bỏ chặn gợi ý clears that skill")
+check(list_declined_offers(base_dir=forever_root, now=phase_day + timedelta(days=40)) == [], "the skill can be offered again after unmute")
+
+mute_root = _fresh_dir()
+forever_until = mute_topic("wifi", forever=True, reason="user", base_dir=mute_root, now=phase_day)
+check(forever_until and forever_until.startswith("9999"), "a forever mute has no near end date")
+check(topic_is_muted("wifi", base_dir=mute_root, now=phase_day + timedelta(days=40)), "a forever mute survives later sessions")
+check("mãi mãi" in format_muted_browse(base_dir=mute_root, now=phase_day), "the mute list says mãi mãi")
+check(mute_is_forever(active_muted_topics(base_dir=mute_root, now=phase_day).get("wifi")), "the stored mute is marked forever")
+unmute_topic("wifi", base_dir=mute_root)
+check(not topic_is_muted("wifi", base_dir=mute_root, now=phase_day + timedelta(days=40)), "Bỏ im clears a forever mute")
+
+week_events = [
+    {"kind": "wifi_weak", "ts": "2026-09-23T20:00:00", "metrics": {"count": 2}},
+    {"kind": "high_ram", "ts": "2026-09-23T21:00:00", "metrics": {"count": 4}},
+]
+quiet_week = _count_line(week_events, now=phase_day, muted={"ram"})
+check("Wi-Fi" in quiet_week and "RAM" not in quiet_week, "the weekly count skips a muted topic")
+rank_root = _fresh_dir()
+save_daily_model(
+    {
+        "version": 2,
+        "date": "2026-09-24",
+        "summary_vi": "Hôm nay học được: dọn máy.",
+        "topic_scores": {
+            "ram": {"helpful": 0, "unhelpful": 4, "diary": 2, "last_signal": "2026-09-24"},
+            "disk": {"helpful": 4, "unhelpful": 0, "diary": 2, "last_signal": "2026-09-24"},
+        },
+        "lessons": ["dọn máy — người dùng thấy có ích"],
+    },
+    base_dir=rank_root,
+)
+ranked_week = _count_line(
+    [
+        {"kind": "high_ram", "ts": "2026-09-23T21:00:00", "metrics": {"count": 3}},
+        {"kind": "clean_light", "ts": "2026-09-23T18:00:00", "metrics": {"count": 1}},
+    ],
+    now=phase_day,
+    base_dir=rank_root,
+    muted=set(),
+)
+check("dọn" in ranked_week.lower() and "RAM" not in ranked_week, "a Chưa-heavy topic drops out of the weekly count when another line remains")
+chosen_today = choose_today_insight(
+    [
+        {"id": "window:ram:evening", "topic": "ram", "text": "Hôm nay: RAM cao buổi tối."},
+        {"id": "habit:disk", "topic": "disk", "text": "Hôm nay: hay dọn máy."},
+    ],
+    now=phase_day,
+    base_dir=rank_root,
+)
+check(chosen_today and chosen_today.get("topic") == "disk", "Hôm nay steps aside a weak window when another line remains")
+only_window = choose_today_insight(
+    [{"id": "window:ram:evening", "topic": "ram", "text": "Hôm nay: RAM cao buổi tối."}],
+    now=phase_day,
+    base_dir=rank_root,
+)
+check(only_window and only_window.get("topic") == "ram", "a weak window still shows when it is the only line")
+
+tap_root = _fresh_dir()
+check(
+    schedule_action_followup("preview_c_drive", now=phase_day, base_dir=tap_root, config_manager=_Cfg()) is None,
+    "the preview tap does not ask before a result exists",
+)
+noted = note_one_tap_outcome(
+    "preview_c_drive",
+    topic="disk",
+    bytes_found=4096,
+    target_count=2,
+    label_vi="4 KB",
+    now=phase_day,
+    base_dir=tap_root,
+    config_manager=_Cfg(),
+)
+check(noted and noted.get("asked") is True, "a finished preview asks Có ích / Chưa")
+check("xem trước" in (noted.get("question_vi") or "") and "4 KB" in (noted.get("question_vi") or ""), "the question cites the preview hint")
+check(int((noted.get("outcome") or {}).get("bytes") or 0) == 4096, "the outcome keeps the byte count")
+check(int((noted.get("outcome") or {}).get("targets") or 0) == 2, "the outcome keeps the target count")
+stored_outcome = (load_daily_model(tap_root).get("action_outcomes") or [])[-1]
+check(stored_outcome.get("topic") == "disk" and stored_outcome.get("at", "").startswith("2026-09-24"), "the learning model stores topic and timestamp")
+due = due_action_followup(now=phase_day, base_dir=tap_root, config_manager=_Cfg())
+check(due and due.get("question_vi"), "Có ích / Chưa is due immediately after the preview")
+before_disk = int(((load_profile(tap_root).get("topic_trust") or {}).get("disk") or {}).get("helpful") or 0)
+answer_action_followup(True, now=phase_day, base_dir=tap_root, config_manager=_Cfg())
+after_disk = int(((load_profile(tap_root).get("topic_trust") or {}).get("disk") or {}).get("helpful") or 0)
+check(after_disk == before_disk + 1, "Có ích after the preview nudges the disk topic")
+check(int(((load_daily_model(tap_root).get("micro") or {}).get("topics") or {}).get("disk", {}).get("helpful") or 0) >= 1, "the same-day overlay records the Có ích")
+rebuilt_tap = update_daily_model(now=phase_day, base_dir=tap_root, force=True)
+kept_outcome = rebuilt_tap.get("action_outcomes") or []
+check(kept_outcome and int(kept_outcome[-1].get("bytes") or 0) == 4096, "a rebuild keeps the preview outcome")
+check(record_action_outcome(topic="disk", action_key="winsxs_cleanup", bytes_found=9, now=phase_day, base_dir=tap_root) == {}, "a blocked outcome is not stored")
+check(ExamMeetingFocus.is_active() is False, "preview feedback does not enable Trước thi / họp")
+check(learned_one_tap_key("thermal", base_dir=tap_root, now=phase_day) == "", "no second one-tap: thermal has no preview-only action")
+check(learned_one_tap_key("ram", base_dir=rank_root, now=phase_day) == "", "a weak non-disk topic does not grow a one-tap")
+
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = tap_root
+growth_card = CompanionCard(config_manager=_Cfg(), compact=False)
+growth_card.refresh()
+check(growth_card.lbl_growth.text().startswith("Trí nhớ ·"), "the companion card shows the growth badge")
+check(growth_card.btn_skip_skill_forever.text() == "Đừng hỏi lại", "the skill offer can be declined forever")
+growth_card.deleteLater()
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = forever_root
+save_daily_model(phase_model, base_dir=forever_root)
+clear_declined_offer("wifi_weak", base_dir=forever_root)
+refresh_learned_skill_offer(now=phase_day, base_dir=forever_root)
+ask_card = CompanionCard(config_manager=_Cfg(), compact=False)
+ask_card.refresh()
+check(not ask_card.btn_skip_skill_forever.isHidden(), "Đừng hỏi lại is visible while a skill offer is open")
+ask_card.btn_skip_skill_forever.click()
+check(pending_skill_offer(base_dir=forever_root, now=phase_day) is None, "clicking Đừng hỏi lại clears the offer")
+check(ask_card.btn_skip_skill_forever.isHidden(), "the forever decline button hides with the offer")
+check(
+    list_declined_offers(base_dir=forever_root, now=phase_day + timedelta(days=40))
+    and list_declined_offers(base_dir=forever_root, now=phase_day + timedelta(days=40))[0].get("forever") is True,
+    "the button stores a forever decline",
+)
+ask_card.deleteLater()
+growth_bar = CompanionInsightBar(config_manager=_Cfg())
+growth_bar.refresh()
+check(growth_bar.btn_mute_forever.text() == "Đừng nhắc nữa", "a topic can be muted with no end date")
+growth_bar._insight_topic = "thermal"
+growth_bar._mute_topic_forever()
+check(topic_is_muted("thermal", base_dir=forever_root, now=phase_day + timedelta(days=40)), "Đừng nhắc nữa mutes the topic with no end date")
+check(growth_bar.isHidden() or growth_bar.lbl_growth.text().startswith("Trí nhớ ·"), "the insight strip can show the growth badge without opening an empty day")
+growth_bar.deleteLater()
+print(" [PASS] phase 3 feedback / mute / growth")
+
 print(" [PASS] companion AI suite")

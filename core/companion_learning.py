@@ -57,6 +57,17 @@ training, and still no raise of action caps.
 - One tap: a trusted disk topic may suggest «Quét ổ C (xem trước)»; a trusted
   focus topic may suggest Trước thi/họp. The button is the confirmation.
   Preview does not delete and does not ask for UAC.
+
+Phase 3 stays on this same file. Still no training.
+
+- After «Quét ổ C (xem trước)» finishes, `action_outcomes` stores the topic,
+  a short hint (bytes, target count, label), and a timestamp. Có ích / Chưa
+  then nudges that topic the same way as any other feedback. Nothing is deleted.
+- Growth stage 0–3 is a badge plus a soft gate on the *learning* skill offer
+  (only when stage ≥ 1). The day-based giai đoạn, the promote counts, rank,
+  and the existing C: preview tap stay as they are for a PC that already has
+  Có ích / Chưa. Downloads and the recycle bin are targets inside that preview,
+  not a second topic, so there is no extra one-tap.
 """
 from __future__ import annotations
 
@@ -91,6 +102,24 @@ ONE_TAP_HELPFUL_MIN = 2
 _ONE_TAP_BY_TOPIC = {
     "disk": "preview_c_drive",
     "focus": "enable_exam_focus",
+}
+_MAX_OUTCOMES = 8
+# Feedback maturity for the badge. Separate from the day-based giai đoạn.
+GROWTH_FEEDBACK_SOME = 2
+GROWTH_FEEDBACK_ENOUGH = 6
+GROWTH_FEEDBACK_SUSTAINED = 12
+GROWTH_RECENT_DAYS = 14
+GROWTH_LABELS_VI = {
+    0: "Mới quen",
+    1: "Đang nghe",
+    2: "Đã nhớ",
+    3: "Gắn bó",
+}
+GROWTH_BLURBS_VI = {
+    0: "Mình mới quen máy này — chưa có mấy Có ích / Chưa.",
+    1: "Đã nghe vài Có ích / Chưa. Mình đang học cách nói cho hợp máy này.",
+    2: "Đủ phản hồi, và đã nhớ một kỹ năng hoặc một chủ đề quen.",
+    3: "Phản hồi đều, có kỹ năng, và máy này vẫn đang dùng gần đây.",
 }
 _NOTE_VI = "Trí nhớ thích nghi trên máy này, không phải AGI và không phải file trọng số."
 _HONEST_PANEL_VI = (
@@ -204,6 +233,7 @@ def _empty_model() -> Dict[str, Any]:
         "yesterday_lesson": "",
         "history": [],
         "last_rebuild_at": "",
+        "action_outcomes": [],
         "note_vi": _NOTE_VI,
     }
 
@@ -684,6 +714,38 @@ def _clean_micro(raw: Any) -> Dict[str, Any]:
     }
 
 
+def _clean_outcomes(raw: Any) -> List[Dict[str, Any]]:
+    """Recent one-tap results. Numbers and a short label — no paths, no ML."""
+    if not isinstance(raw, list):
+        return []
+    try:
+        from core.companion_profile import TOPIC_META
+    except Exception:
+        TOPIC_META = {}
+    blocked = _blocked_keys()
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        topic = str(item.get("topic") or "").strip()[:24]
+        action = str(item.get("action_key") or "").strip().lower()[:40]
+        if topic not in TOPIC_META or not action or action in blocked or "winsxs" in action:
+            continue
+        stamp = _parse_stamp(item.get("at"))
+        if stamp is None:
+            continue
+        label = " ".join(str(item.get("label") or "").split())[:40]
+        out.append({
+            "topic": topic,
+            "action_key": action,
+            "at": stamp.replace(microsecond=0).isoformat(timespec="seconds"),
+            "bytes": _as_int(item.get("bytes")),
+            "targets": _as_int(item.get("targets")),
+            "label": label,
+        })
+    return out[-_MAX_OUTCOMES:]
+
+
 def _clean_signal_log(raw: Any) -> List[Dict[str, str]]:
     """Mute rows the diary does not store. One topic per day, so a rebuild cannot stack them."""
     if not isinstance(raw, list):
@@ -770,6 +832,7 @@ def _clean_model(raw: Any) -> Dict[str, Any]:
     base["yesterday_topic"] = str(raw.get("yesterday_topic") or "")[:24]
     base["yesterday_lesson"] = " ".join(str(raw.get("yesterday_lesson") or "").split())[:90]
     base["history"] = _clean_history(raw.get("history"))
+    base["action_outcomes"] = _clean_outcomes(raw.get("action_outcomes"))
     rebuilt = _parse_stamp(raw.get("last_rebuild_at"))
     base["last_rebuild_at"] = rebuilt.replace(microsecond=0).isoformat(timespec="seconds") if rebuilt else ""
     base["note_vi"] = _NOTE_VI
@@ -1534,6 +1597,7 @@ def update_daily_model(
     finally:
         _IN_REBUILD = False
     built["history"] = _merge_history(history, built)
+    built["action_outcomes"] = _clean_outcomes(current.get("action_outcomes"))
     built["last_rebuild_at"] = stamp.replace(microsecond=0).isoformat(timespec="seconds")
     saved = save_daily_model(built, base_dir=base_dir)
     try:
@@ -1716,6 +1780,153 @@ def apply_micro_update(
         except Exception:
             pass
     return saved
+
+
+def record_action_outcome(
+    *,
+    topic: str,
+    action_key: str,
+    bytes_found: int = 0,
+    target_count: int = 0,
+    label_vi: str = "",
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Remember one finished one-tap. Does not nudge the score and does not delete.
+
+    Có ích / Chưa later uses the same feedback path as every other topic.
+    """
+    if _IN_REBUILD:
+        return {}
+    stamp = now or datetime.now()
+    topic_key = str(topic or "").strip()[:24]
+    action = str(action_key or "").strip().lower()[:40]
+    if not topic_key or not action or action in _blocked_keys() or "winsxs" in action:
+        return {}
+    current = load_daily_model(base_dir)
+    if str(current.get("date") or "") != stamp.strftime("%Y-%m-%d"):
+        current = update_daily_model(now=stamp, base_dir=base_dir, force=False)
+    row = _clean_outcomes([{
+        "topic": topic_key,
+        "action_key": action,
+        "at": stamp.replace(microsecond=0).isoformat(timespec="seconds"),
+        "bytes": bytes_found,
+        "targets": target_count,
+        "label": label_vi,
+    }])
+    if not row:
+        return {}
+    kept = _clean_outcomes(list(current.get("action_outcomes") or []) + row)
+    current["action_outcomes"] = kept
+    current["updated_at"] = stamp.replace(microsecond=0).isoformat(timespec="seconds")
+    save_daily_model(current, base_dir=base_dir)
+    return dict(kept[-1])
+
+
+def _growth_feedback_totals(model: Dict[str, Any]) -> Dict[str, int]:
+    scores = model.get("topic_scores") if isinstance(model.get("topic_scores"), dict) else {}
+    micro = model.get("micro") if isinstance(model.get("micro"), dict) else {}
+    topics = micro.get("topics") if isinstance(micro.get("topics"), dict) else {}
+    helpful = 0
+    unhelpful = 0
+    for topic in set(scores) | set(topics):
+        counts = _topic_feedback_counts(str(topic), model)
+        helpful += counts["helpful"]
+        unhelpful += counts["unhelpful"]
+    if helpful + unhelpful == 0:
+        trust = model.get("trust") if isinstance(model.get("trust"), dict) else {}
+        helpful = _as_int(trust.get("helpful"))
+        unhelpful = _as_int(trust.get("unhelpful"))
+    return {"helpful": helpful, "unhelpful": unhelpful, "total": helpful + unhelpful}
+
+
+def _growth_has_strong_topic(model: Dict[str, Any], now: datetime) -> bool:
+    scores = model.get("topic_scores") if isinstance(model.get("topic_scores"), dict) else {}
+    micro = model.get("micro") if isinstance(model.get("micro"), dict) else {}
+    topics = micro.get("topics") if isinstance(micro.get("topics"), dict) else {}
+    for topic in set(scores) | set(topics):
+        key = str(topic)
+        counts = _topic_feedback_counts(key, model)
+        if counts["helpful"] < PROMOTE_HELPFUL_MIN or counts["helpful"] <= counts["unhelpful"]:
+            continue
+        if _effective_topic_score(key, model, now=now) >= 2:
+            return True
+    return False
+
+
+def _growth_recent(model: Dict[str, Any], now: datetime, base_dir: Optional[str]) -> bool:
+    scores = model.get("topic_scores") if isinstance(model.get("topic_scores"), dict) else {}
+    micro = model.get("micro") if isinstance(model.get("micro"), dict) else {}
+    topics = micro.get("topics") if isinstance(micro.get("topics"), dict) else {}
+    for topic in set(scores) | set(topics):
+        last = _last_signal_day(str(topic), model)
+        if last and _idle_days(last, now) <= GROWTH_RECENT_DAYS:
+            return True
+    for row in model.get("action_outcomes") or []:
+        if not isinstance(row, dict):
+            continue
+        stamp = _parse_stamp(row.get("at"))
+        if stamp is not None and _idle_days(stamp.strftime("%Y-%m-%d"), now) <= GROWTH_RECENT_DAYS:
+            return True
+    try:
+        from core.companion_maturity import load_state
+        for day in load_state(base_dir).get("active_dates") or []:
+            text = str(day or "")[:10]
+            if _valid_day(text) and _idle_days(text, now) <= GROWTH_RECENT_DAYS:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def learning_growth(
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+    model: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Feedback maturity 0–3. Does not replace the day-based giai đoạn.
+
+    0: almost no Có ích / Chưa
+    1: some feedback
+    2: enough feedback and a saved skill or a strong topic
+    3: sustained feedback, at least one skill, and recent activity
+    """
+    payload = _clean_model(model) if isinstance(model, dict) else load_daily_model(base_dir)
+    stamp = now or datetime.now()
+    totals = _growth_feedback_totals(payload)
+    feedback_n = int(totals["total"])
+    skills_n = 0
+    try:
+        from core.companion_skills import load_skills
+        skills_n = len(load_skills(base_dir))
+    except Exception:
+        skills_n = 0
+    strong = _growth_has_strong_topic(payload, stamp)
+    recent = _growth_recent(payload, stamp, base_dir)
+    if feedback_n < GROWTH_FEEDBACK_SOME:
+        stage = 0
+    elif (
+        feedback_n >= GROWTH_FEEDBACK_SUSTAINED
+        and skills_n >= 1
+        and recent
+    ):
+        stage = 3
+    elif feedback_n >= GROWTH_FEEDBACK_ENOUGH and (skills_n >= 1 or strong):
+        stage = 2
+    else:
+        stage = 1
+    stage = max(0, min(3, stage))
+    return {
+        "stage": stage,
+        "label_vi": GROWTH_LABELS_VI[stage],
+        "badge_vi": f"Trí nhớ · {GROWTH_LABELS_VI[stage]}",
+        "blurb_vi": GROWTH_BLURBS_VI[stage],
+        "feedback": feedback_n,
+        "skills": skills_n,
+        "recent": bool(recent),
+        "strong_topic": bool(strong),
+    }
 
 
 def learn_status_vi(model: Optional[Dict[str, Any]] = None, *, now: Optional[datetime] = None, base_dir: Optional[str] = None) -> str:
@@ -2386,6 +2597,10 @@ def learned_skill_offer(
     if not payload.get("date"):
         return None
     stamp = now or datetime.now()
+    # Soft gate for this learning offer only. A PC that already has a few
+    # Có ích sits at stage ≥ 1, so an existing promote still appears.
+    if learning_growth(base_dir=base_dir, now=stamp, model=payload)["stage"] < 1:
+        return None
     try:
         from core.companion_profile import active_muted_topics, topic_for_issue, topic_issue
         from core.companion_skills import (
