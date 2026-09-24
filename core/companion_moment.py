@@ -81,6 +81,13 @@ INSIGHT_ACTION_ALLOWLIST: Dict[str, Dict[str, Any]] = {
         "needs_propose": True,
         "topics": frozenset({"disk"}),
     },
+    # Preview only. The clean itself waits for the existing confirm step. No UAC.
+    "preview_c_drive": {
+        "label_vi": "Quét ổ C (xem trước)",
+        "min_stage": 2,
+        "needs_propose": True,
+        "topics": frozenset({"disk"}),
+    },
     "repair_network_now": {
         "label_vi": "Sửa mạng an toàn",
         "min_stage": 2,
@@ -101,6 +108,7 @@ SKILL_ACTION_TO_INSIGHT = {
     "optimize_ram": "optimize_ram",
     "optimize_ram_only": "optimize_ram",
     "clean_light": "clean_light",
+    "preview_c_drive": "preview_c_drive",
     "repair_network_now": "repair_network_now",
     "optimize_network": "repair_network_now",
     "enable_exam_focus": "enable_exam_focus",
@@ -455,6 +463,28 @@ def resolve_insight_action(
     return {"key": key, "label_vi": str(spec.get("label_vi") or "")}
 
 
+def _suppress_quiet_propose(
+    action: Optional[Dict[str, str]],
+    topic: str,
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, str]]:
+    """Drop a propose-button when this topic keeps getting Chưa. Guidance stays."""
+    if not isinstance(action, dict) or not action.get("key"):
+        return action
+    spec = INSIGHT_ACTION_ALLOWLIST.get(str(action.get("key") or "")) or {}
+    if not spec.get("needs_propose"):
+        return action
+    try:
+        from core.companion_learning import topic_is_quiet
+        if topic_is_quiet(str(topic or ""), base_dir=base_dir, now=now):
+            return None
+    except Exception:
+        return action
+    return action
+
+
 def _accepted_skill_action(
     prefer_key: str,
     topic: str,
@@ -582,7 +612,9 @@ def attach_insight_action(
         skill = skill_for_insight(topic, base_dir=base_dir, now=now)
         fallback = str(getattr(skill, "action_key", "") or "")
         try:
-            from core.companion_learning import rank_propose_key
+            from core.companion_learning import learned_one_tap_key, rank_propose_key
+            if not fallback:
+                fallback = learned_one_tap_key(topic, base_dir=base_dir, now=now)
             prefer = rank_propose_key(topic, base_dir=base_dir, fallback=fallback, now=now)
         except Exception:
             prefer = fallback
@@ -593,6 +625,7 @@ def attach_insight_action(
             coaching=coaching,
             prefer_key=prefer,
         )
+        action = _suppress_quiet_propose(action, topic, base_dir=base_dir, now=now)
         rows = recent_events(days=1, limit=0, base_dir=base_dir, now=now)
         focus_on = exam_focus_is_live()
         stressed = machine_stress_active(rows, now or datetime.now())
@@ -678,6 +711,13 @@ def attach_insight_action(
                 out["text"] = (text.rstrip() + " " + aside).strip()
         except Exception:
             pass
+    try:
+        from core.companion_learning import explain_suggestion_vi
+        why = explain_suggestion_vi(str(out.get("topic") or ""), base_dir=base_dir, now=now)
+    except Exception:
+        why = ""
+    if why:
+        out["why_vi"] = why
     return out
 
 
@@ -1239,6 +1279,7 @@ def local_weekly_bullets(
             detail = detail[:89].rstrip() + "…"
         items.append({"text": detail, "topic": topic})
         break
+    items = _order_weekly_items(items, base_dir=base_dir, now=stamp)
     unique: List[Dict[str, str]] = []
     seen = set()
     for item in items:
@@ -1250,6 +1291,31 @@ def local_weekly_bullets(
         if len(unique) >= 3:
             break
     return unique
+
+
+def _order_weekly_items(
+    items: List[Dict[str, str]],
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, str]]:
+    """Keep the learned summary first. Rank topic bullets by decayed trust."""
+    head: List[Dict[str, str]] = []
+    topical: List[Dict[str, str]] = []
+    tail: List[Dict[str, str]] = []
+    for item in items:
+        if str(item.get("topic") or ""):
+            topical.append(item)
+        elif not topical:
+            head.append(item)
+        else:
+            tail.append(item)
+    try:
+        from core.companion_learning import prefer_learned_topics
+        topical = prefer_learned_topics(topical, base_dir=base_dir, now=now)
+    except Exception:
+        pass
+    return head + topical + tail
 
 
 def format_weekly_strip(items: List[Dict[str, str]]) -> str:
@@ -1787,7 +1853,17 @@ def compose_daily_checkin(
     parts: List[str] = []
     lead = ""
     if counts:
-        lead = max(counts, key=lambda item: (counts[item], item))
+        try:
+            from core.companion_learning import rank_topic_keys
+            ranked_topics = rank_topic_keys(
+                list(counts),
+                counts=counts,
+                base_dir=base_dir,
+                now=stamp,
+            )
+        except Exception:
+            ranked_topics = []
+        lead = ranked_topics[0] if ranked_topics else max(counts, key=lambda item: (counts[item], item))
         phrase = _YESTERDAY_LINE.get(lead) or _topic_name(lead)
         if stage.stage >= 3 and counts[lead] > 1:
             parts.append(f"Hôm qua {phrase} ({counts[lead]} lần).")
@@ -1869,7 +1945,9 @@ def compose_daily_checkin(
         skill = skill_for_insight(lead, base_dir=base_dir, now=stamp, events=events)
         prefer = str(getattr(skill, "action_key", "") or "")
         try:
-            from core.companion_learning import rank_propose_key
+            from core.companion_learning import learned_one_tap_key, rank_propose_key
+            if not prefer:
+                prefer = learned_one_tap_key(lead, base_dir=base_dir, now=stamp)
             prefer = rank_propose_key(lead, base_dir=base_dir, fallback=prefer, now=stamp)
         except Exception:
             pass
@@ -1881,6 +1959,7 @@ def compose_daily_checkin(
                 coaching=effective_coaching(profile, topic=lead, base_dir=base_dir, now=stamp),
                 prefer_key=prefer,
             )
+            action = _suppress_quiet_propose(action, lead, base_dir=base_dir, now=stamp)
         except Exception:
             action = None
         if not action or action.get("key") == "open_companion_memory":
@@ -1906,6 +1985,13 @@ def compose_daily_checkin(
         payload["action_label_vi"] = action["label_vi"]
         if skill_id:
             payload["skill_id"] = skill_id
+    try:
+        from core.companion_learning import explain_suggestion_vi
+        why = explain_suggestion_vi(lead, base_dir=base_dir, now=stamp) if lead else ""
+    except Exception:
+        why = ""
+    if why:
+        payload["why_vi"] = why
     return payload
 
 
@@ -3225,6 +3311,14 @@ def sync_exam_season_hint(
     state = load_state(base_dir)
     pending = state.get("pending_exam_hint")
     blocked = _exam_hint_blocked(stamp, base_dir)
+    try:
+        from core.companion_learning import topic_is_quiet
+        focus_quiet = topic_is_quiet("focus", base_dir=base_dir, now=stamp)
+    except Exception:
+        focus_quiet = False
+    if focus_quiet:
+        # Repeated Chưa hides the line. A week that was not stored yet stays open.
+        return None
     if isinstance(pending, dict) and str(pending.get("week") or "") == week and pending.get("text"):
         if blocked:
             return None

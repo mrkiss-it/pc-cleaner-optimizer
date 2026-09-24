@@ -471,6 +471,9 @@ class CompanionInsightBar(QFrame):
         text = str((payload or {}).get("text") or "").strip()
         if not text:
             return
+        why = str((payload or {}).get("why_vi") or "").strip()
+        if why and why not in text:
+            text = text + "\n" + why
         self.lbl_checkin.setText(text)
         key = str((payload or {}).get("action_key") or "")
         label = str((payload or {}).get("action_label_vi") or "")
@@ -675,7 +678,11 @@ class CompanionInsightBar(QFrame):
         if self._insight_topic:
             self.btn_snooze.show()
             self.btn_mute.show()
-        self.lbl_insight.setText(str(insight.get("text") or ""))
+        insight_text = str(insight.get("text") or "")
+        why = str(insight.get("why_vi") or "").strip()
+        if why and why not in insight_text:
+            insight_text = insight_text + "\n" + why
+        self.lbl_insight.setText(insight_text)
         if insight.get("quiet"):
             self.lbl_insight.setStyleSheet(
                 "color: #a5b4fc; font-size: 12px; background: transparent; border: none;"
@@ -1326,9 +1333,13 @@ class CompanionCard(QFrame):
             self.lbl_diary.setText(digest)
         offer = pending_skill_offer()
         if offer:
-            self.lbl_offer.setText(
-                f"Cùng vấn đề lặp {offer.get('hit_count')} lần: {offer.get('title')}. Lưu thành kỹ năng máy này?"
-            )
+            message = " ".join(str(offer.get("message_vi") or "").split())
+            if not message:
+                message = (
+                    f"Cùng vấn đề lặp {offer.get('hit_count')} lần: {offer.get('title')}. "
+                    "Lưu thành kỹ năng máy này?"
+                )
+            self.lbl_offer.setText(message)
             self.btn_save_skill.show()
             self.btn_skip_skill.show()
             self.lbl_skills.setText("")

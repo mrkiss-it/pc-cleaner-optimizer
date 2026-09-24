@@ -3424,4 +3424,231 @@ check(fresh_bar.isHidden(), "an empty day still hides the insight strip")
 fresh_bar.deleteLater()
 print(" [PASS] mô hình học mỗi ngày")
 
+# ---------------------------------------------------------------------------
+# Phase 2 — promote, trust rank, explain, decay, one safe tap
+# ---------------------------------------------------------------------------
+
+from core.companion_learning import (
+    effective_topic_score,
+    explain_suggestion_vi,
+    learned_one_tap_key,
+    learned_skill_offer,
+    rank_topic_keys,
+    refresh_learned_skill_offer,
+    topic_is_quiet,
+)
+from core.companion_skills import load_skills, skills_path
+
+phase_day = datetime(2026, 9, 24, 9, 0, 0)
+phase_root = _fresh_dir()
+for offset in range(2):
+    record_app_event(
+        "wifi_weak",
+        "Wi-Fi yếu buổi tối",
+        now=phase_day - timedelta(days=1, hours=offset),
+        base_dir=phase_root,
+        coalesce=False,
+    )
+for offset in range(3):
+    note_user_feedback(
+        True,
+        base_dir=phase_root,
+        now=phase_day - timedelta(days=1, minutes=20 - offset),
+        topic="wifi",
+    )
+record_app_event(
+    "clean_light",
+    "Dọn nhẹ temp",
+    now=phase_day - timedelta(days=1, hours=5),
+    base_dir=phase_root,
+    coalesce=False,
+)
+note_user_feedback(True, base_dir=phase_root, now=phase_day - timedelta(days=1, minutes=2), topic="disk")
+note_user_feedback(True, base_dir=phase_root, now=phase_day - timedelta(days=1, minutes=1), topic="disk")
+for offset in range(3):
+    note_user_feedback(
+        False,
+        base_dir=phase_root,
+        now=phase_day - timedelta(days=2, minutes=offset),
+        topic="ram",
+    )
+phase_model = update_daily_model(now=phase_day, base_dir=phase_root)
+check(int((phase_model.get("topic_scores") or {}).get("wifi", {}).get("helpful") or 0) >= 3, "phase 2 keeps the Có ích counts")
+offer = learned_skill_offer(base_dir=phase_root, now=phase_day)
+check(offer and offer.get("issue_class") == "wifi_weak", "three Có ích plus a lesson offers a skill")
+check(offer.get("source") == "learning", "the offer is marked as local learning")
+check("Có ích" in (offer.get("message_vi") or "") and "không tự chạy" in (offer.get("message_vi") or ""), "the offer asks in Vietnamese and does not run")
+check(offer.get("action_key") not in _LEARN_BLOCKED and "winsxs" not in str(offer.get("action_key")), "the offer is not a blocked action")
+check(load_skills(phase_root) == [], "the offer does not write skills.json by itself")
+queued = refresh_learned_skill_offer(now=phase_day, base_dir=phase_root)
+check(queued and queued.get("issue_class") == "wifi_weak", "the offer is stored for the existing Lưu button")
+check(pending_skill_offer(base_dir=phase_root).get("message_vi"), "the card can read the confirmation line")
+saved_skill = accept_skill_offer(base_dir=phase_root)
+check(saved_skill is not None and saved_skill.issue_class == "wifi_weak", "Lưu writes the playbook")
+check(learned_skill_offer(base_dir=phase_root, now=phase_day) is None, "a saved playbook is not offered again")
+check(ExamMeetingFocus.is_active() is False, "saving a learned skill does not enable Trước thi / họp")
+
+thin_root = _fresh_dir()
+thin_model = {
+    "version": 2,
+    "date": "2026-09-24",
+    "summary_vi": "Hôm nay học được: Wi-Fi.",
+    "topic_scores": {"wifi": {"helpful": 2, "unhelpful": 0, "diary": 1, "last_signal": "2026-09-24"}},
+    "lessons": ["Wi-Fi — người dùng thấy có ích"],
+    "skill_candidates": [{"issue_class": "wifi_weak", "weight": 4, "title_vi": "Wi-Fi"}],
+}
+save_daily_model(thin_model, base_dir=thin_root)
+check(learned_skill_offer(base_dir=thin_root, now=phase_day) is None, "two Có ích stay below the promote bar")
+
+muted_offer_root = _fresh_dir()
+save_daily_model(phase_model, base_dir=muted_offer_root)
+# phase_model already has the skill saved only in phase_root; this copy has no skills.json
+check(learned_skill_offer(base_dir=muted_offer_root, now=phase_day), "the copied snapshot still qualifies before mute")
+mute_topic("wifi", days=7, base_dir=muted_offer_root, now=phase_day)
+check(learned_skill_offer(base_dir=muted_offer_root, now=phase_day) is None, "a muted topic is not promoted")
+
+declined_root = _fresh_dir()
+save_daily_model(phase_model, base_dir=declined_root)
+refresh_learned_skill_offer(now=phase_day, base_dir=declined_root)
+decline_skill_offer(base_dir=declined_root, now=phase_day)
+check(learned_skill_offer(base_dir=declined_root, now=phase_day) is None, "Bỏ qua keeps the playbook unoffered")
+check(not os.path.isfile(skills_path(declined_root)) or load_skills(declined_root) == [], "declining does not save the skill")
+
+poison_offer = dict(phase_model)
+poison_offer["skill_affinity"] = {
+    "winsxs_cleanup": {
+        "score": 9,
+        "helpful": 9,
+        "unhelpful": 0,
+        "confirmed": 9,
+        "title_vi": "no",
+        "issue_class": "winsxs",
+    }
+}
+poison_offer["skill_candidates"] = [{"issue_class": "winsxs", "weight": 9, "title_vi": "no"}]
+poison_offer["topic_scores"] = {"wifi": {"helpful": 1, "unhelpful": 0, "diary": 0, "last_signal": "2026-09-24"}}
+poison_offer["lessons"] = ["WinSxS"]
+poison_offer_root = _fresh_dir()
+save_daily_model(poison_offer, base_dir=poison_offer_root)
+blocked_offer = learned_skill_offer(base_dir=poison_offer_root, now=phase_day)
+check(blocked_offer is None or "winsxs" not in str(blocked_offer.get("action_key")), "a blocked key is never offered")
+
+stored_wifi = int((phase_model.get("topic_scores") or {}).get("wifi", {}).get("score") or 0)
+stale = dict(phase_model)
+stale_scores = dict(stale.get("topic_scores") or {})
+wifi_row = dict(stale_scores.get("wifi") or {})
+wifi_row["last_signal"] = "2026-08-01"
+disk_row = dict(stale_scores.get("disk") or {"helpful": 2, "unhelpful": 0, "diary": 1, "score": 2})
+disk_row["last_signal"] = "2026-09-24"
+disk_row["helpful"] = max(2, int(disk_row.get("helpful") or 0))
+disk_row["score"] = int(disk_row.get("helpful") or 0) - int(disk_row.get("unhelpful") or 0)
+stale_scores["wifi"] = wifi_row
+stale_scores["disk"] = disk_row
+stale["topic_scores"] = stale_scores
+stale_root = _fresh_dir()
+saved_stale = save_daily_model(stale, base_dir=stale_root)
+check(int((saved_stale.get("topic_scores") or {}).get("wifi", {}).get("score") or 0) == int(wifi_row.get("score") or stored_wifi) or int((saved_stale.get("topic_scores") or {}).get("wifi", {}).get("helpful") or 0) >= 3, "decay does not wipe the stored Có ích count")
+kept_helpful = int((saved_stale.get("topic_scores") or {}).get("wifi", {}).get("helpful") or 0)
+faded = effective_topic_score("wifi", base_dir=stale_root, now=phase_day)
+check(faded < kept_helpful, "a topic with no recent signal loses ranking weight")
+check(int((load_daily_model(stale_root).get("topic_scores") or {}).get("wifi", {}).get("helpful") or 0) == kept_helpful, "reading the decayed weight leaves history in place")
+ranked_topics = rank_topic_keys(["wifi", "disk"], base_dir=stale_root, now=phase_day)
+check(ranked_topics and ranked_topics[0] == "disk", "a fresh topic outranks a stale one")
+ordered_phase = prefer_learned_topics(
+    [
+        {"id": "tip:wifi", "topic": "wifi", "text": "Wi-Fi"},
+        {"id": "tip:disk", "topic": "disk", "text": "Ổ"},
+    ],
+    base_dir=stale_root,
+    now=phase_day,
+)
+check(ordered_phase[0].get("topic") == "disk", "insight order follows the decayed score")
+quiet_ranked = prefer_learned_topics(
+    [
+        {"id": "tip:ram", "topic": "ram", "text": "RAM"},
+        {"id": "tip:wifi", "topic": "wifi", "text": "Wi-Fi"},
+    ],
+    base_dir=phase_root,
+    now=phase_day,
+)
+check(all(item.get("topic") != "ram" for item in quiet_ranked), "repeated Chưa drops out when another topic remains")
+check(topic_is_quiet("ram", base_dir=phase_root, now=phase_day) is True, "RAM stays quiet after Chưa")
+check(topic_is_quiet("wifi", base_dir=phase_root, now=phase_day) is False, "a helpful topic is not quiet")
+
+why = explain_suggestion_vi("wifi", base_dir=phase_root, now=phase_day)
+check(why.startswith("Vì sao nhắc?"), "the reason line has a calm label")
+check("Wi-Fi" in why or "Có ích" in why, "the reason cites a lesson or a Có ích count")
+check("AGI" not in why and "Ollama" not in why, "the reason does not claim a model")
+check(explain_suggestion_vi("", base_dir=phase_root, now=phase_day) == "", "an empty topic has no reason")
+check("Cần thêm phản hồi" not in why, "the sparse warning is not the reason")
+
+morning = compose_daily_checkin(now=phase_day, base_dir=phase_root, config_manager=_Cfg(companion_may_propose_actions=True))
+check(morning and str(morning.get("why_vi") or "").startswith("Vì sao nhắc?"), "the morning line carries a reason")
+check("Vì sao nhắc?" not in (morning.get("text") or ""), "the reason stays beside the morning sentence")
+from core.companion_moment import attach_insight_action
+attached = attach_insight_action(
+    {"id": "tip:wifi", "text": "Hôm nay: Wi-Fi hay yếu.", "topic": "wifi"},
+    base_dir=phase_root,
+    now=phase_day,
+    config_manager=_Cfg(companion_may_propose_actions=True),
+)
+check(attached and str(attached.get("why_vi") or "").startswith("Vì sao nhắc?"), "an insight carries a reason")
+check(str(attached.get("text") or "").startswith("Hôm nay:"), "the reason does not replace the insight sentence")
+
+disk_tap = learned_one_tap_key("disk", base_dir=phase_root, now=phase_day)
+check(disk_tap == "preview_c_drive", "a trusted disk topic suggests a C: preview")
+preview = resolve_insight_action(
+    "disk",
+    stage=3,
+    may_propose=True,
+    coaching="steady",
+    prefer_key=disk_tap,
+)
+check(preview and preview.get("key") == "preview_c_drive", "the preview key is allowlisted")
+check("xem trước" in (preview.get("label_vi") or "").lower() or "Quét" in (preview.get("label_vi") or ""), "the button says it is a preview")
+check(preview.get("key") not in _LEARN_BLOCKED, "the preview is not a destructive clean")
+focus_tap = learned_one_tap_key("focus", base_dir=phase_root, now=phase_day)
+check(focus_tap in ("", "enable_exam_focus"), "focus only maps to the existing exam action")
+check(ExamMeetingFocus.is_active() is False, "suggesting Trước thi / họp does not turn it on")
+ram_tap = learned_one_tap_key("ram", base_dir=phase_root, now=phase_day)
+check(ram_tap == "", "a Chưa-heavy topic does not grow a one-tap action")
+blocked_tap = resolve_insight_action(
+    "disk",
+    stage=3,
+    may_propose=True,
+    coaching="steady",
+    prefer_key="winsxs_cleanup",
+)
+check(not blocked_tap or blocked_tap.get("key") != "winsxs_cleanup", "one tap never returns WinSxS")
+check(is_allowed_insight_action("preview_c_drive") is True, "preview is an insight action")
+check(is_allowed_insight_action("winsxs_cleanup") is False, "WinSxS stays off the insight allowlist")
+
+ui_phase = _fresh_dir()
+save_daily_model(phase_model, base_dir=ui_phase)
+ui_now = datetime.now().replace(microsecond=0)
+ui_state = load_state(ui_phase)
+ui_state["last_checkin_date"] = ui_now.strftime("%Y-%m-%d")
+ui_state["pending_checkin"] = {
+    "date": ui_now.strftime("%Y-%m-%d"),
+    "text": "Hôm qua Wi-Fi.",
+    "topic": "wifi",
+    "why_vi": "Vì sao nhắc? Wi-Fi — người dùng thấy có ích.",
+}
+save_state(ui_state, base_dir=ui_phase)
+ui_offer = refresh_learned_skill_offer(now=phase_day, base_dir=ui_phase)
+check(ui_offer and ui_offer.get("source") == "learning", "the card offer comes from learning, not a silent save")
+os.environ["PCAUTOCLEANER_COMPANION_DIR"] = ui_phase
+phase_bar = CompanionInsightBar(config_manager=_Cfg())
+phase_bar.refresh()
+check("Vì sao nhắc?" in phase_bar.lbl_checkin.text(), "the morning strip shows the reason line")
+check(phase_bar.lbl_checkin.text().startswith("Hôm qua"), "the reason sits under the morning sentence")
+check(ExamMeetingFocus.is_active() is False, "showing the reason does not enable Trước thi / họp")
+phase_bar.deleteLater()
+phase_card = CompanionCard(config_manager=_Cfg(), compact=False)
+phase_card.refresh()
+check("Có ích" in phase_card.lbl_offer.text() and "không tự chạy" in phase_card.lbl_offer.text(), "the card asks before saving a learned skill")
+check(phase_card.btn_save_skill.isHidden() is False, "Lưu kỹ năng stays visible for the offer")
+phase_card.deleteLater()
+print(" [PASS] phase 2 promote / rank / decay / explain")
+
 print(" [PASS] companion AI suite")

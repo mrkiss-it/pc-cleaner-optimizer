@@ -3224,7 +3224,12 @@ class MainWindow(QMainWindow):
         try:
             self.raise_()
             self.activateWindow()
-            if action_key not in ("auto_optimize_all", "open_companion_memory", "open_thermal_card"):
+            if action_key not in (
+                "auto_optimize_all",
+                "open_companion_memory",
+                "open_thermal_card",
+                "preview_c_drive",
+            ):
                 try:
                     from core.companion import observe_suggestion
                     observe_suggestion(True, action_key=action_key, config_manager=self.config_manager)
@@ -3241,6 +3246,37 @@ class MainWindow(QMainWindow):
                 self.enable_game_boost()
             elif action_key in ("enable_exam_focus", "toggle_exam_focus"):
                 self.enable_exam_focus()
+            elif action_key == "preview_c_drive":
+                confirm = QMessageBox.question(
+                    self,
+                    "Quét ổ C",
+                    "Chỉ xem trước rác trên ổ C. Chưa xóa gì và không xin quyền Admin.\nTiếp tục?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if confirm != QMessageBox.Yes:
+                    try:
+                        from core.companion import observe_suggestion
+                        observe_suggestion(
+                            False,
+                            action_key="preview_c_drive",
+                            config_manager=self.config_manager,
+                        )
+                    except Exception:
+                        pass
+                    return
+                try:
+                    from core.companion import observe_suggestion
+                    observe_suggestion(
+                        True,
+                        action_key="preview_c_drive",
+                        config_manager=self.config_manager,
+                    )
+                except Exception:
+                    pass
+                if hasattr(self, "tab_dashboard"):
+                    self.tabs.setCurrentWidget(self.tab_dashboard)
+                self.start_deep_c_preview()
             elif action_key == "clean_light":
                 self.run_light_clean()
             elif action_key in ("optimize_network", "repair_network_now"):

@@ -272,6 +272,11 @@ def count_issue_classes(kind_counts: Dict[str, int]) -> Dict[str, int]:
     return totals
 
 
+def issue_is_declined(issue_class: str, base_dir: Optional[str] = None, now=None) -> bool:
+    """True when the user skipped this playbook and the quiet period is still open."""
+    return str(issue_class or "").strip().lower() in _declined_issues(base_dir, now=now)
+
+
 def _declined_issues(base_dir: Optional[str] = None, now=None) -> set:
     """Issue classes the user skipped recently — don't nag the same offer."""
     try:
