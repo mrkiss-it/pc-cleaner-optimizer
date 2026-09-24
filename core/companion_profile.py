@@ -26,6 +26,8 @@ MAX_NOTE_LEN = 120
 PROFILE_VERSION = 1
 MUTE_DAYS = 7
 SOFT_MUTE_DAYS = 2
+# A user mute with no end date. Year 9999 stays active for active_muted_topics.
+MUTE_FOREVER_UNTIL = "9999-12-31T00:00:00"
 # Đừng nhắc hides one tip family for this many days from the tap.
 # Not "until tomorrow morning": a snooze at 22:00 still lasts three full days
 # (`until` is compared with `until > now`). Critical thermal / Wi-Fi emergency
@@ -446,9 +448,11 @@ def _parse_mute(value: Any) -> Optional[Dict[str, str]]:
         return None
     if reason not in ("user", "feedback"):
         reason = "user"
+    forever = bool(isinstance(value, dict) and value.get("forever")) or when.year >= 9000
     return {
         "until": when.replace(microsecond=0).isoformat(timespec="seconds"),
         "reason": reason,
+        "forever": forever,
     }
 
 
@@ -505,14 +509,27 @@ def topic_asks_more(
     return str(coaching.get(str(topic or "").strip()) or "") == "ask_more"
 
 
+def mute_is_forever(meta: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(meta, dict):
+        return False
+    if meta.get("forever"):
+        return True
+    return str(meta.get("until") or "").startswith("9999")
+
+
 def mute_topic(
     topic: str,
     days: int = MUTE_DAYS,
     reason: str = "user",
     base_dir: Optional[str] = None,
     now: Optional[datetime] = None,
+    forever: bool = False,
 ) -> Optional[str]:
-    """Hide a topic from insight and nudges until the cooldown ends. Copilot may still answer."""
+    """Hide a topic from insight and nudges. Copilot may still answer.
+
+    ``forever`` keeps the mute until the user clears it. Otherwise it lasts
+    ``days`` (7 by default).
+    """
     key = str(topic or "").strip()
     if key not in TOPIC_META:
         return None
@@ -521,7 +538,11 @@ def mute_topic(
     except (TypeError, ValueError):
         span = MUTE_DAYS
     stamp = now or datetime.now()
-    until_dt = (stamp + timedelta(days=span)).replace(microsecond=0)
+    if forever and str(reason or "") != "feedback":
+        until_dt = datetime.fromisoformat(MUTE_FOREVER_UNTIL)
+    else:
+        until_dt = (stamp + timedelta(days=span)).replace(microsecond=0)
+        forever = False
     reason_key = "feedback" if str(reason or "") == "feedback" else "user"
     profile = load_profile(base_dir)
     muted = _clean_muted(profile.get("muted_topics"))
@@ -534,7 +555,7 @@ def mute_topic(
         if old_until is not None and old_until > until_dt:
             return existing["until"]
     until = until_dt.isoformat(timespec="seconds")
-    muted[key] = {"until": until, "reason": reason_key}
+    muted[key] = {"until": until, "reason": reason_key, "forever": bool(forever)}
     profile["muted_topics"] = muted
     save_profile(profile, base_dir=base_dir)
     try:
@@ -753,6 +774,9 @@ def format_muted_policy(
     bits = []
     for topic, meta in active.items():
         name = str((TOPIC_META.get(topic) or {}).get("name") or topic)
+        if mute_is_forever(meta):
+            bits.append(f"{name} mãi mãi")
+            continue
         until = str(meta.get("until") or "")
         day = ""
         if len(until) >= 10:
@@ -772,9 +796,12 @@ def format_muted_browse(
     bits = []
     for topic, meta in active.items():
         name = str((TOPIC_META.get(topic) or {}).get("name") or topic)
+        why = "bạn bảo đừng nhắc" if meta.get("reason") == "user" else "phản hồi chưa khớp"
+        if mute_is_forever(meta):
+            bits.append(f"{name} mãi mãi ({why})")
+            continue
         until = str(meta.get("until") or "")
         day = f"{until[8:10]}/{until[5:7]}" if len(until) >= 10 else ""
-        why = "bạn bảo đừng nhắc" if meta.get("reason") == "user" else "phản hồi chưa khớp"
         bits.append(f"{name} đến {day} ({why})" if day else f"{name} ({why})")
     return "Đang im: " + "; ".join(bits) + "."
 
@@ -2064,6 +2091,47 @@ def build_insight_candidates(
     return [item for item in items if item.get("text")]
 
 
+def choose_today_insight(
+    visible: Sequence[Dict[str, str]],
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+) -> Optional[Dict[str, str]]:
+    """Pick the Hôm nay line. A fresh time window still leads.
+
+    A Chưa-heavy window steps aside when another line remains. A muted topic
+    is already removed by the caller.
+    """
+    rows = [item for item in (visible or []) if isinstance(item, dict) and item.get("text")]
+    if not rows:
+        return None
+    stamp = now or datetime.now()
+
+    def _quiet(item: Dict[str, str]) -> bool:
+        topic = str(item.get("topic") or "")
+        if not topic:
+            return False
+        try:
+            from core.companion_learning import topic_is_quiet
+            return bool(topic_is_quiet(topic, base_dir=base_dir, now=stamp))
+        except Exception:
+            return False
+
+    windows = [item for item in rows if str(item.get("id") or "").startswith("window:")]
+    window_ids = {id(item) for item in windows}
+    others = [item for item in rows if id(item) not in window_ids]
+    fresh_windows = [item for item in windows if not _quiet(item)]
+    if fresh_windows:
+        return dict(fresh_windows[0])
+    fresh_others = [item for item in others if not _quiet(item)]
+    if fresh_others:
+        return dict(fresh_others[stamp.toordinal() % len(fresh_others)])
+    if windows:
+        return dict(windows[0])
+    pool = fresh_others or others or rows
+    return dict(pool[stamp.toordinal() % len(pool)])
+
+
 def current_insight(
     base_dir: Optional[str] = None,
     now: Optional[datetime] = None,
@@ -2099,11 +2167,9 @@ def current_insight(
         visible = prefer_learned_topics(visible, base_dir=base_dir, now=stamp)
     except Exception:
         pass
-    windows = [item for item in visible if str(item.get("id") or "").startswith("window:")]
-    if windows:
-        chosen = dict(windows[0])
-    else:
-        chosen = dict(visible[stamp.toordinal() % len(visible)])
+    chosen = choose_today_insight(visible, now=stamp, base_dir=base_dir)
+    if not chosen:
+        return None
     chosen["text"] = annotate_learned_line(str(chosen.get("text") or ""), str(chosen.get("topic") or ""), data)
     level = topic_trust_level(str(chosen.get("topic") or ""), profile=data)
     text = str(chosen.get("text") or "")

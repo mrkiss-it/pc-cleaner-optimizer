@@ -1098,7 +1098,13 @@ def _has_weekly_material(now: datetime, base_dir: Optional[str]) -> bool:
     return bool(_goal(base_dir))
 
 
-def _count_line(events: List[Dict[str, Any]]) -> str:
+def _count_line(
+    events: List[Dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    muted: Optional[set] = None,
+) -> str:
     labels = {
         "wifi_weak": "Wi-Fi yếu",
         "wifi_repaired": "Wi-Fi ổn lại",
@@ -1113,17 +1119,68 @@ def _count_line(events: List[Dict[str, Any]]) -> str:
         "high_ram": "RAM cao",
         "ram_optimized": "thu hồi RAM",
     }
+    stamp = now or datetime.now()
+    hidden = set(muted or [])
+    if muted is None and base_dir is not None:
+        try:
+            from core.companion_profile import active_muted_topics
+            hidden = set(active_muted_topics(now=stamp, base_dir=base_dir))
+        except Exception:
+            hidden = set()
     counts: Dict[str, int] = {}
     for event in events:
         kind = str(event.get("kind") or "")
         if kind not in labels:
+            continue
+        topic = _loose_topic(event)
+        if topic and topic in hidden:
             continue
         try:
             weight = int((event.get("metrics") or {}).get("count") or 1)
         except (TypeError, ValueError):
             weight = 1
         counts[kind] = counts.get(kind, 0) + max(1, weight)
-    bits = [f"{labels[kind]} {n}" for kind, n in counts.items() if n]
+    ranked_kinds = list(counts)
+    kind_topic = {
+        "wifi_weak": "wifi",
+        "wifi_repaired": "wifi",
+        "ping_high": "wifi",
+        "thermal_warn": "thermal",
+        "focus_mode": "focus",
+        "clean_light": "disk",
+        "clean_freed": "disk",
+        "high_ram": "ram",
+        "ram_optimized": "ram",
+        "update_ok": "update",
+        "update_fail": "update",
+        "chat_note": "",
+    }
+    try:
+        from core.companion_learning import rank_topic_keys, topic_is_quiet
+    except Exception:
+        topic_is_quiet = None  # type: ignore
+        rank_topic_keys = None  # type: ignore
+    if topic_is_quiet is not None:
+        strong = []
+        for kind in list(counts):
+            topic = kind_topic.get(kind, "")
+            if topic and topic_is_quiet(topic, base_dir=base_dir, now=stamp):
+                continue
+            strong.append(kind)
+        if strong:
+            ranked_kinds = strong
+    if rank_topic_keys is not None:
+        order = rank_topic_keys(
+            [kind_topic.get(kind, "") for kind in ranked_kinds if kind_topic.get(kind, "")],
+            base_dir=base_dir,
+            now=stamp,
+        )
+        rank = {topic: index for index, topic in enumerate(order)}
+        ranked_kinds = sorted(
+            ranked_kinds,
+            key=lambda kind: (rank.get(kind_topic.get(kind, ""), 99), kind),
+        )
+    bits = [f"{labels[kind]} {counts[kind]}" for kind in ranked_kinds if counts.get(kind)]
     if not bits:
         return ""
     return "Trong tuần: " + ", ".join(bits) + "."
@@ -1343,7 +1400,7 @@ def local_weekly_summary(
     ]
     if stage_label:
         lines.append(f"Giai đoạn: {stage_label}.")
-    detail = _count_line(events)
+    detail = _count_line(events, now=stamp, base_dir=base_dir)
     if detail:
         lines.append(detail)
     elif events:
@@ -1527,9 +1584,18 @@ def _filter_weekly_items(
             continue
         if text:
             kept.append({"text": text, "topic": topic})
-        if len(kept) >= 3:
-            break
-    return kept
+    try:
+        from core.companion_learning import topic_is_quiet
+    except Exception:
+        topic_is_quiet = None  # type: ignore
+    if topic_is_quiet is not None and kept:
+        fresh = [
+            item for item in kept
+            if not item.get("topic") or not topic_is_quiet(str(item.get("topic") or ""), base_dir=base_dir, now=now)
+        ]
+        if fresh:
+            kept = fresh
+    return kept[:3]
 
 
 def sync_weekly_strip(
@@ -1877,6 +1943,7 @@ def compose_daily_checkin(
         if not lead:
             lead = goal_topic
     if not parts:
+        habit_rows = []
         for habit in habits:
             topic = str(habit.get("topic") or "")
             if topic in hidden:
@@ -1884,6 +1951,22 @@ def compose_daily_checkin(
             detail = str(habit.get("detail_vi") or habit.get("label_vi") or "").strip()
             if not detail:
                 continue
+            habit_rows.append((topic, detail, habit))
+        habit_order: List[str] = []
+        try:
+            from core.companion_learning import rank_topic_keys
+            habit_order = rank_topic_keys(
+                [topic for topic, _detail, _habit in habit_rows],
+                base_dir=base_dir,
+                now=stamp,
+            )
+        except Exception:
+            habit_order = []
+        if habit_order:
+            rank = {topic: index for index, topic in enumerate(habit_order)}
+            habit_rows = [row for row in habit_rows if row[0] in rank]
+            habit_rows.sort(key=lambda row: (rank.get(row[0], 99), row[0]))
+        for topic, detail, _habit in habit_rows:
             if not detail.endswith("."):
                 detail += "."
             parts.append(detail)
@@ -2421,6 +2504,9 @@ def maybe_attach_pinned_action(
     return out
 
 
+# Preview asks only after a real result. The tap itself is not the outcome.
+_OUTCOME_FIRST_ACTIONS = frozenset({"preview_c_drive"})
+
 # One local yes/no after an allowlisted tap. No second question while one is open.
 FOLLOWUP_DELAY_MIN = {
     "wifi": 60,
@@ -2514,6 +2600,10 @@ def schedule_action_followup(
             return None
     except Exception:
         return None
+    if key in _OUTCOME_FIRST_ACTIONS:
+        # Feedback waits until the preview actually finishes. A cancelled
+        # confirm must not leave a Có ích question behind.
+        return None
     topic = _topic_for_allowlisted(key)
     if not topic:
         return None
@@ -2595,6 +2685,95 @@ def due_action_followup(
     }
 
 
+def _outcome_hint_vi(outcome: Any) -> str:
+    if not isinstance(outcome, dict):
+        return ""
+    bits: List[str] = []
+    label = " ".join(str(outcome.get("label") or "").split())
+    if label:
+        bits.append(label)
+    try:
+        targets = int(outcome.get("targets") or 0)
+    except (TypeError, ValueError):
+        targets = 0
+    if targets > 0:
+        bits.append(f"{targets} mục")
+    return ", ".join(bits)
+
+
+def _preview_followup_question(outcome: Dict[str, Any]) -> str:
+    hint = _outcome_hint_vi(outcome)
+    if hint:
+        return f"Quét ổ C (xem trước) thấy {hint}. Có ích không?"
+    return "Quét ổ C (xem trước) vừa xong. Có ích không?"
+
+
+def note_one_tap_outcome(
+    action_key: str,
+    *,
+    topic: str = "",
+    bytes_found: int = 0,
+    target_count: int = 0,
+    label_vi: str = "",
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Store a finished preview and ask Có ích / Chưa now. Does not delete.
+
+    If another question is already open, the numbers are still stored and the
+    question is left alone.
+    """
+    if not _cfg_enabled(config_manager):
+        return None
+    key = str(action_key or "").strip()
+    if key not in _OUTCOME_FIRST_ACTIONS or not is_allowed_insight_action(key):
+        return None
+    topic_key = str(topic or "").strip() or _topic_for_allowlisted(key)
+    if topic_key not in TOPIC_META:
+        return None
+    stamp = now or datetime.now()
+    try:
+        from core.companion_learning import record_action_outcome
+        stored = record_action_outcome(
+            topic=topic_key,
+            action_key=key,
+            bytes_found=bytes_found,
+            target_count=target_count,
+            label_vi=label_vi,
+            now=stamp,
+            base_dir=base_dir,
+        )
+    except Exception:
+        stored = {}
+    if not stored:
+        return None
+    outcome = {
+        "bytes": int(stored.get("bytes") or 0),
+        "targets": int(stored.get("targets") or 0),
+        "label": str(stored.get("label") or ""),
+    }
+    state = load_state(base_dir)
+    existing = state.get("pending_followup")
+    if isinstance(existing, dict) and str(existing.get("question_vi") or "").strip():
+        if str(existing.get("action_key") or "") != key:
+            return {"recorded": True, "asked": False, "topic": topic_key, "action_key": key, "outcome": outcome}
+    iso = stamp.replace(microsecond=0).isoformat(timespec="seconds")
+    payload = {
+        "action_key": key,
+        "topic": topic_key,
+        "skill_id": "",
+        "since": iso,
+        "due_at": iso,
+        "question_vi": _preview_followup_question(outcome),
+        "source": "one_tap_outcome",
+        "outcome": outcome,
+    }
+    state["pending_followup"] = payload
+    save_state(state, base_dir=base_dir)
+    return {"recorded": True, "asked": True, "topic": topic_key, "action_key": key, "outcome": outcome, "question_vi": payload["question_vi"]}
+
+
 def answer_action_followup(
     helpful: bool,
     *,
@@ -2616,11 +2795,15 @@ def answer_action_followup(
     state["pending_followup"] = None
     save_state(state, base_dir=base_dir)
     stamp = now or datetime.now()
+    note = "Có ích." if helpful else "Chưa giúp."
+    hint = _outcome_hint_vi(pending.get("outcome"))
+    if hint:
+        note = f"{note} {hint}."
     try:
         from core.companion import note_user_feedback
         note_user_feedback(
             bool(helpful),
-            note="Có ích." if helpful else "Chưa giúp.",
+            note=note,
             base_dir=base_dir,
             now=stamp,
             config_manager=config_manager,
@@ -2649,7 +2832,10 @@ def answer_action_followup(
             clear_helpful_replay(action_key, base_dir=base_dir)
         except Exception:
             pass
-    return {"helpful": bool(helpful), "topic": topic, "action_key": action_key}
+    result = {"helpful": bool(helpful), "topic": topic, "action_key": action_key}
+    if isinstance(pending.get("outcome"), dict):
+        result["outcome"] = pending.get("outcome")
+    return result
 
 
 def dismiss_action_followup(base_dir: Optional[str] = None) -> None:

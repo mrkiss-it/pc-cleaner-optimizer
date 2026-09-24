@@ -2710,8 +2710,9 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._on_worker_finished)
         self.worker.start()
 
-    def start_deep_c_preview(self):
+    def start_deep_c_preview(self, from_companion: bool = False):
         """Quét ổ C rồi hiện xem trước. Không xóa cho đến khi người dùng xác nhận."""
+        self._companion_c_preview = bool(from_companion)
         targets = {k: r.is_checked() for k, r in self.target_rows.items()}
         self._set_buttons_enabled(False)
         self.progress_bar.setVisible(True)
@@ -2789,11 +2790,60 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._on_worker_finished)
         self.worker.start()
 
+    def _note_companion_c_preview(self, data: dict):
+        """After a companion one-tap preview, ask Có ích / Chưa. Does not delete."""
+        if not getattr(self, "_companion_c_preview", False):
+            return
+        self._companion_c_preview = False
+        rows = data.get("targets") if isinstance(data.get("targets"), list) else []
+        ready = 0
+        for row in rows:
+            if not isinstance(row, dict) or row.get("status") != "ready":
+                continue
+            try:
+                size = int(row.get("reclaimable_bytes") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if size > 0:
+                ready += 1
+        try:
+            found = int(data.get("total_bytes") or 0)
+        except (TypeError, ValueError):
+            found = 0
+        try:
+            from core.companion_moment import note_one_tap_outcome
+            note_one_tap_outcome(
+                "preview_c_drive",
+                topic="disk",
+                bytes_found=found,
+                target_count=ready,
+                label_vi=str(data.get("total_label_vi") or ""),
+                config_manager=getattr(self, "config_manager", None),
+            )
+        except Exception:
+            pass
+        self._refresh_companion_surfaces()
+
+    def _refresh_companion_surfaces(self):
+        card = getattr(self, "companion_card", None)
+        if card is not None:
+            try:
+                card.refresh()
+            except Exception:
+                pass
+        bar = getattr(self, "companion_insight", None)
+        if bar is not None:
+            try:
+                bar.refresh()
+            except Exception:
+                pass
+
     def _present_deep_c_preview(self, result: dict):
         from ui.c_drive_preview_dialog import CDrivePreviewDialog
         data = result.get("data") or {}
         total = str(data.get("total_label_vi") or "0 B")
         self.lbl_status.setText(f"Quét ổ C xong: khoảng {total} — chưa xóa")
+        self._note_companion_c_preview(data)
         dialog = CDrivePreviewDialog(data, self, min_clean_mb=self._min_clean_mb())
         if dialog.exec_() != dialog.Accepted:
             self.lbl_status.setText("Đã đóng xem trước ổ C. Chưa xóa tệp nào.")
@@ -3276,7 +3326,7 @@ class MainWindow(QMainWindow):
                     pass
                 if hasattr(self, "tab_dashboard"):
                     self.tabs.setCurrentWidget(self.tab_dashboard)
-                self.start_deep_c_preview()
+                self.start_deep_c_preview(from_companion=True)
             elif action_key == "clean_light":
                 self.run_light_clean()
             elif action_key in ("optimize_network", "repair_network_now"):

@@ -153,6 +153,13 @@ class CompanionInsightBar(QFrame):
         root.setContentsMargins(12, 8, 12, 8)
         root.setSpacing(6)
 
+        self.lbl_growth = QLabel("")
+        self.lbl_growth.setStyleSheet(
+            "color: #c4b5fd; font-size: 11px; font-weight: bold; background: transparent; border: none;"
+        )
+        self.lbl_growth.hide()
+        root.addWidget(self.lbl_growth)
+
         self.row_stage = QWidget()
         stage_row = QHBoxLayout(self.row_stage)
         stage_row.setContentsMargins(0, 0, 0, 0)
@@ -329,6 +336,11 @@ class CompanionInsightBar(QFrame):
         self.btn_mute.setToolTip("Im chủ đề này 7 ngày. Copilot vẫn trả lời nếu bạn hỏi.")
         self.btn_mute.clicked.connect(self._mute_topic)
         self.btn_mute.hide()
+        self.btn_mute_forever = QPushButton("Đừng nhắc nữa")
+        self.btn_mute_forever.setStyleSheet(_BTN_STYLE)
+        self.btn_mute_forever.setToolTip("Im chủ đề này cho đến khi bạn bỏ chặn. Copilot vẫn trả lời nếu bạn hỏi.")
+        self.btn_mute_forever.clicked.connect(self._mute_topic_forever)
+        self.btn_mute_forever.hide()
         self.btn_dismiss = QPushButton("Ẩn")
         self.btn_dismiss.setStyleSheet(_BTN_STYLE)
         self.btn_dismiss.setToolTip("Ẩn insight này. AI không hiện lại cùng một dòng.")
@@ -338,6 +350,7 @@ class CompanionInsightBar(QFrame):
         row.addWidget(self.btn_pin)
         row.addWidget(self.btn_snooze)
         row.addWidget(self.btn_mute)
+        row.addWidget(self.btn_mute_forever)
         row.addWidget(self.btn_dismiss)
         self.row_insight.hide()
 
@@ -392,6 +405,7 @@ class CompanionInsightBar(QFrame):
                 sync_focus_session(config_manager=self.config_manager)
             except Exception:
                 pass
+        self._show_growth(enabled)
         self._show_stage(enabled)
         self._show_milestone(enabled)
         self._show_week(enabled)
@@ -421,6 +435,24 @@ class CompanionInsightBar(QFrame):
             self.show()
         else:
             self.hide()
+
+    def _show_growth(self, enabled: bool):
+        """Small memory badge. It does not by itself open the strip."""
+        self.lbl_growth.setText("")
+        self.lbl_growth.hide()
+        if not enabled:
+            return
+        try:
+            from core.companion_learning import learning_growth
+            payload = learning_growth()
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("badge_vi") or "").strip()
+        if not text:
+            return
+        self.lbl_growth.setText(text)
+        self.lbl_growth.setToolTip(str((payload or {}).get("blurb_vi") or ""))
+        self.lbl_growth.show()
 
     def _show_stage(self, enabled: bool):
         self.lbl_stage.setText("")
@@ -648,6 +680,7 @@ class CompanionInsightBar(QFrame):
         self.btn_pin.hide()
         self.btn_snooze.hide()
         self.btn_mute.hide()
+        self.btn_mute_forever.hide()
         self.row_insight.hide()
         insight = None
         if enabled:
@@ -678,6 +711,7 @@ class CompanionInsightBar(QFrame):
         if self._insight_topic:
             self.btn_snooze.show()
             self.btn_mute.show()
+            self.btn_mute_forever.show()
         insight_text = str(insight.get("text") or "")
         why = str(insight.get("why_vi") or "").strip()
         if why and why not in insight_text:
@@ -908,11 +942,17 @@ class CompanionInsightBar(QFrame):
         self.refresh()
 
     def _mute_topic(self):
+        self._mute_current_topic(forever=False)
+
+    def _mute_topic_forever(self):
+        self._mute_current_topic(forever=True)
+
+    def _mute_current_topic(self, forever: bool):
         topic = str(self._insight_topic or "")
         if topic:
             try:
                 from core.companion_profile import MUTE_DAYS, mute_topic
-                mute_topic(topic, days=MUTE_DAYS, reason="user")
+                mute_topic(topic, days=MUTE_DAYS, reason="user", forever=forever)
             except Exception:
                 pass
             try:
@@ -1019,6 +1059,13 @@ class CompanionCard(QFrame):
             "padding: 4px 10px; border-radius: 10px;"
         )
         header.addWidget(self.lbl_badge)
+        self.lbl_growth = QLabel("")
+        self.lbl_growth.setStyleSheet(
+            "background-color: #312e81; color: #c4b5fd; font-size: 11px; font-weight: bold; "
+            "padding: 4px 10px; border-radius: 10px;"
+        )
+        self.lbl_growth.hide()
+        header.addWidget(self.lbl_growth)
         layout.addLayout(header)
 
         self.insight_bar = CompanionInsightBar(config_manager=self.config_manager, parent=self)
@@ -1169,9 +1216,15 @@ class CompanionCard(QFrame):
         self.btn_save_skill.clicked.connect(self._save_skill)
         self.btn_skip_skill = QPushButton("Bỏ qua")
         self.btn_skip_skill.setStyleSheet(_BTN_STYLE)
+        self.btn_skip_skill.setToolTip("Không lưu. Mình không hỏi lại kỹ năng này trong 7 ngày.")
         self.btn_skip_skill.clicked.connect(self._skip_skill)
+        self.btn_skip_skill_forever = QPushButton("Đừng hỏi lại")
+        self.btn_skip_skill_forever.setStyleSheet(_BTN_STYLE)
+        self.btn_skip_skill_forever.setToolTip("Không lưu, và không hỏi lại kỹ năng này cho đến khi bạn bỏ chặn.")
+        self.btn_skip_skill_forever.clicked.connect(self._skip_skill_forever)
         offer_row.addWidget(self.btn_save_skill)
         offer_row.addWidget(self.btn_skip_skill)
+        offer_row.addWidget(self.btn_skip_skill_forever)
         layout.addLayout(offer_row)
 
         btns = QHBoxLayout()
@@ -1287,6 +1340,7 @@ class CompanionCard(QFrame):
             f"background-color: #0f172a; color: {color}; font-size: 11px; font-weight: bold; "
             f"padding: 4px 10px; border-radius: 10px; border: 1px solid {color};"
         )
+        self._show_growth_badge(enabled)
         self.lbl_blurb.setText(stage.blurb_vi if enabled else "AI đồng hành đang tắt — không ghi nhật ký.")
         self.lbl_legend.setText(stage_legend_vi())
         if stage.empty:
@@ -1342,11 +1396,13 @@ class CompanionCard(QFrame):
             self.lbl_offer.setText(message)
             self.btn_save_skill.show()
             self.btn_skip_skill.show()
+            self.btn_skip_skill_forever.show()
             self.lbl_skills.setText("")
         else:
             self.lbl_offer.setText("")
             self.btn_save_skill.hide()
             self.btn_skip_skill.hide()
+            self.btn_skip_skill_forever.hide()
             if stage.skills_count <= 0:
                 self.lbl_skills.setText(empty["skills"])
             else:
@@ -1454,9 +1510,32 @@ class CompanionCard(QFrame):
             pass
         self.refresh()
 
-    def _skip_skill(self):
+    def _show_growth_badge(self, enabled: bool):
+        self.lbl_growth.setText("")
+        self.lbl_growth.hide()
+        if not enabled:
+            return
         try:
-            decline_skill_offer()
+            from core.companion_learning import learning_growth
+            payload = learning_growth()
+        except Exception:
+            payload = None
+        text = str((payload or {}).get("badge_vi") or "").strip()
+        if not text:
+            return
+        self.lbl_growth.setText(text)
+        self.lbl_growth.setToolTip(str((payload or {}).get("blurb_vi") or ""))
+        self.lbl_growth.show()
+
+    def _skip_skill(self):
+        self._decline_skill(forever=False)
+
+    def _skip_skill_forever(self):
+        self._decline_skill(forever=True)
+
+    def _decline_skill(self, forever: bool):
+        try:
+            decline_skill_offer(forever=forever)
         except Exception:
             pass
         self.refresh()
@@ -2034,34 +2113,57 @@ class CompanionDialog(QDialog):
                 self.list_growth.addItem(QListWidgetItem(text))
 
     def _fill_muted(self):
-        from core.companion_profile import active_muted_topics, format_muted_browse
-        from core.companion_profile import TOPIC_META
+        from core.companion_profile import TOPIC_META, active_muted_topics, format_muted_browse, mute_is_forever
+        from core.companion_skills import list_declined_offers
         active = active_muted_topics()
+        declined = list_declined_offers()
         self.list_muted.clear()
-        if not active:
+        if not active and not declined:
             self.lbl_muted.setText("Không có chủ đề đang im.")
             self.lbl_muted.show()
             return
-        self.lbl_muted.setText(format_muted_browse())
+        bits = []
+        if active:
+            bits.append(format_muted_browse())
+        if declined:
+            names = ", ".join(str(row.get("title") or row.get("issue_class") or "") for row in declined)
+            bits.append("Đã chặn hỏi kỹ năng: " + names + ".")
+        self.lbl_muted.setText(" ".join(bits))
         self.lbl_muted.show()
         for topic, meta in active.items():
             name = str((TOPIC_META.get(topic) or {}).get("name") or topic)
-            until = str(meta.get("until") or "")
-            day = f"{until[8:10]}/{until[5:7]}" if len(until) >= 10 else ""
-            item = QListWidgetItem(f"{name} — đến {day}" if day else name)
+            if mute_is_forever(meta):
+                label = f"{name} — mãi mãi"
+            else:
+                until = str(meta.get("until") or "")
+                day = f"{until[8:10]}/{until[5:7]}" if len(until) >= 10 else ""
+                label = f"{name} — đến {day}" if day else name
+            item = QListWidgetItem(label)
             item.setData(Qt.UserRole, topic)
+            self.list_muted.addItem(item)
+        for row in declined:
+            title = str(row.get("title") or row.get("issue_class") or "")
+            span = "mãi mãi" if row.get("forever") else "một thời gian"
+            item = QListWidgetItem(f"Kỹ năng «{title}» — {span}")
+            item.setData(Qt.UserRole, "skill:" + str(row.get("issue_class") or ""))
             self.list_muted.addItem(item)
 
     def _unmute_selected(self):
         item = self.list_muted.currentItem()
         if item is None:
-            QMessageBox.information(self, "Chủ đề đang im", "Chọn một chủ đề để bỏ im.")
+            QMessageBox.information(self, "Chủ đề đang im", "Chọn một dòng để bỏ chặn.")
             return
-        topic = item.data(Qt.UserRole)
-        if topic:
+        token = str(item.data(Qt.UserRole) or "")
+        if token.startswith("skill:"):
+            try:
+                from core.companion_skills import clear_declined_offer
+                clear_declined_offer(token.split(":", 1)[1])
+            except Exception:
+                pass
+        elif token:
             try:
                 from core.companion_profile import unmute_topic
-                unmute_topic(str(topic))
+                unmute_topic(token)
             except Exception:
                 pass
         self.refresh()
@@ -2070,6 +2172,11 @@ class CompanionDialog(QDialog):
         try:
             from core.companion_profile import clear_muted_topics
             clear_muted_topics()
+        except Exception:
+            pass
+        try:
+            from core.companion_skills import clear_declined_offers
+            clear_declined_offers()
         except Exception:
             pass
         self.refresh()

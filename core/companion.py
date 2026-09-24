@@ -59,6 +59,8 @@ CONTEXT_CHAR_BUDGET = 1100
 NUDGE_COOLDOWN_SEC = 12 * 3600
 NUDGE_SAME_CLASS_SEC = 36 * 3600
 SKILL_DECLINE_DAYS = 7
+# «Đừng hỏi lại» — stays declined across sessions until the user clears it.
+SKILL_DECLINE_FOREVER = "9999-12-31T00:00:00"
 _LATE_BANDS = frozenset({"evening", "night"})
 
 SNAPSHOT_COOLDOWN_SEC = 3 * 3600
@@ -310,6 +312,15 @@ def _refresh_skill_offer(base_dir: Optional[str] = None, now: Optional[datetime]
             state["pending_skill_offer"] = offer
         else:
             current = state.get("pending_skill_offer")
+            if isinstance(current, dict):
+                try:
+                    from core.companion_skills import issue_is_declined
+                    held = str(current.get("issue_class") or "")
+                    if held and issue_is_declined(held, base_dir=base_dir, now=now):
+                        current = None
+                        state["pending_skill_offer"] = None
+                except Exception:
+                    pass
             keep_learning = isinstance(current, dict) and current.get("source") == "learning"
             if not keep_learning:
                 state["pending_skill_offer"] = None
@@ -326,10 +337,20 @@ def _refresh_skill_offer(base_dir: Optional[str] = None, now: Optional[datetime]
         return
 
 
-def pending_skill_offer(base_dir: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def pending_skill_offer(base_dir: Optional[str] = None, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
     state = load_state(base_dir)
     offer = state.get("pending_skill_offer")
-    return offer if isinstance(offer, dict) else None
+    if not isinstance(offer, dict):
+        return None
+    issue = str(offer.get("issue_class") or "").strip().lower()
+    if issue:
+        try:
+            from core.companion_skills import issue_is_declined
+            if issue_is_declined(issue, base_dir=base_dir, now=now):
+                return None
+        except Exception:
+            pass
+    return offer
 
 
 def accept_skill_offer(issue_class: str = "", base_dir: Optional[str] = None) -> Optional[CompanionSkill]:
@@ -357,7 +378,13 @@ def decline_skill_offer(
     base_dir: Optional[str] = None,
     now: Optional[datetime] = None,
     config_manager: Optional[Any] = None,
+    forever: bool = False,
 ) -> None:
+    """Skip «Lưu thành kỹ năng». The skip is stored, so the next session stays quiet.
+
+    The default quiet period is SKILL_DECLINE_DAYS. ``forever`` stays until the
+    user clears it from the companion memory list.
+    """
     state = load_state(base_dir)
     offer = state.get("pending_skill_offer") if isinstance(state.get("pending_skill_offer"), dict) else {}
     issue = str((offer or {}).get("issue_class") or "").strip().lower()
@@ -365,11 +392,15 @@ def decline_skill_offer(
     title = str((offer or {}).get("title") or issue)
     stamp = now or datetime.now()
     if issue:
-        until = stamp.timestamp() + SKILL_DECLINE_DAYS * 86400
+        if forever:
+            until_text = SKILL_DECLINE_FOREVER
+        else:
+            until = stamp.timestamp() + SKILL_DECLINE_DAYS * 86400
+            until_text = datetime.fromtimestamp(until).replace(microsecond=0).isoformat(timespec="seconds")
         declined = state.get("declined_skill_until")
         if not isinstance(declined, dict):
             declined = {}
-        declined[issue] = datetime.fromtimestamp(until).replace(microsecond=0).isoformat(timespec="seconds")
+        declined[issue] = until_text
         state["declined_skill_until"] = declined
     state["pending_skill_offer"] = None
     save_state(state, base_dir=base_dir)
@@ -2135,6 +2166,16 @@ def _store_maturity(raw: Any, base_dir: Optional[str], mode: str) -> None:
             local[key] = incoming.get(key)
     if not local.get("focus_session") and incoming.get("focus_session"):
         local["focus_session"] = incoming.get("focus_session")
+    local_declined = local.get("declined_skill_until") if isinstance(local.get("declined_skill_until"), dict) else {}
+    incoming_declined = incoming.get("declined_skill_until") if isinstance(incoming.get("declined_skill_until"), dict) else {}
+    if incoming_declined:
+        merged_declined = dict(local_declined)
+        for issue, until in incoming_declined.items():
+            key = str(issue or "").strip().lower()
+            nxt = str(until or "")
+            if key and nxt > str(merged_declined.get(key) or ""):
+                merged_declined[key] = nxt
+        local["declined_skill_until"] = merged_declined
     shown = []
     for item in list(local.get("shown_milestones") or []) + list(incoming.get("shown_milestones") or []):
         text = str(item or "").strip()
