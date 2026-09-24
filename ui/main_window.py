@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QTabWidget, QFrame, QProgressBar, QTableWidget, 
     QTableWidgetItem, QHeaderView, QCheckBox, QSpinBox, QComboBox, 
     QMessageBox, QPlainTextEdit, QLineEdit, QListWidget, QListWidgetItem,
-    QScrollArea, QSplitter
+    QScrollArea, QSplitter, QFileDialog
 )
 
 from config_manager import ConfigManager
@@ -68,6 +68,7 @@ class CleanWorker(QThread):
         deep_preview: bool = False,
         deep_admin: bool = False,
         only_keys=None,
+        exclude_paths=None,
     ):
         super().__init__()
         self.targets = targets
@@ -78,6 +79,7 @@ class CleanWorker(QThread):
         self.deep_preview = bool(deep_preview)
         self.deep_admin = bool(deep_admin)
         self.only_keys = None if only_keys is None else [str(key) for key in only_keys]
+        self.exclude_paths = list(exclude_paths or [])
 
     def run(self):
         if self.deep_preview:
@@ -87,6 +89,7 @@ class CleanWorker(QThread):
                 downloads_min_age_days=self.downloads_min_age_days,
                 deep_user_safe=self.deep_user_safe,
                 deep_admin=self.deep_admin,
+                exclude_paths=self.exclude_paths,
             )
             self.progress.emit("Quét ổ C xong.", 100)
             self.finished.emit({
@@ -103,6 +106,7 @@ class CleanWorker(QThread):
             res = JunkCleaner.scan(
                 self.targets,
                 downloads_min_age_days=self.downloads_min_age_days,
+                exclude_paths=self.exclude_paths,
             )
             self.progress.emit("Quét hoàn tất!", 100)
             self.finished.emit({"type": "scan", "data": res})
@@ -115,6 +119,7 @@ class CleanWorker(QThread):
                 deep_admin=self.deep_admin,
                 downloads_min_age_days=self.downloads_min_age_days,
                 only_keys=self.only_keys,
+                exclude_paths=self.exclude_paths,
             )
 
             ram_res = {}
@@ -1063,6 +1068,8 @@ class MainWindow(QMainWindow):
         row_min_clean.addStretch()
         layout.addLayout(row_min_clean)
 
+        self._build_exclude_path_editor(layout)
+
         layout.addStretch()
         scroll.setWidget(scroll_content)
         outer_layout.addWidget(scroll, 1)
@@ -1076,6 +1083,115 @@ class MainWindow(QMainWindow):
         btn_save_targets.clicked.connect(self.save_targets_config)
         bottom_bar.addWidget(btn_save_targets)
         outer_layout.addLayout(bottom_bar)
+
+    def _exclude_paths(self):
+        from core.c_drive_clean import normalize_exclude_paths
+        return normalize_exclude_paths(self.config_manager.get("c_drive_exclude_paths", []))
+
+    def _build_exclude_path_editor(self, layout):
+        from core.c_drive_clean import normalize_exclude_paths
+
+        title = QLabel("Không bao giờ quét hoặc xóa")
+        title.setStyleSheet("color: #5eead4; font-weight: 700; font-size: 13px; margin-top: 12px;")
+        layout.addWidget(title)
+        hint = QLabel(
+            "Đường dẫn tuyệt đối. Thư mục con cũng bị bỏ qua khi Quét ổ C, Dọn và Tìm file lớn. "
+            "Danh sách được lưu trong cấu hình của ứng dụng."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #64748b; font-size: 11px;")
+        layout.addWidget(hint)
+
+        self.list_exclude_paths = QListWidget()
+        self.list_exclude_paths.setMinimumHeight(96)
+        self.list_exclude_paths.setStyleSheet(
+            "QListWidget { background: #1e293b; color: #f8fafc; border: 1px solid #334155; border-radius: 8px; }"
+        )
+        for path in normalize_exclude_paths(self.config_manager.get("c_drive_exclude_paths", [])):
+            self.list_exclude_paths.addItem(path)
+        layout.addWidget(self.list_exclude_paths)
+
+        row = QHBoxLayout()
+        self.edit_exclude_path = QLineEdit()
+        self.edit_exclude_path.setPlaceholderText(r"Ví dụ: C:\Users\Ban\Downloads\GiuLai")
+        btn_add = QPushButton("Thêm")
+        btn_add.setCursor(Qt.PointingHandCursor)
+        btn_add.clicked.connect(self._add_exclude_path)
+        btn_browse = QPushButton("Chọn thư mục")
+        btn_browse.setCursor(Qt.PointingHandCursor)
+        btn_browse.clicked.connect(self._browse_exclude_folder)
+        btn_remove = QPushButton("Xóa khỏi danh sách")
+        btn_remove.setCursor(Qt.PointingHandCursor)
+        btn_remove.clicked.connect(self._remove_exclude_path)
+        row.addWidget(self.edit_exclude_path, 1)
+        row.addWidget(btn_add)
+        row.addWidget(btn_browse)
+        row.addWidget(btn_remove)
+        layout.addLayout(row)
+
+        self.lbl_exclude_status = QLabel("")
+        self.lbl_exclude_status.setWordWrap(True)
+        self.lbl_exclude_status.setStyleSheet("color: #fbbf24; font-size: 11px;")
+        layout.addWidget(self.lbl_exclude_status)
+        self.edit_exclude_path.returnPressed.connect(self._add_exclude_path)
+
+    def _exclude_paths_from_list(self):
+        from core.c_drive_clean import normalize_exclude_paths
+        paths = []
+        for index in range(self.list_exclude_paths.count()):
+            paths.append(self.list_exclude_paths.item(index).text())
+        return normalize_exclude_paths(paths)
+
+    def _save_exclude_paths(self):
+        paths = self._exclude_paths_from_list()
+        self.list_exclude_paths.clear()
+        for path in paths:
+            self.list_exclude_paths.addItem(path)
+        self.config_manager.set("c_drive_exclude_paths", paths)
+
+    def _add_exclude_path(self):
+        from core.c_drive_clean import normalize_exclude_paths
+        raw = self.edit_exclude_path.text().strip()
+        if not raw:
+            return
+        before = self._exclude_paths_from_list()
+        try:
+            accepted = normalize_exclude_paths(before + [raw])
+            single = normalize_exclude_paths([raw])
+        except (OSError, ValueError):
+            single = []
+            accepted = before
+        if not single:
+            self.lbl_exclude_status.setText(
+                "Chỉ nhận đường dẫn tuyệt đối, không phải gốc ổ đĩa. Ví dụ C:\\Users\\Ban\\Downloads\\GiuLai."
+            )
+            return
+        if accepted == before:
+            self.lbl_exclude_status.setText("Đường dẫn này đã có trong danh sách.")
+            self.edit_exclude_path.clear()
+            return
+        self.list_exclude_paths.clear()
+        for path in accepted:
+            self.list_exclude_paths.addItem(path)
+        self.edit_exclude_path.clear()
+        self.config_manager.set("c_drive_exclude_paths", accepted)
+        self.lbl_exclude_status.setText("Đã lưu danh sách loại trừ.")
+
+    def _browse_exclude_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Chọn thư mục không bao giờ quét hoặc xóa")
+        if not folder:
+            return
+        self.edit_exclude_path.setText(folder)
+        self._add_exclude_path()
+
+    def _remove_exclude_path(self):
+        row = self.list_exclude_paths.currentRow()
+        if row < 0:
+            self.lbl_exclude_status.setText("Hãy chọn một đường dẫn trong danh sách rồi bấm xóa.")
+            return
+        self.list_exclude_paths.takeItem(row)
+        self.lbl_exclude_status.setText("Đã xóa đường dẫn khỏi danh sách loại trừ.")
+        self._save_exclude_paths()
 
     def _auto_save_targets(self):
         """Tự động lưu tức thì các tùy chọn dọn dẹp mỗi khi người dùng thay đổi checkbox."""
@@ -2569,6 +2685,7 @@ class MainWindow(QMainWindow):
             targets,
             is_scan_only=True,
             downloads_min_age_days=self._downloads_min_age_days(),
+            exclude_paths=self._exclude_paths(),
         )
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.finished.connect(self._on_worker_finished)
@@ -2587,6 +2704,7 @@ class MainWindow(QMainWindow):
             is_scan_only=False,
             whitelist=whitelist,
             downloads_min_age_days=self._downloads_min_age_days(),
+            exclude_paths=self._exclude_paths(),
         )
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.finished.connect(self._on_worker_finished)
@@ -2607,6 +2725,7 @@ class MainWindow(QMainWindow):
             deep_user_safe=True,
             deep_preview=True,
             downloads_min_age_days=self._downloads_min_age_days(),
+            exclude_paths=self._exclude_paths(),
         )
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.finished.connect(self._on_worker_finished)
@@ -2635,6 +2754,7 @@ class MainWindow(QMainWindow):
             deep_admin=True,
             deep_preview=True,
             downloads_min_age_days=self._downloads_min_age_days(),
+            exclude_paths=self._exclude_paths(),
         )
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.finished.connect(self._on_worker_finished)
@@ -2663,6 +2783,7 @@ class MainWindow(QMainWindow):
             deep_admin=bool(deep_admin),
             downloads_min_age_days=int(downloads_min_age_days or 30),
             only_keys=only_keys,
+            exclude_paths=self._exclude_paths(),
         )
         self.worker.progress.connect(self._on_worker_progress)
         self.worker.finished.connect(self._on_worker_finished)
@@ -2710,6 +2831,13 @@ class MainWindow(QMainWindow):
                 return
         targets = result.get("targets") or {}
         days = int(result.get("downloads_min_age_days") or self._downloads_min_age_days())
+        if hasattr(dialog, "downloads_min_age_days"):
+            days = int(dialog.downloads_min_age_days() or days)
+            self.config_manager.set("downloads_old_min_days", days)
+            if hasattr(self, "spin_downloads_age") and int(self.spin_downloads_age.value()) != days:
+                self.spin_downloads_age.blockSignals(True)
+                self.spin_downloads_age.setValue(max(1, min(365, days)))
+                self.spin_downloads_age.blockSignals(False)
         deep_admin = bool(result.get("deep_admin") or data.get("deep_admin"))
         self._start_deep_c_clean_confirmed(
             targets,
@@ -2751,7 +2879,10 @@ class MainWindow(QMainWindow):
         from core.cleaner import JunkCleaner
         self.lbl_status.setText("Đang dọn nhẹ temp / crash dump...")
         try:
-            res = JunkCleaner.clean(dict(LIGHT_CLEAN_TARGETS))
+            res = JunkCleaner.clean(
+                dict(LIGHT_CLEAN_TARGETS),
+                exclude_paths=self._exclude_paths(),
+            )
         except Exception as exc:
             QMessageBox.warning(self, "Dọn nhẹ", f"Không dọn được: {exc}")
             return
@@ -2940,7 +3071,7 @@ class MainWindow(QMainWindow):
 
     def open_large_file_finder(self):
         from ui.large_file_finder_dialog import LargeFileFinderDialog
-        dialog = LargeFileFinderDialog(self)
+        dialog = LargeFileFinderDialog(self, exclude_paths=self._exclude_paths())
         dialog.exec_()
 
     def open_large_files_dialog(self):

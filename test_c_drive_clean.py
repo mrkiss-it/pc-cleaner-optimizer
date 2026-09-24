@@ -138,6 +138,10 @@ def test_catalog_defaults_match_config():
     assert flags["thumbnail_cache"] is True
     assert flags["browser_cache"] is True
     assert flags["downloads_old"] is False
+    assert flags["recycle_bin"] is False
+    assert TARGET_CATALOG["recycle_bin"]["default_enabled"] is False
+    assert DEFAULT_CONFIG["c_drive_exclude_paths"] == []
+    assert DEFAULT_CONFIG["downloads_old_min_days"] == 30
     assert flags["system_dumps"] is False
     assert flags["system_temp"] is True
     assert flags["windows_update"] is True
@@ -2051,6 +2055,161 @@ def test_v5_caches_groups_sort_and_min_size_filter():
         shutil.rmtree(basic_root, ignore_errors=True)
 
 
+def test_exclude_paths_downloads_age_and_recycle_bin():
+    from core.c_drive_clean import (
+        RECYCLE_SIZE_UNKNOWN_VI,
+        delete_large_files,
+        estimate_reclaimable,
+        normalize_exclude_paths,
+        path_is_excluded,
+        scan_large_user_files,
+    )
+    import core.c_drive_clean as mod
+
+    assert normalize_exclude_paths(["relative\\keep", "", None]) == []
+    root = tempfile.mkdtemp(prefix="pca-exclude-")
+    try:
+        info = _tree(root)
+        keep_dir = os.path.join(info["temp"], "Keep")
+        _write(os.path.join(keep_dir, "secret.bin"), b"K" * 40)
+        _write(os.path.join(info["temp"], "KeepExtra", "still.bin"), b"E" * 12)
+        old_keep = os.path.join(info["home"], "Downloads", "Keep", "archive.bin")
+        _write(old_keep, b"D" * 20)
+        os.utime(old_keep, (info["now"] - 40 * 86400, info["now"] - 40 * 86400))
+        onedrive_old = os.path.join(info["home"], "Downloads", "OneDrive Backup", "cloud.bin")
+        _write(onedrive_old, b"C" * 9)
+        os.utime(onedrive_old, (info["now"] - 40 * 86400, info["now"] - 40 * 86400))
+        reparse_old = os.path.join(info["home"], "Downloads", "Junction", "link.bin")
+        _write(reparse_old, b"R" * 8)
+        os.utime(reparse_old, (info["now"] - 40 * 86400, info["now"] - 40 * 86400))
+
+        exclude = [keep_dir.lower(), os.path.join(info["home"], "Downloads", "Keep")]
+        assert path_is_excluded(os.path.join(keep_dir, "secret.bin"), exclude)
+        assert not path_is_excluded(os.path.join(info["temp"], "KeepExtra", "still.bin"), exclude)
+
+        scan = JunkCleaner.scan(
+            {"user_temp": True, "downloads_old": True},
+            is_admin=False,
+            environ=info["env"],
+            now_ts=info["now"],
+            downloads_min_age_days=30,
+            exclude_paths=exclude,
+        )
+        # keep.tmp 100 + KeepExtra 12. Excluded Keep/secret.bin (40) is not sized.
+        assert scan["categories"]["user_temp"]["size_bytes"] == 100 + 12
+
+        real_reparse = mod._is_reparse_point
+
+        def fake_reparse(path):
+            if os.path.basename(path) == "Junction" or path.endswith(os.path.join("Downloads", "Junction")):
+                return True
+            return real_reparse(path)
+
+        mod._is_reparse_point = fake_reparse
+        try:
+            preview = estimate_reclaimable(
+                {"user_temp": True, "downloads_old": True, "recycle_bin": False},
+                is_admin=False,
+                deep_user_safe=True,
+                environ=info["env"],
+                now_ts=info["now"],
+                downloads_min_age_days=30,
+                exclude_paths=exclude,
+            )
+            ready = {row["key"]: row for row in preview["targets"] if row["status"] == "ready"}
+            assert ready["downloads_old"]["reclaimable_bytes"] == 70 + 15
+            assert ready["downloads_old"]["reclaimable_files"] == 2
+            assert "cũ hơn 30 ngày" in preview["preview_vi"]
+            assert any(path.lower().endswith(os.path.join("temp", "keep").lower()) or "Keep" in path for path in preview["excluded_paths"])
+            assert "Đã bỏ qua" in preview["preview_vi"]
+
+            result = JunkCleaner.clean(
+                {"user_temp": True, "downloads_old": True},
+                is_admin=False,
+                environ=info["env"],
+                now_ts=info["now"],
+                downloads_min_age_days=30,
+                exclude_paths=exclude,
+            )
+        finally:
+            mod._is_reparse_point = real_reparse
+
+        assert os.path.exists(os.path.join(keep_dir, "secret.bin"))
+        assert os.path.exists(old_keep)
+        assert os.path.exists(onedrive_old)
+        assert os.path.exists(reparse_old)
+        assert os.path.exists(os.path.join(info["home"], "Downloads", "new.bin"))
+        assert not os.path.exists(os.path.join(info["temp"], "keep.tmp"))
+        assert not os.path.exists(os.path.join(info["temp"], "KeepExtra", "still.bin"))
+        assert not os.path.exists(os.path.join(info["home"], "Downloads", "old.bin"))
+        assert result["details"]["user_temp"]["freed_bytes"] == 100 + 12
+        assert result["details"]["downloads_old"]["freed_bytes"] == 70 + 15
+
+        big_keep = os.path.join(info["home"], "Documents")
+        os.makedirs(big_keep, exist_ok=True)
+        kept = os.path.join(big_keep, "video.bin")
+        other = os.path.join(info["home"], "video-ok.bin")
+        _write(kept, b"V" * 200)
+        _write(other, b"V" * 180)
+        found = scan_large_user_files(
+            environ=info["env"],
+            min_bytes=100,
+            max_depth=3,
+            max_seconds=5,
+            exclude_paths=[big_keep],
+        )
+        paths = [row["path"] for row in found["files"]]
+        assert other in paths
+        assert kept not in paths
+        blocked = delete_large_files([kept, other], environ=info["env"], exclude_paths=[big_keep])
+        assert os.path.exists(kept)
+        assert not os.path.exists(other)
+        assert blocked["freed_bytes"] == 180
+
+        unknown = estimate_reclaimable(
+            {"recycle_bin": True, "user_temp": False, "downloads_old": False},
+            is_admin=False,
+            deep_user_safe=False,
+            environ=info["env"],
+            recycle_info={"size_known": False},
+        )
+        recycle_rows = [row for row in unknown["targets"] if row["key"] == "recycle_bin"]
+        assert recycle_rows and recycle_rows[0]["size_unknown"] is True
+        assert recycle_rows[0]["reclaimable_bytes"] == 0
+        assert unknown["total_bytes"] == 0
+        assert RECYCLE_SIZE_UNKNOWN_VI in unknown["preview_vi"]
+        shown = [row["key"] for row in __import__("core.c_drive_clean", fromlist=["preview_rows_for_display"]).preview_rows_for_display(unknown)]
+        assert "recycle_bin" in shown
+
+        calls = []
+
+        def _empty():
+            calls.append("bin")
+            return {"success": True, "freed_bytes": 64, "items": 1}
+
+        cleaned = JunkCleaner.clean(
+            {"recycle_bin": True, "user_temp": False},
+            is_admin=False,
+            environ=info["env"],
+            recycle_empty=_empty,
+            exclude_paths=exclude,
+        )
+        assert calls == ["bin"]
+        assert cleaned["total_freed_bytes"] == 64
+        assert cleaned["details"]["recycle_bin"]["status"] == "cleaned"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    ui = open(os.path.join(os.path.dirname(__file__), "ui", "main_window.py"), encoding="utf-8").read()
+    preview_ui = open(os.path.join(os.path.dirname(__file__), "ui", "c_drive_preview_dialog.py"), encoding="utf-8").read()
+    assert "Không bao giờ quét hoặc xóa" in ui
+    assert "c_drive_exclude_paths" in ui
+    assert "Chọn thư mục" in ui
+    assert "spin_downloads_age" in preview_ui
+    assert "chưa ước lượng được dung lượng" in preview_ui
+    assert "Đã bỏ qua" in preview_ui
+
+
 def test_ui_exposes_deep_clean_and_admin_label():
     base = os.path.dirname(__file__)
     text = open(os.path.join(base, "ui", "main_window.py"), encoding="utf-8").read()
@@ -2107,6 +2266,7 @@ def _run():
         test_admin_deep_plan_respects_elevation_and_forbidden_paths,
         test_chat_gpu_launcher_and_empty_folders_do_not_double_count,
         test_v5_caches_groups_sort_and_min_size_filter,
+        test_exclude_paths_downloads_age_and_recycle_bin,
         test_ui_exposes_deep_clean_and_admin_label,
     ]
     failed = 0

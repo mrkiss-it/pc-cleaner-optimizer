@@ -29,11 +29,12 @@ class LargeFileScanWorker(QThread):
     progress = pyqtSignal(str, int)
     finished = pyqtSignal(dict)
 
-    def __init__(self, min_bytes: int, min_age_days: int, include_local_appdata: bool):
+    def __init__(self, min_bytes: int, min_age_days: int, include_local_appdata: bool, exclude_paths=None):
         super().__init__()
         self.min_bytes = int(min_bytes)
         self.min_age_days = int(min_age_days)
         self.include_local_appdata = bool(include_local_appdata)
+        self.exclude_paths = list(exclude_paths or [])
         self._cancel = False
 
     def cancel(self):
@@ -46,6 +47,7 @@ class LargeFileScanWorker(QThread):
             include_local_appdata=self.include_local_appdata,
             progress_callback=lambda msg, pct: self.progress.emit(msg, pct),
             cancel_check=lambda: self._cancel,
+            exclude_paths=self.exclude_paths,
         )
         self.finished.emit(result)
 
@@ -53,19 +55,21 @@ class LargeFileScanWorker(QThread):
 class LargeFileDeleteWorker(QThread):
     finished = pyqtSignal(dict)
 
-    def __init__(self, paths):
+    def __init__(self, paths, exclude_paths=None):
         super().__init__()
         self.paths = list(paths)
+        self.exclude_paths = list(exclude_paths or [])
 
     def run(self):
-        self.finished.emit(delete_large_files(self.paths))
+        self.finished.emit(delete_large_files(self.paths, exclude_paths=self.exclude_paths))
 
 
 class LargeFileFinderDialog(QDialog):
     """Danh sách file lớn. Mặc định không chọn dòng nào."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, exclude_paths=None):
         super().__init__(parent)
+        self.exclude_paths = list(exclude_paths or [])
         self.setWindowTitle("Tìm file lớn")
         self.setModal(True)
         self.resize(920, 640)
@@ -90,7 +94,8 @@ class LargeFileFinderDialog(QDialog):
             "Quét hồ sơ của bạn (và LocalAppData nếu bạn bật). "
             "Không xóa cho đến khi bạn tick dòng và xác nhận. "
             "Mục này không chạy cùng «Dọn ổ C». "
-            "Bỏ qua OneDrive, thư mục hệ thống, cơ sở dữ liệu trình duyệt, node_modules và kho pnpm."
+            "Bỏ qua OneDrive, thư mục hệ thống, cơ sở dữ liệu trình duyệt, node_modules, kho pnpm "
+            "và đường dẫn trong danh sách loại trừ."
         )
         sub.setWordWrap(True)
         sub.setStyleSheet("color: #94a3b8; font-size: 12px; background: transparent;")
@@ -198,6 +203,7 @@ class LargeFileFinderDialog(QDialog):
             int(self.combo_size.currentData()),
             int(self.combo_age.currentData()),
             self.chk_local.isChecked(),
+            exclude_paths=self.exclude_paths,
         )
         self.scan_worker.progress.connect(self._on_progress)
         self.scan_worker.finished.connect(self._on_scan_finished)
@@ -312,7 +318,7 @@ class LargeFileFinderDialog(QDialog):
             self.lbl_summary.setText("Đã hủy. Chưa xóa tệp nào.")
             return
         self.lbl_summary.setText("Đang xóa các tệp đã chọn…")
-        self.delete_worker = LargeFileDeleteWorker(paths)
+        self.delete_worker = LargeFileDeleteWorker(paths, exclude_paths=self.exclude_paths)
         self.delete_worker.finished.connect(self._on_delete_finished)
         self._set_busy(True, scanning=False)
         self.delete_worker.start()
