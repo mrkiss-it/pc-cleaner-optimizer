@@ -119,6 +119,9 @@ def default_state() -> Dict[str, Any]:
         "pending_weekly_strip": None,
         "last_exam_hint_week": "",
         "pending_exam_hint": None,
+        # One soft pointer after a useful C: preview. Never a delete key.
+        "pending_disk_next": None,
+        "disk_next_closed": [],
     }
 
 
@@ -189,7 +192,40 @@ def load_state(base_dir: Optional[str] = None) -> Dict[str, Any]:
     merged["pending_weekly_strip"] = _clean_weekly_strip(merged.get("pending_weekly_strip"))
     merged["last_exam_hint_week"] = str(merged.get("last_exam_hint_week") or "")[:12]
     merged["pending_exam_hint"] = _clean_exam_hint(merged.get("pending_exam_hint"))
+    merged["pending_disk_next"] = _clean_disk_next(merged.get("pending_disk_next"))
+    merged["disk_next_closed"] = _clean_disk_next_closed(merged.get("disk_next_closed"))
     return merged
+
+
+def _clean_disk_next(raw: Any) -> Optional[Dict[str, Any]]:
+    """One line pointing at the existing C: preview. The key cannot be rewritten."""
+    if not isinstance(raw, dict):
+        return None
+    text = " ".join(str(raw.get("text") or "").split())
+    if not text or "không tự xóa" not in text:
+        return None
+    try:
+        size = max(0, int(raw.get("bytes") or 0))
+    except (TypeError, ValueError):
+        size = 0
+    return {
+        "text": text[:240],
+        "action_key": "preview_c_drive",
+        "label_vi": "Mở xem trước",
+        "since": str(raw.get("since") or "")[:32],
+        "bytes": size,
+    }
+
+
+def _clean_disk_next_closed(raw: Any) -> List[str]:
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for item in raw:
+        token = str(item or "").strip()[:32]
+        if token and token not in out:
+            out.append(token)
+    return out[-8:]
 
 
 def _clean_shown_milestones(raw: Any) -> List[str]:

@@ -2835,6 +2835,11 @@ def answer_action_followup(
     result = {"helpful": bool(helpful), "topic": topic, "action_key": action_key}
     if isinstance(pending.get("outcome"), dict):
         result["outcome"] = pending.get("outcome")
+    if helpful:
+        try:
+            _maybe_offer_disk_next(pending, base_dir=base_dir, now=stamp)
+        except Exception:
+            pass
     return result
 
 
@@ -2862,8 +2867,14 @@ def note_mute_after_action(
     state = load_state(base_dir)
     follow = state.get("pending_followup") if isinstance(state.get("pending_followup"), dict) else {}
     outcome = state.get("pending_outcome") if isinstance(state.get("pending_outcome"), dict) else {}
-    if str(follow.get("topic") or "") != key and str(outcome.get("topic") or "") != key:
+    disk_next = state.get("pending_disk_next") if isinstance(state.get("pending_disk_next"), dict) else {}
+    follow_match = str(follow.get("topic") or "") == key or str(outcome.get("topic") or "") == key
+    disk_match = key == "disk" and bool(str(disk_next.get("text") or "").strip())
+    if not follow_match and not disk_match:
         return False
+    if not follow_match:
+        _close_disk_next(state, base_dir=base_dir)
+        return True
     skill_id = str(outcome.get("skill_id") or follow.get("skill_id") or "")
     try:
         from core.companion_profile import topic_issue
@@ -2879,6 +2890,9 @@ def note_mute_after_action(
     state = load_state(base_dir)
     state["pending_followup"] = None
     state["pending_outcome"] = None
+    if key == "disk":
+        _close_disk_next(state, base_dir=base_dir)
+        return True
     save_state(state, base_dir=base_dir)
     return True
 
@@ -3582,3 +3596,402 @@ def present_exam_season_hint(
         for extra in ("action_key", "action_label_vi", "skill_id", "skill_issue", "helpful_replay"):
             attached.pop(extra, None)
     return attached
+
+
+# One soft next step after a useful C: preview. Below this, stay quiet.
+DISK_NEXT_MIN_BYTES = 50 * 1024 * 1024
+
+
+def _reclaim_label(outcome: Dict[str, Any]) -> str:
+    label = " ".join(str(outcome.get("label") or "").split())
+    if label:
+        return label[:40]
+    try:
+        size = max(0, int(outcome.get("bytes") or 0))
+    except (TypeError, ValueError):
+        size = 0
+    if size >= 1024 * 1024:
+        mb = size / (1024 * 1024)
+        if mb >= 10:
+            return f"{int(round(mb))} MB"
+        return f"{mb:.1f} MB"
+    if size >= 1024:
+        return f"{size // 1024} KB"
+    return f"{size} B"
+
+
+def _disk_next_text(label: str) -> str:
+    shown = label or "một ít"
+    return (
+        f"Ổ C còn khoảng {shown} có thể dọn. "
+        "Mở xem trước rồi tự xác nhận — mình không tự xóa và không xin Admin."
+    )
+
+
+def _close_disk_next(state: Dict[str, Any], base_dir: Optional[str] = None) -> None:
+    pending = state.get("pending_disk_next") if isinstance(state.get("pending_disk_next"), dict) else {}
+    since = str(pending.get("since") or "").strip()
+    closed = [str(item) for item in (state.get("disk_next_closed") or []) if str(item)]
+    if since and since not in closed:
+        closed.append(since)
+    state["disk_next_closed"] = closed[-8:]
+    state["pending_disk_next"] = None
+    save_state(state, base_dir=base_dir)
+
+
+def _maybe_offer_disk_next(
+    pending: Dict[str, Any],
+    *,
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    """After Có ích on a real C: preview, one line toward the existing confirm flow."""
+    if str(pending.get("action_key") or "") != "preview_c_drive":
+        return None
+    if str(pending.get("topic") or "") != "disk":
+        return None
+    outcome = pending.get("outcome") if isinstance(pending.get("outcome"), dict) else {}
+    try:
+        size = int(outcome.get("bytes") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size < DISK_NEXT_MIN_BYTES:
+        return None
+    stamp = now or datetime.now()
+    try:
+        from core.companion_profile import topic_is_muted
+        if topic_is_muted("disk", base_dir=base_dir, now=stamp):
+            return None
+    except Exception:
+        return None
+    state = load_state(base_dir)
+    if isinstance(state.get("pending_disk_next"), dict) and state.get("pending_disk_next", {}).get("text"):
+        return state.get("pending_disk_next")
+    since = str(pending.get("since") or "").strip()
+    closed = {str(item) for item in (state.get("disk_next_closed") or [])}
+    if since and since in closed:
+        return None
+    label = _reclaim_label(outcome)
+    payload = {
+        "text": _disk_next_text(label),
+        "action_key": "preview_c_drive",
+        "label_vi": "Mở xem trước",
+        "since": since[:32],
+        "bytes": size,
+    }
+    state["pending_disk_next"] = payload
+    save_state(state, base_dir=base_dir)
+    return payload
+
+
+def due_disk_next(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """The soft C: line. Quiet hours hide it. Mute or Chưa never create it."""
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    state = load_state(base_dir)
+    pending = state.get("pending_disk_next")
+    if not isinstance(pending, dict) or not str(pending.get("text") or "").strip():
+        return None
+    if str(pending.get("action_key") or "") != "preview_c_drive":
+        return None
+    try:
+        from core.companion_profile import topic_is_muted
+        if topic_is_muted("disk", base_dir=base_dir, now=stamp):
+            _close_disk_next(state, base_dir=base_dir)
+            return None
+    except Exception:
+        return None
+    try:
+        from core.companion_profile import in_quiet_hours
+        if in_quiet_hours(stamp, base_dir=base_dir):
+            return None
+    except Exception:
+        pass
+    return pending
+
+
+def dismiss_disk_next(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    del now
+    state = load_state(base_dir)
+    _close_disk_next(state, base_dir=base_dir)
+
+
+def _day_note_facts(day: str, base_dir: Optional[str]) -> Dict[str, int]:
+    try:
+        from core.companion_diary import read_events
+        events = read_events(base_dir=base_dir, limit=0)
+    except Exception:
+        events = []
+    helpful = 0
+    unhelpful = 0
+    saved = 0
+    declined = 0
+    for event in events:
+        if str(event.get("ts") or "")[:10] != day:
+            continue
+        kind = str(event.get("kind") or "")
+        summary = str(event.get("summary") or "")
+        metrics = event.get("metrics") if isinstance(event.get("metrics"), dict) else {}
+        tags = {str(tag) for tag in (event.get("tags") or [])}
+        if kind == "user_feedback":
+            try:
+                helpful_metric = int(metrics.get("helpful") or 0)
+            except (TypeError, ValueError):
+                helpful_metric = 0
+            if helpful_metric >= 1 or "Có ích" in summary:
+                helpful += 1
+            elif str(event.get("outcome") or "") == "rejected" or "Chưa" in summary:
+                unhelpful += 1
+        elif kind == "skill_saved":
+            saved += 1
+        elif kind == "suggestion_rejected" and ("kỹ năng" in summary or "skill" in tags):
+            declined += 1
+    return {
+        "helpful": helpful,
+        "unhelpful": unhelpful,
+        "skills_saved": saved,
+        "skills_declined": declined,
+    }
+
+
+def _find_day_note(day: str, base_dir: Optional[str]) -> Optional[Dict[str, Any]]:
+    try:
+        from core.companion_diary import read_events
+        events = read_events(base_dir=base_dir, limit=0, kinds=["reflection"])
+    except Exception:
+        return None
+    for event in events:
+        tags = {str(tag) for tag in (event.get("tags") or [])}
+        if "day_note" in tags and str(event.get("ts") or "")[:10] == day:
+            return event
+    return None
+
+
+def _journal_text(facts: Dict[str, int], topic_name: str, muted_n: int) -> str:
+    bits = [f"Hôm nay: {facts['helpful']} Có ích, {facts['unhelpful']} Chưa."]
+    if facts["skills_saved"]:
+        bits.append(f"Đã lưu {facts['skills_saved']} kỹ năng.")
+    if facts["skills_declined"]:
+        bits.append(f"Đã bỏ qua {facts['skills_declined']} gợi ý kỹ năng.")
+    if topic_name:
+        bits.append(f"Chủ đề cao nhất: {topic_name}.")
+    bits.append(f"{muted_n} chủ đề đang im.")
+    text = " ".join(bits)
+    if len(text) > 150:
+        text = text[:149].rstrip() + "…"
+    return text
+
+
+def _ensure_day_note(
+    day: str,
+    stamp: datetime,
+    *,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Write one template journal line for ``day``. Empty days stay empty."""
+    if not _cfg_enabled(config_manager):
+        return None
+    existing = _find_day_note(day, base_dir)
+    if existing:
+        return existing
+    facts = _day_note_facts(day, base_dir)
+    try:
+        from core.companion_profile import active_muted_topics
+        muted = set(active_muted_topics(now=stamp, base_dir=base_dir))
+    except Exception:
+        muted = set()
+    try:
+        from core.companion_learning import top_topic_by_score, _topic_name
+        topic = top_topic_by_score(base_dir=base_dir, now=stamp, muted=muted)
+        topic_name = _topic_name(topic) if topic else ""
+    except Exception:
+        topic = ""
+        topic_name = ""
+    # A standing topic score is not a new day. Write only when this day
+    # actually had feedback or a skill save / decline.
+    if facts["helpful"] + facts["unhelpful"] + facts["skills_saved"] + facts["skills_declined"] <= 0:
+        return None
+    text = _journal_text(facts, topic_name, len(muted))
+    if not text:
+        return None
+    try:
+        from core.companion_diary import append_event
+        event = append_event(
+            "reflection",
+            text,
+            metrics={
+                "helpful": facts["helpful"],
+                "unhelpful": facts["unhelpful"],
+                "skills_saved": facts["skills_saved"],
+                "skills_declined": facts["skills_declined"],
+                "muted": len(muted),
+                "count": facts["helpful"] + facts["unhelpful"],
+            },
+            source="companion",
+            now=stamp,
+            base_dir=base_dir,
+            outcome="ok",
+            tags=["day_note"] + ([topic] if topic else []),
+            coalesce=False,
+        )
+    except Exception:
+        return None
+    return event
+
+
+def sync_day_note(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Once per local day, or the missed evening on the next open. Templates only."""
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    yesterday = stamp - timedelta(days=1)
+    yday = yesterday.strftime("%Y-%m-%d")
+    written = _ensure_day_note(
+        yday,
+        yesterday.replace(hour=18, minute=0, second=0, microsecond=0),
+        base_dir=base_dir,
+        config_manager=config_manager,
+    )
+    today_note = None
+    if stamp.hour >= EOD_HOUR:
+        today_note = _ensure_day_note(
+            stamp.strftime("%Y-%m-%d"),
+            stamp,
+            base_dir=base_dir,
+            config_manager=config_manager,
+        )
+    return today_note or written
+
+
+def _learn_line_from_note(event: Dict[str, Any], muted: set) -> str:
+    metrics = event.get("metrics") if isinstance(event.get("metrics"), dict) else {}
+    try:
+        helpful = int(metrics.get("helpful") or 0)
+    except (TypeError, ValueError):
+        helpful = 0
+    try:
+        unhelpful = int(metrics.get("unhelpful") or 0)
+    except (TypeError, ValueError):
+        unhelpful = 0
+    try:
+        saved = int(metrics.get("skills_saved") or 0)
+    except (TypeError, ValueError):
+        saved = 0
+    try:
+        declined = int(metrics.get("skills_declined") or 0)
+    except (TypeError, ValueError):
+        declined = 0
+    topic = ""
+    for tag in event.get("tags") or []:
+        key = str(tag or "")
+        if key in TOPIC_META and key not in muted:
+            topic = key
+            break
+    bits: List[str] = []
+    if helpful:
+        bits.append(f"{helpful} Có ích")
+    elif unhelpful:
+        bits.append(f"{unhelpful} Chưa")
+    if saved == 1:
+        bits.append("một kỹ năng mới")
+    elif saved > 1:
+        bits.append(f"{saved} kỹ năng mới")
+    if declined and not bits:
+        bits.append("đã bỏ qua một gợi ý kỹ năng" if declined == 1 else f"đã bỏ qua {declined} gợi ý kỹ năng")
+    elif declined:
+        bits.append(f"bỏ qua {declined} gợi ý")
+    if topic:
+        bits.append(_topic_name(topic))
+    if not bits:
+        return ""
+    return "Hôm qua mình học được: " + ", ".join(bits) + "."
+
+
+def sync_learn_line(
+    *,
+    now: Optional[datetime] = None,
+    base_dir: Optional[str] = None,
+    config_manager: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """At most one «Hôm qua mình học được» line. Quiet hours and mutes hold it.
+
+    The existing morning lesson already says what was learned. This line stays
+    quiet when that sentence is present, so the card does not say it twice.
+    """
+    if not _cfg_enabled(config_manager):
+        return None
+    stamp = now or datetime.now()
+    sync_day_note(now=stamp, base_dir=base_dir, config_manager=config_manager)
+    try:
+        from core.companion_profile import active_muted_topics, in_quiet_hours
+        muted = set(active_muted_topics(now=stamp, base_dir=base_dir))
+        quiet = in_quiet_hours(stamp, base_dir=base_dir)
+    except Exception:
+        muted = set()
+        quiet = False
+    if quiet or exam_focus_is_live():
+        return None
+    today = stamp.strftime("%Y-%m-%d")
+    try:
+        from core.companion_learning import load_daily_model, morning_learn_clause, store_learn_line
+    except Exception:
+        return None
+    model = load_daily_model(base_dir)
+    if str(model.get("learn_line_day") or "") == today:
+        pending = model.get("pending_learn_line")
+        if isinstance(pending, dict) and str(pending.get("text") or "").strip():
+            text = str(pending.get("text") or "")
+            try:
+                from core.companion_learning import _mentions_muted
+                if _mentions_muted(text, muted):
+                    return None
+            except Exception:
+                pass
+            return pending
+        return None
+    try:
+        clause = morning_learn_clause(now=stamp, base_dir=base_dir, hidden=muted)
+    except Exception:
+        clause = ""
+    if clause and "Hôm qua mình học" in clause:
+        return None
+    yesterday = (stamp - timedelta(days=1)).strftime("%Y-%m-%d")
+    event = _find_day_note(yesterday, base_dir)
+    if not event:
+        return None
+    text = _learn_line_from_note(event, muted)
+    if not text:
+        return None
+    try:
+        from core.companion_learning import _mentions_muted
+        if _mentions_muted(text, muted):
+            return None
+    except Exception:
+        pass
+    return store_learn_line(text, about=yesterday, now=stamp, base_dir=base_dir)
+
+
+def dismiss_learn_line(
+    base_dir: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    try:
+        from core.companion_learning import dismiss_learn_line as _dismiss
+        _dismiss(base_dir=base_dir, now=now)
+    except Exception:
+        return
