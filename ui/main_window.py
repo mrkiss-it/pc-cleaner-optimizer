@@ -32,6 +32,7 @@ from ui.ai_advisor_dialog import AIAdvisorDialog
 from ui.service_context_dialog import ServiceContextDialog
 from ui.uninstaller_dialog import UninstallerDialog
 from ui.winsxs_dialog import WinSxSDialog
+from ui.startup_entries_dialog import StartupEntriesDialog
 from core.ai_advisor import AIAdvisor
 from core.system_tweaker import SystemTweaker
 from app_meta import APP_NAME, APP_VERSION
@@ -682,6 +683,56 @@ class MainWindow(QMainWindow):
         layout_exam.addWidget(self.btn_exam_focus)
         layout.addWidget(card_exam)
 
+        card_lighten = QFrame()
+        card_lighten.setObjectName("LightenCard")
+        card_lighten.setStyleSheet("""
+            QFrame#LightenCard {
+                background-color: #1e293b;
+                border: 1px solid #334155;
+                border-radius: 12px;
+            }
+        """)
+        layout_lighten = QVBoxLayout(card_lighten)
+        layout_lighten.setContentsMargins(18, 14, 18, 14)
+        layout_lighten.setSpacing(8)
+        lbl_lighten_title = QLabel("Làm máy nhẹ hơn")
+        lbl_lighten_title.setStyleSheet(
+            "color: #f8fafc; font-size: 15px; font-weight: bold; background: transparent; border: none;"
+        )
+        self.lbl_lighten_sub = QLabel(
+            "Một lần xác nhận: thu hồi working set RAM (bỏ qua tiến trình bạn đã ghim) "
+            "và xóa temp cùng crash dump của tài khoản này. "
+            "Không làm trống thùng rác, không cần Admin, không tắt mục khởi động. "
+            "Không đo FPS."
+        )
+        self.lbl_lighten_sub.setWordWrap(True)
+        self.lbl_lighten_sub.setTextFormat(Qt.PlainText)
+        self.lbl_lighten_sub.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; background: transparent; border: none;"
+        )
+        lighten_btns = QHBoxLayout()
+        lighten_btns.setSpacing(10)
+        self.btn_lighten = QPushButton("Làm máy nhẹ hơn")
+        self.btn_lighten.setProperty("class", "btn-success")
+        self.btn_lighten.setCursor(Qt.PointingHandCursor)
+        self.btn_lighten.setToolTip(self.lbl_lighten_sub.text())
+        self.btn_lighten.clicked.connect(self.run_lighten_machine)
+        self.btn_startup_entries = QPushButton("Khởi động của tôi")
+        self.btn_startup_entries.setProperty("class", "btn-secondary")
+        self.btn_startup_entries.setCursor(Qt.PointingHandCursor)
+        self.btn_startup_entries.setToolTip(
+            "Xem và bật/tắt từng mục Run (HKCU) hoặc file trong thư mục Startup. "
+            "Hỏi lại từng mục. Không đọc HKLM. Thời gian khởi động: không rõ."
+        )
+        self.btn_startup_entries.clicked.connect(self.open_startup_entries_dialog)
+        lighten_btns.addWidget(self.btn_lighten, stretch=2)
+        lighten_btns.addWidget(self.btn_startup_entries, stretch=2)
+        lighten_btns.addStretch(1)
+        layout_lighten.addWidget(lbl_lighten_title)
+        layout_lighten.addWidget(self.lbl_lighten_sub)
+        layout_lighten.addLayout(lighten_btns)
+        layout.addWidget(card_lighten)
+
         # Row 2: Primary Quick Action Buttons
         btn_row1 = QHBoxLayout()
         btn_row1.setSpacing(12)
@@ -694,6 +745,10 @@ class MainWindow(QMainWindow):
         self.btn_ram_only = QPushButton("⚡ Tối Ưu RAM Ngay")
         self.btn_ram_only.setProperty("class", "btn-success")
         self.btn_ram_only.setCursor(Qt.PointingHandCursor)
+        self.btn_ram_only.setToolTip(
+            "Gọi EmptyWorkingSet để thu nhỏ working set. Hiện RAM trống trước và sau. "
+            "Bỏ qua tiến trình đã ghim và tiến trình hệ thống. Không tắt ứng dụng."
+        )
         self.btn_ram_only.clicked.connect(self.optimize_ram_only)
 
         self.btn_scan_only = QPushButton("🔍 Quét Thử Dung Lượng Rác")
@@ -2927,12 +2982,12 @@ class MainWindow(QMainWindow):
         )
 
     def optimize_ram_only(self):
-        self.lbl_status.setText("Đang giải phóng bộ nhớ RAM...")
+        from core.memory_optimizer import format_ram_report_vi
+        self.lbl_status.setText("Đang thu nhỏ working set RAM...")
         whitelist = self.config_manager.get_whitelist_set()
         res = MemoryOptimizer.optimize_ram(whitelist=whitelist)
         freed = res.get("freed_mb", 0.0)
         p_before = res.get("percent_before", 0)
-        p_after = res.get("percent_after", 0)
 
         self.config_manager.add_history(0.0, freed, trigger_type="manual")
         try:
@@ -2949,9 +3004,73 @@ class MainWindow(QMainWindow):
         else:
             self.update_system_stats()
 
-        msg = f"Đã giải phóng thành công {freed:.1f} MB RAM!\n(Mức sử dụng RAM giảm từ {p_before:.1f}% xuống {p_after:.1f}%)"
-        self.lbl_status.setText(f"Tối ưu RAM hoàn tất: Thu hồi {freed:.1f} MB")
-        QMessageBox.information(self, "Tối Ưu RAM Hoàn Tất", msg)
+        msg = format_ram_report_vi(res)
+        before = res.get("available_before_mb")
+        after = res.get("available_after_mb")
+        if before is not None and after is not None:
+            self.lbl_status.setText(
+                f"RAM trống: {before:.0f} MB → {after:.0f} MB (EmptyWorkingSet, {res.get('processes_flushed', 0)} tiến trình)"
+            )
+        else:
+            self.lbl_status.setText(f"Đã gọi EmptyWorkingSet. Chênh RAM trống: {freed:.1f} MB")
+        QMessageBox.information(self, "Thu hồi RAM", msg)
+
+    def run_lighten_machine(self):
+        """Preset an toàn: RAM trim + temp/crash của tài khoản này. Không thùng rác, không Admin, không tắt startup."""
+        from core.runtime_lighten import confirm_text_vi, run_lighten
+        answer = QMessageBox.question(
+            self,
+            "Làm máy nhẹ hơn",
+            confirm_text_vi(),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            self.lbl_status.setText("Đã hủy. Chưa thu hồi RAM và chưa xóa temp.")
+            return
+        self.lbl_status.setText("Đang thu hồi RAM và xóa temp của tài khoản này...")
+        whitelist = self.config_manager.get_whitelist_set()
+        try:
+            res = run_lighten(
+                whitelist=whitelist,
+                exclude_paths=self._exclude_paths(),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Làm máy nhẹ hơn", f"Không chạy được: {exc}")
+            return
+        junk = float(res.get("junk_freed_mb") or 0.0)
+        ram_mb = float(res.get("ram_freed_mb") or 0.0)
+        self.config_manager.add_history(junk, ram_mb, trigger_type="lighten")
+        try:
+            from core.companion import observe_clean, observe_ram_optimized
+            observe_clean(junk, light=True, config_manager=self.config_manager)
+            observe_ram_optimized(
+                ram_mb,
+                ram_percent=(res.get("ram") or {}).get("percent_before"),
+                config_manager=self.config_manager,
+            )
+        except Exception:
+            pass
+        self.refresh_history_table()
+        if hasattr(self, "_ai_advisor"):
+            self._ai_advisor.invalidate_cache()
+            self._update_ai_badge()
+        if self.monitor_hub:
+            self.monitor_hub.force_refresh()
+        else:
+            self.update_system_stats()
+        msg = res.get("message_vi") or "Đã chạy xong."
+        self.lbl_status.setText(
+            f"Làm máy nhẹ hơn: đã xóa {junk:.1f} MB temp/crash. Chi tiết RAM trống nằm trong hộp thoại."
+        )
+        if res.get("success"):
+            QMessageBox.information(self, "Làm máy nhẹ hơn", msg)
+        else:
+            QMessageBox.warning(self, "Làm máy nhẹ hơn — chưa xong hết", msg)
+
+    def open_startup_entries_dialog(self):
+        dialog = StartupEntriesDialog(self)
+        dialog.exec_()
 
     def run_light_clean(self):
         """Dọn nhẹ temp/crash dump — không WinSxS, thùng rác, cache trình duyệt."""
@@ -3132,6 +3251,10 @@ class MainWindow(QMainWindow):
             self.btn_game_boost.setEnabled(enabled)
         if hasattr(self, "btn_exam_focus"):
             self.btn_exam_focus.setEnabled(enabled)
+        if hasattr(self, "btn_lighten"):
+            self.btn_lighten.setEnabled(enabled)
+        if hasattr(self, "btn_startup_entries"):
+            self.btn_startup_entries.setEnabled(enabled)
         if hasattr(self, "btn_disk_reg"):
             self.btn_disk_reg.setEnabled(enabled)
         if hasattr(self, "btn_hardware"):
@@ -3968,6 +4091,7 @@ class MainWindow(QMainWindow):
 
         sort_by = self.combo_proc_sort.currentData() if hasattr(self, "combo_proc_sort") else "ram"
         procs = ProcessManager.get_top_processes(limit=8, sort_by=sort_by)
+        pinned = self.config_manager.get_whitelist_set() if self.config_manager else set()
 
         self.table_procs.setRowCount(len(procs))
         for row_idx, p in enumerate(procs):
@@ -4006,23 +4130,55 @@ class MainWindow(QMainWindow):
             action_layout.setContentsMargins(4, 2, 4, 2)
             action_layout.setSpacing(6)
 
-            btn_opt = QPushButton("⚡ Thu hồi")
-            btn_opt.setStyleSheet("""
-                QPushButton {
-                    background-color: #065f46;
-                    color: #34d399;
-                    border-radius: 4px;
-                    padding: 3px 8px;
-                    font-size: 10px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #047857;
-                }
-            """)
-            btn_opt.setToolTip(f"Thu hồi bộ nhớ RAM nhàn rỗi từ {name}")
-            btn_opt.clicked.connect(lambda _, target_pid=pid: self.optimize_single_process(target_pid))
-            action_layout.addWidget(btn_opt)
+            if is_prot:
+                lbl_skip = QLabel("Bỏ qua (hệ thống)")
+                lbl_skip.setStyleSheet("color: #94a3b8; font-size: 10px; border: none; background: transparent;")
+                lbl_skip.setToolTip("Không thu working set và không đóng tiến trình hệ thống.")
+                action_layout.addWidget(lbl_skip)
+            else:
+                btn_opt = QPushButton("⚡ Thu hồi")
+                btn_opt.setStyleSheet("""
+                    QPushButton {
+                        background-color: #065f46;
+                        color: #34d399;
+                        border-radius: 4px;
+                        padding: 3px 8px;
+                        font-size: 10px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #047857;
+                    }
+                """)
+                btn_opt.setToolTip(
+                    f"Thu nhỏ working set của {name}. Không tắt tiến trình. "
+                    "Windows có thể cấp lại bộ nhớ ngay."
+                )
+                btn_opt.clicked.connect(lambda _, target_pid=pid: self.optimize_single_process(target_pid))
+                action_layout.addWidget(btn_opt)
+
+                already_pinned = name.lower() in pinned
+                btn_pin = QPushButton("Bỏ ghim" if already_pinned else "Ghim")
+                btn_pin.setStyleSheet("""
+                    QPushButton {
+                        background-color: #1e3a5f;
+                        color: #93c5fd;
+                        border-radius: 4px;
+                        padding: 3px 8px;
+                        font-size: 10px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover { background-color: #1d4ed8; color: #eff6ff; }
+                """)
+                btn_pin.setToolTip(
+                    "Ghim: lần thu hồi RAM hàng loạt và Game Boost sẽ bỏ qua tiến trình này."
+                    if not already_pinned
+                    else "Bỏ ghim: lần thu hồi RAM hàng loạt có thể gọi EmptyWorkingSet trên tiến trình này."
+                )
+                btn_pin.clicked.connect(
+                    lambda _, p_name=name, unpin=already_pinned: self._toggle_process_pin(p_name, unpin)
+                )
+                action_layout.addWidget(btn_pin)
 
             if not is_prot:
                 btn_kill = QPushButton("❌ Đóng")
@@ -4050,11 +4206,37 @@ class MainWindow(QMainWindow):
             self.table_procs.setItem(row_idx, 4, item_cat)
             self.table_procs.setCellWidget(row_idx, 5, action_widget)
 
+    def _toggle_process_pin(self, name: str, unpin: bool):
+        """Thêm hoặc gỡ tiến trình khỏi whitelist — danh sách ghim cho thu hồi RAM."""
+        if not name or not self.config_manager:
+            return
+        if unpin:
+            self.config_manager.remove_from_whitelist(name)
+            self.lbl_status.setText(f"Đã bỏ ghim {name}. Lần thu hồi RAM hàng loạt có thể đụng tiến trình này.")
+        else:
+            self.config_manager.add_to_whitelist(name)
+            self.lbl_status.setText(
+                f"Đã ghim {name}. Thu hồi RAM hàng loạt và Game Boost sẽ bỏ qua tiến trình này."
+            )
+        if hasattr(self, "_populate_whitelist"):
+            self._populate_whitelist()
+        QTimer.singleShot(0, self.refresh_process_table)
+
     def optimize_single_process(self, pid: int):
         res = ProcessManager.optimize_process_ram(pid)
         if res.get("success"):
             freed = res.get("freed_mb", 0.0)
-            self.lbl_status.setText(f"Đã thu hồi {freed:.1f} MB RAM từ {res.get('name')}")
+            before = res.get("rss_before_mb")
+            after = res.get("rss_after_mb")
+            if before is not None and after is not None:
+                self.lbl_status.setText(
+                    f"Working set của {res.get('name')}: {before:.1f} MB → {after:.1f} MB "
+                    f"(chênh {freed:.1f} MB). Không tắt tiến trình."
+                )
+            else:
+                self.lbl_status.setText(
+                    f"Đã gọi EmptyWorkingSet cho {res.get('name')}. Chênh RSS: {freed:.1f} MB. Không tắt tiến trình."
+                )
             self.refresh_process_table()
             if self.monitor_hub:
                 self.monitor_hub.force_refresh()
@@ -4266,7 +4448,10 @@ class MainWindow(QMainWindow):
         wl_hdr = QHBoxLayout()
         lbl_wl_title = QLabel("🛡️ WHITELIST TIẾN TRÌNH (Bảo vệ khỏi tối ưu RAM & GameBoost)")
         lbl_wl_title.setStyleSheet("color: #f8fafc; font-size: 13px; font-weight: 700; border: none;")
-        lbl_wl_desc = QLabel("Các tiến trình trong danh sách này sẽ KHÔNG bị tối ưu, thu hồi bộ nhớ, hay hạ độ ưu tiên.")
+        lbl_wl_desc = QLabel(
+            "Danh sách ghim: thu hồi RAM hàng loạt và Game Boost bỏ qua các tiến trình này. "
+            "Bấm «Ghim» ở tab Tiến Trình cũng thêm vào đây."
+        )
         lbl_wl_desc.setStyleSheet("color: #64748b; font-size: 11px; border: none;")
         wl_hdr.addWidget(lbl_wl_title)
         wl_hdr.addStretch()

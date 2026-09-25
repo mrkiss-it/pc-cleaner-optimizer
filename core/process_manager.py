@@ -91,6 +91,11 @@ class ProcessManager:
         try:
             p = psutil.Process(pid)
             name = p.name()
+            if name.lower() in PROTECTED_PROCESSES or pid in (0, 4):
+                return {
+                    "success": False,
+                    "error": f"Không thu working set của tiến trình hệ thống ({name}).",
+                }
             mem_before = p.memory_info().rss / (1024 ** 2)
 
             h_process = ctypes.windll.kernel32.OpenProcess(
@@ -105,6 +110,7 @@ class ProcessManager:
                 ctypes.windll.kernel32.CloseHandle(h_process)
 
             # Đo lại sau tối ưu
+            mem_after = None
             try:
                 mem_after = p.memory_info().rss / (1024 ** 2)
                 freed_mb = max(0.0, round(mem_before - mem_after, 1))
@@ -116,7 +122,9 @@ class ProcessManager:
                 "success": True,
                 "name": name,
                 "pid": pid,
-                "freed_mb": freed_mb
+                "freed_mb": freed_mb,
+                "rss_before_mb": round(mem_before, 1),
+                "rss_after_mb": None if mem_after is None else round(mem_after, 1),
             }
         except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
             return {"success": False, "error": str(e)}
