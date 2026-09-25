@@ -1,8 +1,9 @@
 import math
-from PyQt5.QtCore import Qt, QRectF
+from PyQt5.QtCore import Qt, QRectF, QSize
 from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QLinearGradient
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QCheckBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QCheckBox,
+    QSizePolicy, QStyle,
 )
 
 class CircularGauge(QWidget):
@@ -99,6 +100,9 @@ class StatCard(QFrame):
             }
         """)
 
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.setMinimumWidth(150)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(6)
@@ -108,17 +112,19 @@ class StatCard(QFrame):
         self.lbl_icon = QLabel(icon)
         self.lbl_icon.setStyleSheet("font-size: 20px; background: transparent; border: none;")
         self.lbl_title = QLabel(title)
+        self.lbl_title.setWordWrap(True)
         self.lbl_title.setStyleSheet("color: #94a3b8; font-size: 13px; font-weight: 600; background: transparent; border: none;")
         header_layout.addWidget(self.lbl_icon)
-        header_layout.addWidget(self.lbl_title)
-        header_layout.addStretch()
+        header_layout.addWidget(self.lbl_title, stretch=1)
 
         # Value
         self.lbl_value = QLabel(initial_value)
+        self.lbl_value.setWordWrap(True)
         self.lbl_value.setStyleSheet("color: #38bdf8; font-size: 24px; font-weight: bold; background: transparent; border: none;")
 
         # Subtitle
         self.lbl_subtitle = QLabel(subtitle)
+        self.lbl_subtitle.setWordWrap(True)
         self.lbl_subtitle.setStyleSheet("color: #64748b; font-size: 11px; background: transparent; border: none;")
 
         layout.addLayout(header_layout)
@@ -204,3 +210,68 @@ class CleanerTargetRow(QFrame):
                 font-size: 11px;
                 font-weight: 600;
             """)
+
+
+class _CheckCaption(QLabel):
+    """Word-wrapped caption that toggles the sibling checkbox."""
+
+    def __init__(self, box, parent=None):
+        super().__init__(parent)
+        self._box = box
+        self.setWordWrap(True)
+        self.setTextFormat(Qt.PlainText)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._box.isEnabled():
+            self._box.toggle()
+        super().mouseReleaseEvent(event)
+
+
+class WrappingCheckBox(QCheckBox):
+    """Checkbox whose label wraps instead of widening the window."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._caption = _CheckCaption(self, self)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text):
+        super().setText("")
+        self._caption.setText(text or "")
+        self.updateGeometry()
+
+    def text(self):
+        return self._caption.text()
+
+    def setStyleSheet(self, style):
+        super().setStyleSheet(style)
+        self._caption.setStyleSheet((style or "") + "; background: transparent; border: none;")
+
+    def _indicator_offset(self):
+        style = self.style()
+        indicator = style.pixelMetric(QStyle.PM_IndicatorWidth, None, self)
+        gap = style.pixelMetric(QStyle.PM_CheckBoxLabelSpacing, None, self)
+        return max(18, indicator) + max(6, gap)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        offset = self._indicator_offset()
+        caption_h = self._caption.heightForWidth(max(10, int(width) - offset))
+        indicator_h = self.style().pixelMetric(QStyle.PM_IndicatorHeight, None, self)
+        return max(indicator_h + 4, caption_h + 2)
+
+    def sizeHint(self):
+        return QSize(220, self.heightForWidth(220))
+
+    def minimumSizeHint(self):
+        return QSize(48, self.heightForWidth(160))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        offset = self._indicator_offset()
+        self._caption.setGeometry(offset, 0, max(0, self.width() - offset), self.height())

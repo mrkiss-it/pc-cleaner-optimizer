@@ -1,15 +1,16 @@
 import os
 import webbrowser
 from datetime import datetime
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QFont, QColor
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QTabWidget, QFrame, QProgressBar, QTableWidget, 
-    QTableWidgetItem, QHeaderView, QCheckBox, QSpinBox, QComboBox, 
+    QTableWidgetItem, QHeaderView, QSpinBox, QComboBox, 
     QMessageBox, QPlainTextEdit, QLineEdit, QListWidget, QListWidgetItem,
-    QScrollArea, QSplitter, QFileDialog
+    QScrollArea, QSplitter, QFileDialog, QSizePolicy,
 )
+from ui.widgets import WrappingCheckBox as QCheckBox
 
 from config_manager import ConfigManager
 from startup_manager import StartupManager
@@ -21,6 +22,9 @@ from core.exam_focus import ExamMeetingFocus
 from core.process_manager import ProcessManager
 from core.analytics_reporter import AnalyticsReporter
 from ui.widgets import CircularGauge, StatCard, CleanerTargetRow
+from ui.flow_layout import FlowLayout
+from ui.wrapping_tabs import WrappingTabBar
+from ui.window_fit import apply_initial_window_geometry
 from ui.styles import DARK_THEME
 from ui.large_files_dialog import LargeFilesDialog
 from ui.disk_analyzer_dialog import DiskAnalyzerDialog
@@ -306,20 +310,9 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle("PC Auto Cleaner & RAM Optimizer")
 
-        # Khôi phục vị trí & kích thước cửa sổ từ cấu hình cũ
+        # Khôi phục vị trí & kích thước, kẹp vào vùng làm việc (1366×768 trừ taskbar).
         win_state = self.config_manager.get_window_state()
-        geom = win_state.get("geometry", {})
-        w = max(geom.get("width", 1000), 880)
-        h = max(geom.get("height", 680), 580)
-        self.resize(w, h)
-        x = geom.get("x", -1)
-        y = geom.get("y", -1)
-        if x >= 0 and y >= 0:
-            self.move(x, y)
-        if geom.get("is_maximized", False):
-            self.showMaximized()
-
-        self.setMinimumSize(880, 580)
+        apply_initial_window_geometry(self, win_state.get("geometry", {}))
         self.setStyleSheet(DARK_THEME)
 
         if self.tray_manager:
@@ -406,7 +399,9 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(last_tab)
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tab_strip = WrappingTabBar(self.tabs)
 
+        main_layout.addWidget(self.tab_strip)
         main_layout.addWidget(self.tabs)
 
         # 3. Bottom Status Bar / Mini Progress
@@ -420,6 +415,22 @@ class MainWindow(QMainWindow):
         status_layout.addStretch()
         status_layout.addWidget(self.progress_bar)
         main_layout.addLayout(status_layout)
+        self._relax_long_labels()
+
+    def minimumSizeHint(self):
+        """Keep the frame's minimum at the size we chose, not the unwrapped layout."""
+        width = self.minimumWidth()
+        height = self.minimumHeight()
+        if width <= 0 or height <= 0:
+            return super().minimumSizeHint()
+        return QSize(width, height)
+
+    def _relax_long_labels(self):
+        """Long Vietnamese lines wrap instead of stretching the window."""
+        for label in self.findChildren(QLabel):
+            text = label.text() or ""
+            if len(text) >= 36:
+                label.setWordWrap(True)
 
     def create_header(self) -> QHBoxLayout:
         layout = QHBoxLayout()
@@ -432,6 +443,7 @@ class MainWindow(QMainWindow):
         lbl_app_sub = QLabel(
             f"Tự động dọn rác, giải phóng RAM và duy trì tốc độ tối đa cho Windows  •  v{current_app_version(APP_VERSION)}"
         )
+        lbl_app_sub.setWordWrap(True)
         lbl_app_sub.setStyleSheet("color: #94a3b8; font-size: 12px;")
         title_box.addWidget(lbl_app_title)
         title_box.addWidget(lbl_app_sub)
@@ -733,9 +745,8 @@ class MainWindow(QMainWindow):
         layout_lighten.addLayout(lighten_btns)
         layout.addWidget(card_lighten)
 
-        # Row 2: Primary Quick Action Buttons
-        btn_row1 = QHBoxLayout()
-        btn_row1.setSpacing(12)
+        # Row 2: Primary Quick Action Buttons (wrap when the window is narrow)
+        btn_row1 = FlowLayout(h_spacing=12, v_spacing=8, expand=True)
 
         self.btn_boost_now = QPushButton("🚀 DỌN DẸP && TỐI ƯU NGAY (1-CLICK)")
         self.btn_boost_now.setProperty("class", "btn-primary")
@@ -761,8 +772,7 @@ class MainWindow(QMainWindow):
         btn_row1.addWidget(self.btn_scan_only, stretch=2)
         layout.addLayout(btn_row1)
 
-        deep_row = QHBoxLayout()
-        deep_row.setSpacing(12)
+        deep_row = FlowLayout(h_spacing=12, v_spacing=8, expand=True)
 
         self.btn_scan_c = QPushButton("Quét ổ C")
         self.btn_scan_c.setCursor(Qt.PointingHandCursor)
@@ -902,8 +912,7 @@ class MainWindow(QMainWindow):
         self._refresh_c_drive_history()
 
         # Row 3: Specialized Utility & Optimization Tools
-        btn_row2 = QHBoxLayout()
-        btn_row2.setSpacing(10)
+        btn_row2 = FlowLayout(h_spacing=10, v_spacing=8, expand=False)
 
         self.btn_network = QPushButton("🌐 Tối Ưu Mạng")
         self.btn_network.setProperty("class", "btn-secondary")
@@ -978,9 +987,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(btn_row2)
 
 
-        # Row 3: Stat Cards
-        stats_layout = QHBoxLayout()
-        stats_layout.setSpacing(12)
+        # Row 3: Stat Cards — shrink and wrap text instead of widening the window
+        stats_layout = FlowLayout(h_spacing=12, v_spacing=8, expand=True)
 
         stats = self.config_manager.get_stats()
         self.card_junk = StatCard("🗑️", "Rác Đã Dọn", f"{stats['total_junk_freed_mb']:.1f} MB", "Dung lượng ổ cứng thu hồi")
@@ -2125,8 +2133,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        header_layout = QHBoxLayout()
+        header_layout = FlowLayout(h_spacing=8, v_spacing=8, expand=False)
         lbl_title = QLabel("Nhật ký các lần dọn dẹp và tối ưu gần đây:")
+        lbl_title.setWordWrap(True)
         lbl_title.setStyleSheet("color: #94a3b8; font-weight: 600;")
         
         btn_health = QPushButton("🩺 Chẩn Đoán")
@@ -2150,7 +2159,6 @@ class MainWindow(QMainWindow):
         btn_clear_hist.clicked.connect(self.clear_history)
 
         header_layout.addWidget(lbl_title)
-        header_layout.addStretch()
         header_layout.addWidget(btn_health)
         header_layout.addWidget(btn_open_log)
         header_layout.addWidget(btn_refresh_log)
@@ -2161,11 +2169,15 @@ class MainWindow(QMainWindow):
         self.table_history.setColumnCount(4)
         self.table_history.setHorizontalHeaderLabels(["Thời Gian", "Loại Dọn Dẹp", "Rác Giải Phóng", "RAM Thu Hồi"])
         self.table_history.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_history.horizontalHeader().setMinimumSectionSize(56)
+        self.table_history.setTextElideMode(Qt.ElideRight)
+        self.table_history.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.table_history.verticalHeader().setVisible(False)
         layout.addWidget(self.table_history, stretch=1)
 
         # Live Log Terminal Viewer
         lbl_live_log = QLabel("Nhật ký chi tiết các sự kiện chạy của hệ thống (Live App Logs):")
+        lbl_live_log.setWordWrap(True)
         lbl_live_log.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: 600; margin-top: 4px;")
         layout.addWidget(lbl_live_log)
 
@@ -3969,6 +3981,7 @@ class MainWindow(QMainWindow):
         info_gb = QVBoxLayout()
         info_gb.setSpacing(4)
         lbl_gb_title = QLabel("🎮 CHẾ ĐỘ TĂNG TỐC GAMING (GAME BOOST MODE)")
+        lbl_gb_title.setWordWrap(True)
         lbl_gb_title.setStyleSheet("color: #f8fafc; font-size: 15px; font-weight: bold; background: transparent; border: none;")
         self.lbl_gb_desc = QLabel("Thu hồi toàn bộ RAM nhàn rỗi, hạ độ ưu tiên các tác vụ nền (Search, Update, Telemetry) để dồn 100% CPU & RAM cho trò chơi mượt mà nhất.")
         self.lbl_gb_desc.setStyleSheet("color: #cbd5e1; font-size: 11px; background: transparent; border: none;")
@@ -4015,8 +4028,9 @@ class MainWindow(QMainWindow):
         layout_procs.setContentsMargins(16, 14, 16, 14)
         layout_procs.setSpacing(10)
 
-        ctrl_bar = QHBoxLayout()
+        ctrl_bar = FlowLayout(h_spacing=8, v_spacing=8, expand=False)
         lbl_table_title = QLabel("⚡ TIẾN TRÌNH CHIẾM DỤNG TÀI NGUYÊN (TOP PROCESSES)")
+        lbl_table_title.setWordWrap(True)
         lbl_table_title.setStyleSheet("color: #f8fafc; font-size: 13px; font-weight: bold; border: none; background: transparent;")
 
         self.combo_proc_sort = QComboBox()
@@ -4033,7 +4047,6 @@ class MainWindow(QMainWindow):
         self.btn_refresh_procs.clicked.connect(self.refresh_process_table)
 
         ctrl_bar.addWidget(lbl_table_title)
-        ctrl_bar.addStretch()
         ctrl_bar.addWidget(self.combo_proc_sort)
         ctrl_bar.addWidget(self.chk_auto_refresh_procs)
         ctrl_bar.addWidget(self.btn_refresh_procs)
@@ -4045,12 +4058,11 @@ class MainWindow(QMainWindow):
         self.table_procs.setHorizontalHeaderLabels([
             "Tiến Trình", "PID", "Dung Lượng RAM", "Mức CPU", "Phân Loại", "Thao Tác Nhanh"
         ])
-        self.table_procs.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table_procs.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table_procs.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table_procs.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table_procs.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table_procs.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.table_procs.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_procs.horizontalHeader().setMinimumSectionSize(56)
+        self.table_procs.setTextElideMode(Qt.ElideRight)
+        self.table_procs.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table_procs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table_procs.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_procs.setSelectionMode(QTableWidget.SingleSelection)
         self.table_procs.setAlternatingRowColors(True)
@@ -4369,6 +4381,7 @@ class MainWindow(QMainWindow):
         lbl_title = QLabel("🧠 PHÂN TÍCH THÔNG MINH & QUẢN LÝ WHITELIST")
         lbl_title.setStyleSheet("color: #38bdf8; font-size: 15px; font-weight: 800; letter-spacing: 0.5px;")
         lbl_sub = QLabel("Tổng hợp hiệu quả dọn dẹp, phân tích xu hướng, và cấu hình tiến trình được bảo vệ")
+        lbl_sub.setWordWrap(True)
         lbl_sub.setStyleSheet("color: #64748b; font-size: 11px;")
         layout.addWidget(lbl_title)
         layout.addWidget(lbl_sub)
@@ -4379,8 +4392,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(analytics_title)
 
         card_style = "QFrame { background-color: #1e293b; border: 1px solid #334155; border-radius: 10px; }"
-        analytics_row = QHBoxLayout()
-        analytics_row.setSpacing(10)
+        analytics_row = FlowLayout(h_spacing=10, v_spacing=8, expand=True)
 
         self._analytics_card_labels = {}  # {days: {count, junk, ram, health, health_desc}}
         for period_label, days in [("7 NGÀY QUA", 7), ("30 NGÀY QUA", 30), ("TOÀN THỜI GIAN", None)]:
@@ -4447,11 +4459,13 @@ class MainWindow(QMainWindow):
 
         wl_hdr = QHBoxLayout()
         lbl_wl_title = QLabel("🛡️ WHITELIST TIẾN TRÌNH (Bảo vệ khỏi tối ưu RAM & GameBoost)")
+        lbl_wl_title.setWordWrap(True)
         lbl_wl_title.setStyleSheet("color: #f8fafc; font-size: 13px; font-weight: 700; border: none;")
         lbl_wl_desc = QLabel(
             "Danh sách ghim: thu hồi RAM hàng loạt và Game Boost bỏ qua các tiến trình này. "
             "Bấm «Ghim» ở tab Tiến Trình cũng thêm vào đây."
         )
+        lbl_wl_desc.setWordWrap(True)
         lbl_wl_desc.setStyleSheet("color: #64748b; font-size: 11px; border: none;")
         wl_hdr.addWidget(lbl_wl_title)
         wl_hdr.addStretch()
@@ -4575,7 +4589,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
 
         # ── Header ────────────────────────────────────────────────────────────
-        header = QHBoxLayout()
+        header = FlowLayout(h_spacing=8, v_spacing=8, expand=False)
 
         self.lbl_security_badge = QLabel("🔒 CHƯA QUÉT")
         self.lbl_security_badge.setStyleSheet("""
@@ -4585,6 +4599,7 @@ class MainWindow(QMainWindow):
         """)
 
         self.lbl_security_last_scan = QLabel("Chưa thực hiện quét lần nào.")
+        self.lbl_security_last_scan.setWordWrap(True)
         self.lbl_security_last_scan.setStyleSheet("color: #64748b; font-size: 11px;")
 
         self.btn_security_scan_now = QPushButton("🔍  Quét Bảo Mật Ngay")
@@ -4594,7 +4609,6 @@ class MainWindow(QMainWindow):
 
         header.addWidget(self.lbl_security_badge)
         header.addWidget(self.lbl_security_last_scan)
-        header.addStretch()
         header.addWidget(self.btn_security_scan_now)
         layout.addLayout(header)
 
@@ -4671,10 +4685,10 @@ class MainWindow(QMainWindow):
         self.table_security = QTableWidget()
         self.table_security.setColumnCount(4)
         self.table_security.setHorizontalHeaderLabels(["Hạng Mục", "Trạng Thái", "Chi Tiết", "Sửa"])
-        self.table_security.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table_security.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table_security.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.table_security.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table_security.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_security.horizontalHeader().setMinimumSectionSize(56)
+        self.table_security.setTextElideMode(Qt.ElideRight)
+        self.table_security.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.table_security.verticalHeader().setVisible(False)
         self.table_security.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_security.setAlternatingRowColors(True)
@@ -4978,7 +4992,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
 
         # ── 1. Top Action & Summary Bar ───────────────────────────────────────
-        header = QHBoxLayout()
+        header = FlowLayout(h_spacing=8, v_spacing=8, expand=False)
 
         self.lbl_tweak_badge = QLabel("🛡️ ĐÃ TỐI ƯU 0/15")
         self.lbl_tweak_badge.setStyleSheet("""
@@ -4988,6 +5002,7 @@ class MainWindow(QMainWindow):
         """)
 
         self.lbl_tweak_rec_count = QLabel("Đang tải dữ liệu tinh chỉnh...")
+        self.lbl_tweak_rec_count.setWordWrap(True)
         self.lbl_tweak_rec_count.setStyleSheet("color: #94a3b8; font-size: 12px; background: transparent;")
 
         self.btn_apply_rec_tweaks = QPushButton("⚡  Tối Ưu Khuyên Dùng (1-Click)")
@@ -5007,15 +5022,13 @@ class MainWindow(QMainWindow):
 
         header.addWidget(self.lbl_tweak_badge)
         header.addWidget(self.lbl_tweak_rec_count)
-        header.addStretch()
         header.addWidget(self.btn_apply_rec_tweaks)
         header.addWidget(self.btn_revert_all_tweaks)
         header.addWidget(self.btn_restart_explorer)
         layout.addLayout(header)
 
         # ── 2. Filter & Search Toolbar ─────────────────────────────────────────
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
+        toolbar = FlowLayout(h_spacing=8, v_spacing=8, expand=False)
 
         self.btn_filter_all = QPushButton("Tất Cả (15)")
         self.btn_filter_privacy = QPushButton("🛡️ Quyền Riêng Tư (8)")
@@ -5039,11 +5052,11 @@ class MainWindow(QMainWindow):
 
         self.btn_filter_all.setStyleSheet("background-color: #0284c7; color: #ffffff; font-weight: bold;")
 
-        toolbar.addStretch()
-
         self.txt_tweak_search = QLineEdit()
         self.txt_tweak_search.setPlaceholderText("🔍 Tìm kiếm tinh chỉnh (vd: telemetry, bing, menu, pin...)")
-        self.txt_tweak_search.setFixedWidth(320)
+        self.txt_tweak_search.setMinimumWidth(180)
+        self.txt_tweak_search.setMaximumWidth(320)
+        self.txt_tweak_search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.txt_tweak_search.setStyleSheet("""
             QLineEdit {
                 background-color: #0f172a;
@@ -5064,6 +5077,9 @@ class MainWindow(QMainWindow):
         # ── 3. Scroll Area with Tweak Cards ────────────────────────────────────
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
         cards_container = QWidget()
@@ -5082,18 +5098,17 @@ class MainWindow(QMainWindow):
             card_layout.setSpacing(8)
 
             # Top Row: Icon, Title, Badges, Button
-            top_row = QHBoxLayout()
-            top_row.setSpacing(10)
+            top_row = FlowLayout(h_spacing=10, v_spacing=6, expand=False)
 
             lbl_icon = QLabel(info.get("icon", "⚙️"))
             lbl_icon.setStyleSheet("font-size: 18px; background: transparent;")
 
             lbl_title = QLabel(info.get("name", tid))
+            lbl_title.setWordWrap(True)
             lbl_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #f1f5f9; background: transparent;")
 
             top_row.addWidget(lbl_icon)
             top_row.addWidget(lbl_title)
-            top_row.addStretch()
 
             # Badge
             if info.get("recommended"):

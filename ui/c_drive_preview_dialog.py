@@ -8,10 +8,30 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
+
+from ui.window_fit import apply_client_size
+
+
+class _ToggleLabel(QLabel):
+    """Caption that toggles a checkbox and wraps onto the next line."""
+
+    def __init__(self, checkbox, text, parent=None):
+        super().__init__(text, parent)
+        self._checkbox = checkbox
+        self.setWordWrap(True)
+        self.setTextFormat(Qt.PlainText)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._checkbox.isEnabled():
+            self._checkbox.toggle()
+        super().mouseReleaseEvent(event)
 
 from core.c_drive_clean import (
     category_offered_by_default,
@@ -28,8 +48,7 @@ class CDrivePreviewDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Quét ổ C — xem trước")
         self.setModal(True)
-        self.setMinimumSize(620, 520)
-        self.resize(760, 640)
+        apply_client_size(self, 760, 620, 520, 420)
         self.setStyleSheet("""
             QDialog { background-color: #0f172a; color: #f1f5f9; }
             QLabel { color: #e2e8f0; background: transparent; border: none; }
@@ -92,6 +111,7 @@ class CDrivePreviewDialog(QDialog):
         self.spin_min_clean_mb.setValue(normalize_min_clean_mb(min_clean_mb))
         self.spin_min_clean_mb.valueChanged.connect(self._apply_threshold_checks)
         threshold_hint = QLabel("Mục nhỏ hơn vẫn hiện. Cache đồ họa/dev có ngưỡng riêng.")
+        threshold_hint.setWordWrap(True)
         threshold_hint.setStyleSheet("color: #64748b; font-size: 11px;")
         threshold_row.addWidget(threshold_label)
         threshold_row.addWidget(self.spin_min_clean_mb)
@@ -107,6 +127,7 @@ class CDrivePreviewDialog(QDialog):
             self.spin_downloads_age.setSuffix(" ngày")
             self.spin_downloads_age.setValue(self._downloads_days)
             age_hint = QLabel("Không xóa thư mục. Đổi số ngày có hiệu lực lúc Dọn ngay.")
+            age_hint.setWordWrap(True)
             age_hint.setStyleSheet("color: #64748b; font-size: 11px;")
             age_row.addWidget(age_label)
             age_row.addWidget(self.spin_downloads_age)
@@ -127,6 +148,8 @@ class CDrivePreviewDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         host = QWidget()
         host.setStyleSheet("background: transparent;")
@@ -236,11 +259,15 @@ class CDrivePreviewDialog(QDialog):
             row_layout.addWidget(label)
             return wrap
 
-        checkbox = QCheckBox(self._row_caption(row, offered=True))
+        checkbox = QCheckBox()
         checkbox.setProperty("row_key", str(row.get("key") or ""))
+        checkbox.setCursor(Qt.PointingHandCursor)
+        caption = _ToggleLabel(checkbox, self._row_caption(row, offered=True))
+        checkbox._caption = caption
         checkbox.stateChanged.connect(lambda _state: self._refresh_selected_label())
         self._checks.append((checkbox, row))
-        row_layout.addWidget(checkbox, 1)
+        row_layout.addWidget(checkbox, 0, Qt.AlignTop)
+        row_layout.addWidget(caption, 1)
         return wrap
 
     def _row_caption(self, row: dict, offered: bool) -> str:
@@ -271,7 +298,12 @@ class CDrivePreviewDialog(QDialog):
             offered = category_offered_by_default(row, min_mb)
             checkbox.blockSignals(True)
             checkbox.setChecked(offered)
-            checkbox.setText(self._row_caption(row, offered=offered))
+            caption = getattr(checkbox, "_caption", None)
+            text = self._row_caption(row, offered=offered)
+            if caption is not None:
+                caption.setText(text)
+            else:
+                checkbox.setText(text)
             checkbox.blockSignals(False)
         self._refresh_selected_label()
 
