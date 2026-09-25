@@ -274,6 +274,12 @@ def main():
     def on_auto_network_optimized(info):
         kind = info.get("type", "ping_threshold")
         msg = info.get("message", "Đã tự động tối ưu mạng")
+        if kind == "wifi_stability_monitor":
+            status = info.get("status") if isinstance(info.get("status"), dict) else {}
+            if hasattr(main_win, "apply_wifi_stability_status"):
+                main_win.apply_wifi_stability_status(status)
+            if not info.get("notify"):
+                return
         main_win.lbl_status.setText(f"🌐 {msg}")
         if hasattr(main_win, "_ai_advisor"):
             try:
@@ -282,7 +288,13 @@ def main():
                 pass
         if config_mgr.get("show_notifications", True) or config_mgr.get("instant_screen_notifications_enabled", True):
             open_stability = lambda: main_win.open_network_dialog(focus_wifi_stability=True)
-            if kind == "wifi_stability":
+            if kind == "wifi_stability_monitor":
+                recovered = bool(info.get("recovered") or info.get("success"))
+                title = "Ổn định Wi-Fi"
+                level = "success" if recovered else "warning"
+                action_text = "📶 Ổn định Wi-Fi"
+                action_cb = open_stability
+            elif kind == "wifi_stability":
                 title = str(info.get("title") or "Ổn định Wi-Fi")
                 level = "warning"
                 needs_loc = bool(info.get("needs_location_unlock") or info.get("location_gpo_locked"))

@@ -222,6 +222,16 @@ class BackgroundScheduler(QObject):
         else:
             self._maybe_emit_wifi_stability_tip(wifi_snap, now, config)
 
+        # Dedicated Ổn định Wi-Fi toggle. Runs even when auto_network_optimize
+        # is off, but never flush DNS and never doubles a repair this tick.
+        self._maybe_run_wifi_stability(
+            wifi_snap,
+            ping_ok_arg,
+            now,
+            config,
+            aggressive_repair_owns_tick=bool(wifi_fix_due or ping_fix_due),
+        )
+
         # 4. Check Auto Best-DNS Switcher
         if config.get("auto_best_dns_enabled", False):
             interval_hours = config.get("auto_best_dns_interval_hours", 2)
@@ -607,6 +617,157 @@ class BackgroundScheduler(QObject):
             self.network_optimized.emit(payload)
         except Exception:
             pass
+
+    def _maybe_run_wifi_stability(
+        self,
+        wifi_snap,
+        ping_ok,
+        now,
+        config,
+        aggressive_repair_owns_tick: bool = False,
+    ):
+        """
+        Gentle Wi-Fi monitor. Independent of auto_network_optimize_enabled.
+
+        Turning this on does not re-enable flush / ARP / stack reset. If the
+        aggressive wifi-drop or missing-ping path already owns this tick, do
+        not also reconnect.
+        """
+        try:
+            from core.wifi_stability import WifiStabilityMonitor, guess_public_cause
+
+            cfg = config if isinstance(config, dict) else {}
+            enabled = bool(cfg.get("wifi_stability_enabled", False))
+            WifiStabilityMonitor.hydrate(cfg.get("wifi_stability_status"))
+            detect = wifi_snap if isinstance(wifi_snap, dict) else {}
+            raw_cause = str(detect.get("cause") or "")
+            public = guess_public_cause(
+                detect,
+                ping_ok,
+                dns_failed=(raw_cause == "dns_fail"),
+            )
+            associated = bool(str(detect.get("ssid") or "").strip()) and bool(detect.get("is_up"))
+            before = WifiStabilityMonitor.snapshot()
+            status = WifiStabilityMonitor.observe(
+                enabled=enabled,
+                public_cause=public,
+                ping_ok=ping_ok,
+                now_ts=now.timestamp(),
+                raw_cause=raw_cause,
+                adapter_up=bool(detect.get("is_up")),
+                associated=associated,
+                adapter_name=str(detect.get("name") or ""),
+                ssid=str(detect.get("ssid") or ""),
+                external_repair=bool(aggressive_repair_owns_tick),
+            )
+            due = WifiStabilityMonitor.recovery_due(
+                now_ts=now.timestamp(),
+                aggressive_repair_owns_tick=bool(aggressive_repair_owns_tick),
+                config=cfg,
+            )
+            if due:
+                WifiStabilityMonitor.mark_triggered(now.timestamp())
+                self._persist_wifi_stability_status()
+                self.run_gentle_wifi_stability()
+                return
+            if self._wifi_stability_status_changed(before, status) and (
+                enabled or float(status.get("last_drop_ts") or 0) > 0
+                or float(status.get("last_action_ts") or 0) > 0
+            ):
+                self._persist_wifi_stability_status()
+                self.network_optimized.emit({
+                    "type": "wifi_stability_monitor",
+                    "notify": False,
+                    "recovered": False,
+                    "cause": status.get("cause") or "ok",
+                    "message": status.get("note") or "",
+                    "status": status,
+                })
+        except Exception:
+            pass
+
+    @staticmethod
+    def _wifi_stability_status_changed(before, after) -> bool:
+        keys = (
+            "enabled", "cause", "last_drop_ts", "last_action",
+            "last_action_ts", "last_action_text", "note", "unrecovered",
+        )
+        prev = before if isinstance(before, dict) else {}
+        nxt = after if isinstance(after, dict) else {}
+        return any(prev.get(key) != nxt.get(key) for key in keys)
+
+    def _persist_wifi_stability_status(self):
+        try:
+            from core.wifi_stability import WifiStabilityMonitor
+            status = WifiStabilityMonitor.snapshot()
+            # Drop non-JSON leftovers if a caller stuffed a live object in.
+            clean = {
+                key: status.get(key)
+                for key in (
+                    "enabled", "cause", "raw_cause", "ping_ok", "adapter_up",
+                    "associated", "adapter_name", "ssid", "last_drop_ts",
+                    "last_action", "last_action_ts", "last_action_text",
+                    "last_trigger_ts", "last_recovered_ts", "unrecovered",
+                    "outage_start", "note",
+                )
+                if key in status
+            }
+            self.config_manager.set("wifi_stability_status", clean)
+        except Exception:
+            pass
+
+    def run_gentle_wifi_stability(self):
+        """Reconnect or renew DHCP only. Never flush DNS and never raise UAC."""
+        import threading
+
+        def _worker():
+            try:
+                from core.logger import logger
+                from core.wifi_recovery import WifiRecovery
+                from core.wifi_stability import WifiStabilityMonitor, execute_gentle_recovery
+
+                result = execute_gentle_recovery(
+                    WifiStabilityMonitor.snapshot(),
+                    now_ts=time.time(),
+                    reconnect_fn=lambda ssid, adapter, now: WifiRecovery.reconnect_wifi_profile(
+                        ssid, adapter_name=adapter, now=now,
+                    ),
+                    renew_fn=lambda adapter: WifiRecovery.renew_dhcp(adapter),
+                )
+                # Merge onto the latest sample so a newer observe() is not wiped
+                # if reconnect outlives the next 15s tick.
+                latest = WifiStabilityMonitor.snapshot()
+                recorded = result.get("state") if isinstance(result.get("state"), dict) else {}
+                for key in (
+                    "last_action", "last_action_ts", "last_action_text", "note",
+                    "unrecovered", "last_recovered_ts", "last_trigger_ts",
+                ):
+                    if key in recorded:
+                        latest[key] = recorded[key]
+                WifiStabilityMonitor.replace(latest)
+                self._persist_wifi_stability_status()
+                status = WifiStabilityMonitor.snapshot()
+                if not result.get("attempted"):
+                    return
+                logger.info(
+                    f"[WifiStability] gentle cause={result.get('public_cause')} "
+                    f"success={result.get('success')} action={status.get('last_action')}"
+                )
+                self.network_optimized.emit({
+                    "type": "wifi_stability_monitor",
+                    "notify": True,
+                    "success": bool(result.get("success")),
+                    "recovered": bool(result.get("success")),
+                    "cause": result.get("public_cause") or status.get("cause") or "",
+                    "message": result.get("message") or "Đã kiểm tra Ổn định Wi-Fi.",
+                    "status": status,
+                    "needs_admin": bool(result.get("needs_admin")),
+                })
+            except Exception as exc:
+                from core.logger import logger
+                logger.error(f"[Scheduler] Lỗi Ổn định Wi-Fi: {exc}")
+
+        threading.Thread(target=_worker, daemon=True, name="WifiStability").start()
 
     def run_auto_best_dns(self):
         """

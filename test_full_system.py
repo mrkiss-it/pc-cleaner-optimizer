@@ -1963,6 +1963,14 @@ assert hasattr(win, "wifi_stability_settings"), "Settings/Network phai co muc On
 assert "Ổn định Wi-Fi" in win.wifi_stability_settings.lbl_title.text()
 assert win.wifi_stability_settings.btn_driver is not None
 assert win.wifi_stability_settings.always_visible is True
+assert hasattr(win.wifi_stability_settings, "chk_monitor"), "Settings phai co cong tac On dinh Wi-Fi"
+assert win.wifi_stability_settings.chk_monitor.isChecked() is False, "On dinh Wi-Fi mac dinh tat"
+assert hasattr(win, "set_wifi_stability_enabled")
+assert _DC.get("wifi_stability_enabled") is False
+assert int(_DC.get("wifi_stability_min_outage_seconds", 0)) >= 60
+assert int(_DC.get("wifi_stability_cooldown_seconds", 0)) >= 300
+assert hasattr(sched, "_maybe_run_wifi_stability")
+assert hasattr(dlg, "wifi_stability_card") and dlg.wifi_stability_card.chk_monitor is not None
 
 # H. Dispatcher maps repair_network_now without crashing (busy-guard)
 win._network_repair_busy = True

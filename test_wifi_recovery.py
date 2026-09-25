@@ -863,6 +863,7 @@ def test_config_wifi_defaults():
     assert int(DEFAULT_CONFIG.get("auto_network_recovery_success_toast_cooldown_seconds", 0)) >= 60
     assert int(DEFAULT_CONFIG.get("auto_network_recovery_min_outage_retoast_seconds", 0)) >= 30
     assert int(DEFAULT_CONFIG.get("auto_network_wifi_stability_tip_cooldown_seconds", 0)) >= 300
+    assert DEFAULT_CONFIG.get("wifi_stability_enabled") is False
     assert SUCCESS_TOAST_COOLDOWN_SEC >= 60
     assert MIN_OUTAGE_RETOAST_SEC >= 30
     assert STABILITY_TIP_COOLDOWN_SEC >= 300

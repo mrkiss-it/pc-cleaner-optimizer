@@ -1571,6 +1571,7 @@ class MainWindow(QMainWindow):
         self.wifi_stability_settings.bind(
             unlock_location=self.unlock_location_now,
             disable_power_save=self.disable_wifi_power_saving_now,
+            on_monitor_toggle=self.set_wifi_stability_enabled,
         )
         layout_network.addWidget(self.wifi_stability_settings)
         layout.addWidget(card_network)
@@ -2239,6 +2240,13 @@ class MainWindow(QMainWindow):
             self.chk_check_updates.setChecked(cfg.get("check_for_updates_enabled", True))
             self.chk_auto_net.setChecked(cfg.get("auto_network_optimize_enabled", True))
             self.chk_auto_ping_fix.setChecked(cfg.get("auto_network_ping_fix_enabled", True))
+            if hasattr(self, "wifi_stability_settings"):
+                self.wifi_stability_settings.set_monitor_enabled(
+                    bool(cfg.get("wifi_stability_enabled", False))
+                )
+                saved_status = cfg.get("wifi_stability_status") or {}
+                if isinstance(saved_status, dict):
+                    self.wifi_stability_settings.apply_monitor_status(saved_status)
             self.spin_ping_threshold.setValue(cfg.get("auto_network_ping_threshold_ms", 180))
 
             # Auto Best-DNS
@@ -3310,6 +3318,20 @@ class MainWindow(QMainWindow):
     def open_wifi_stability(self):
         """Mở Trung tâm Mạng và hiện thẻ Ổn định Wi-Fi."""
         self.open_network_dialog(focus_wifi_stability=True)
+
+    def set_wifi_stability_enabled(self, enabled: bool):
+        """Dedicated monitor. Does not turn Flush DNS / WifiRecovery back on."""
+        enabled = bool(enabled)
+        if bool(self.config_manager.get("wifi_stability_enabled", False)) != enabled:
+            self.config_manager.set("wifi_stability_enabled", enabled)
+        card = getattr(self, "wifi_stability_settings", None)
+        if card is not None:
+            card.set_monitor_enabled(enabled)
+
+    def apply_wifi_stability_status(self, status: dict):
+        card = getattr(self, "wifi_stability_settings", None)
+        if card is not None and isinstance(status, dict):
+            card.apply_monitor_status(status)
 
     def open_companion_memory(self):
         """Xem nhật ký / hồ sơ local. Không xóa gì cho đến khi người dùng xác nhận."""

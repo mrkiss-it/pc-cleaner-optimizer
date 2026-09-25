@@ -60,6 +60,7 @@
         "virtualbox.exe"
     ],
     "auto_network_optimize_enabled": true,
+    "wifi_stability_enabled": false,
     "auto_network_ping_threshold_ms": 180,
     "auto_network_ping_fix_enabled": true,
     "auto_network_ping_fail_streak": 1,
