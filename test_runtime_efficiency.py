@@ -51,6 +51,7 @@ from core.memory_optimizer import (
     BUSY_CPU_SKIP_PERCENT,
     MemoryOptimizer,
     format_ram_report_vi,
+    is_browser_working_set_protected,
 )
 from core.runtime_lighten import USER_SAFE_QUICK_CLEAN, confirm_text_vi, run_lighten
 from startup_manager import (
@@ -116,7 +117,8 @@ def _samples(before_mb, after_mb):
 
 
 def test_version_stays_386():
-    assert APP_VERSION == "3.8.6"
+    # Matches the version already on main (3.8.7). This change does not bump it.
+    assert APP_VERSION == "3.8.7"
 
 
 def test_no_undocumented_standby_purge():
@@ -163,8 +165,9 @@ def test_ram_report_shows_before_after_and_skips():
     assert res["available_before_mb"] == 1000.0
     assert res["available_after_mb"] == 1500.0
     assert res["freed_mb"] == 500.0
-    assert opened == [10, 15]
-    assert res["processes_flushed"] == 2
+    assert opened == [15]
+    assert res["processes_flushed"] == 1
+    assert res["skipped_browser"] == 1
     assert res["skipped_whitelist"] == 1
     assert "obs64.exe" in res["skipped_whitelist_names"]
     assert res["skipped_protected"] == 1
@@ -387,6 +390,79 @@ def test_lighten_reports_partial_failure():
     assert res["recycle_emptied"] is False
 
 
+def test_empty_working_set_skips_browsers():
+    """Auto RAM optimize and Game Booster share this denylist via optimize_ram."""
+    import inspect
+    from core.game_booster import GameBooster
+
+    MemoryOptimizer.reset_for_tests()
+    opened = []
+
+    def open_process(pid):
+        opened.append(pid)
+        return pid
+
+    procs = [
+        _Proc(10, "chrome.exe", 400 * 1024 ** 2, cpu=1.0),
+        _Proc(11, "msedge.exe", 300 * 1024 ** 2, cpu=0.0),
+        _Proc(12, "firefox.exe", 200 * 1024 ** 2, cpu=0.0),
+        _Proc(13, "msedgewebview2.exe", 80 * 1024 ** 2, cpu=0.0),
+        _Proc(14, "plugin-container.exe", 40 * 1024 ** 2, cpu=0.0),
+        _Proc(16, "brave.exe", 90 * 1024 ** 2, cpu=0.0),
+        _Proc(17, "notepad.exe", 20 * 1024 ** 2, cpu=0.0),
+    ]
+    res = MemoryOptimizer.optimize_ram(
+        process_iter=lambda _attrs: procs,
+        virtual_memory=_samples(1000, 1100),
+        open_process=open_process,
+        empty_working_set=lambda _h: True,
+        close_handle=lambda _h: None,
+        current_pid=99,
+    )
+    assert opened == [17]
+    assert res["processes_flushed"] == 1
+    assert res["skipped_browser"] == 6
+    report = format_ram_report_vi(res)
+    assert "trình duyệt" in report
+    for name in (
+        "chrome.exe", "msedge.exe", "firefox.exe", "msedgewebview2.exe",
+        "plugin-container.exe", "brave.exe", "coccoc.exe", "opera.exe",
+    ):
+        assert is_browser_working_set_protected(name)
+    assert is_browser_working_set_protected(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+    assert is_browser_working_set_protected("chrome_proxy.exe")
+    assert not is_browser_working_set_protected("notepad.exe")
+    assert not is_browser_working_set_protected("operator.exe")
+    assert "MemoryOptimizer.optimize_ram" in inspect.getsource(GameBooster.enable_game_boost)
+
+
+def test_single_process_trim_refuses_browsers():
+    import core.process_manager as pm
+
+    original = pm.psutil.Process
+
+    class _FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+            self._name = {
+                1: "chrome.exe",
+                2: "msedge.exe",
+                3: "firefox.exe",
+            }[pid]
+
+        def name(self):
+            return self._name
+
+    pm.psutil.Process = _FakeProcess
+    try:
+        for pid in (1, 2, 3):
+            res = pm.ProcessManager.optimize_process_ram(pid)
+            assert res["success"] is False
+            assert "trình duyệt" in res["error"]
+    finally:
+        pm.psutil.Process = original
+
+
 def test_single_process_trim_refuses_protected():
     import core.process_manager as pm
 
@@ -446,6 +522,8 @@ if __name__ == "__main__":
         test_startup_folder_toggle_roundtrip_and_rejects_escape,
         test_lighten_preset_is_user_temp_and_ram_only,
         test_lighten_reports_partial_failure,
+        test_empty_working_set_skips_browsers,
+        test_single_process_trim_refuses_browsers,
         test_single_process_trim_refuses_protected,
         test_dashboard_has_lighten_and_startup_controls,
     ]

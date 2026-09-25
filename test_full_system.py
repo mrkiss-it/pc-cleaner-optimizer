@@ -2042,6 +2042,24 @@ assert any(t["action"] == "device_manager" for t in _guide["tips"])
 assert _owt("wifi_settings").get("skipped") is True
 assert _WR.should_trigger_wifi_drop_fix(True, True, 1000, 980, 300, 0, first_cooldown_sec=12) is True
 assert _WR.should_trigger_wifi_drop_fix(True, True, 9999, 0, 300, 2) is False
+assert _WR.should_trigger_wifi_drop_fix(
+    True, True, 1000, 0, 300, 0, first_cooldown_sec=12,
+    auto_network_optimize_enabled=False,
+) is False, "Tat auto_network_optimize phai chan WifiRecovery"
+_down_online = _WR.detect_wifi_instability(
+    snapshot={
+        "is_wifi": True, "is_up": False, "state": "disconnected", "ssid": "",
+        "link_mbps": 0.0, "status_flaps": 0, "wlan_flaps": 0, "link_loss": True,
+        "alternate_link_up": True,
+    },
+    include_events=False,
+    health={"checks": {"ping": {"ok": True, "ping_ms": 55}, "dns": {"ok": True}}, "issues": []},
+    ping_ok=True,
+)
+assert _down_online["unstable"] is False and _down_online["cause"] == "ok"
+_WR.reset_state()
+assert int(_DC.get("auto_network_wifi_fix_min_outage_seconds", 0)) >= 45
+assert int(_DC.get("auto_network_wifi_fix_recovered_cooldown_seconds", 0)) >= 600
 assert "Disable-NetAdapter" in _WR.skipped_nic_toggle() or "tắt/bật" in _WR.skipped_nic_toggle()
 assert int(_DC.get("auto_network_wifi_fix_first_cooldown_seconds", 99)) <= 15
 assert int(_DC.get("auto_network_recovery_success_toast_cooldown_seconds", 0)) >= 60

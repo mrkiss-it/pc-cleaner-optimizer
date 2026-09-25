@@ -10,7 +10,9 @@ Phân loại badge Ping (cùng thứ tự với cause= trong log):
   3. Không ping + adapter vẫn Up chỉ yếu → timeout/DNS (không gọi rớt)
 
 Sửa theo bậc (không dừng vì một lần Ping may mắn khi đang flap/yếu):
-  1. Flush DNS + ARP
+  1. Flush DNS + ARP — đường tự động bỏ qua khi ping/DNS vẫn ổn.
+     Card Wi-Fi Down trong khi Ethernet hoặc ping đang tốt không phải adapter_down
+     (tránh vòng flushdns + ARP ~15 giây làm trắng tab Chrome).
   2. DHCP renew (ipconfig /release + /renew đúng một adapter)
   3. Đổi DNS nếu đang dùng AdGuard / DNS lọc / DNS tùy chỉnh
   4. Ngắt rồi kết nối lại đúng SSID hiện tại (giới hạn 90 giây/lần)
@@ -43,6 +45,10 @@ MIN_WLAN_EVENTS = 4
 STABILITY_WINDOW_SEC = 8.0
 STABILITY_POLL_SEC = 2.0
 RECONNECT_MIN_INTERVAL_SEC = 90.0
+# Auto repair waits until the failure has stayed real (not one weird sample).
+WIFI_AUTO_MIN_OUTAGE_SEC = 45.0
+# After a repair that already had working ping, do not auto-flush again for 15 min.
+WIFI_AUTO_RECOVERED_COOLDOWN_SEC = 900.0
 
 # Ping overlay / cause= log mapping. Keep in sync with format_ping_overlay_text.
 WIFI_OVERLAY_DROP_CAUSES = frozenset({
@@ -339,6 +345,75 @@ def looks_like_wifi_name(name: str, description: str = "") -> bool:
     return any(token in blob for token in WIFI_DESC_MARKERS)
 
 
+_VIRTUAL_ADAPTER_MARKERS = (
+    "loopback", "teredo", "tunnel", "pseudo", "isatap", "bluetooth",
+    "vethernet", "virtual", "vmware", "virtualbox", "hyper-v", "npcap",
+    "wan miniport", "kernel debug", "wintun", "tap-windows",
+)
+
+
+def looks_like_virtual_adapter(name: str, description: str = "") -> bool:
+    """Skip loopback / tunnel / hypervisor NICs when looking for a real alternate link."""
+    blob = f"{name} {description}".lower()
+    return any(token in blob for token in _VIRTUAL_ADAPTER_MARKERS)
+
+
+def connectivity_ping_ok(
+    health: Optional[Dict[str, Any]] = None,
+    ping_ok: Optional[bool] = None,
+) -> Optional[bool]:
+    """
+    True/False when ping success is known. None when nobody has measured it.
+
+    An explicit ping_ok argument wins. Otherwise read health.checks.ping.
+    Do not treat "no health dict" as success — that false default used to
+    mark a down Wi-Fi radio as an outage while Ethernet ping was fine.
+    """
+    if ping_ok is True:
+        return True
+    if ping_ok is False:
+        return False
+    if not isinstance(health, dict):
+        return None
+    issues = list(health.get("issues") or [])
+    if "ping_missing" in issues:
+        return False
+    ping = ((health.get("checks") or {}).get("ping") or {})
+    if ping.get("ok") is True:
+        return True
+    try:
+        if float(ping.get("ping_ms", -1)) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    if ping.get("ok") is False:
+        return False
+    return None
+
+
+def apply_false_adapter_down_override(
+    cause: str,
+    label: str,
+    snapshot: Dict[str, Any],
+    health: Optional[Dict[str, Any]] = None,
+    ping_ok: Optional[bool] = None,
+) -> Tuple[str, str, bool]:
+    """
+    A Down Wi-Fi radio is not adapter_down when the PC is already online.
+
+    Ethernet (or any other real NIC) Up, or a successful ping, means the
+    machine is not in a Wi-Fi outage. Treating that as adapter_down made
+    auto recovery flush DNS and refresh ARP about every 15 seconds.
+    """
+    if cause != "adapter_down":
+        return cause, label, False
+    online_other = bool((snapshot or {}).get("alternate_link_up"))
+    ping = connectivity_ping_ok(health, ping_ok)
+    if online_other or ping is True:
+        return "ok", CAUSE_LABELS["ok"], True
+    return cause, label, False
+
+
 def classify_wifi_cause(
     snapshot: Dict[str, Any],
     health: Optional[Dict[str, Any]] = None,
@@ -346,7 +421,9 @@ def classify_wifi_cause(
     """
     Nguyên nhân chính (tiếng Việt) — cùng thứ tự với badge Ping overlay:
 
-      1. adapter_down          → rớt khi không đo được ping (card không Up)
+      1. adapter_down          → rớt khi không đo được ping (card không Up).
+                                 Nếu ping đang OK hoặc Ethernet Up, detect/repair
+                                 hạ xuống "ok" (không phải mất mạng).
       2. reconnect_loop        → rớt khi không đo được ping (Up↔Down / WLAN flap)
       3. genuine link_loss     → rớt khi không đo được ping (association thật sự mất)
       4. weak_link             → yếu (adapter vẫn Up/kết nối, Mbps thấp / RSSI yếu).
@@ -661,21 +738,29 @@ class WifiRecovery:
                     import psutil
                     stats = psutil.net_if_stats()
                     for name, st in stats.items():
-                        if looks_like_wifi_name(name):
-                            adapters.append({
-                                "Name": name,
-                                "Status": "Up" if st.isup else "Disconnected",
-                                "LinkSpeed": getattr(st, "speed", 0) or 0,
-                                "InterfaceDescription": name,
-                            })
+                        if looks_like_virtual_adapter(name):
+                            continue
+                        adapters.append({
+                            "Name": name,
+                            "Status": "Up" if st.isup else "Disconnected",
+                            "LinkSpeed": getattr(st, "speed", 0) or 0,
+                            "InterfaceDescription": name,
+                        })
                 except Exception:
                     adapters = []
 
+        alternate_link_up = False
         for row in adapters or []:
             name = str(row.get("Name") or row.get("name") or "")
             desc = str(row.get("InterfaceDescription") or row.get("description") or "")
+            status = str(row.get("Status") or row.get("status") or "").lower()
+            row_up = status in ("up", "connected")
             if looks_like_wifi_name(name, desc):
                 wifi_rows.append(row)
+            elif row_up and not looks_like_virtual_adapter(name, desc):
+                # Ethernet (or another real NIC) is carrying traffic. A down
+                # Wi-Fi radio next to that is not an outage.
+                alternate_link_up = True
 
         chosen = _prefer_wifi_adapter(wifi_rows)
         name = str(chosen.get("Name") or chosen.get("name") or "")
@@ -755,6 +840,7 @@ class WifiRecovery:
             "status_flaps": status_flaps,
             "wlan_flaps": wlan_flaps,
             "link_loss": link_loss,
+            "alternate_link_up": alternate_link_up,
             "event_text": event_text or "",
             "timestamp": now_ts,
             "location_gpo_locked": bool(location_lock.get("locked")),
@@ -771,6 +857,7 @@ class WifiRecovery:
         now: Optional[float] = None,
         snapshot: Optional[Dict[str, Any]] = None,
         health: Optional[Dict[str, Any]] = None,
+        ping_ok: Optional[bool] = None,
         **collect_kwargs: Any,
     ) -> Dict[str, Any]:
         """Gắn nguyên nhân + cờ unstable vào snapshot Wi-Fi."""
@@ -794,11 +881,18 @@ class WifiRecovery:
             cls.last_detect = snap
             return snap
         cause, label = classify_wifi_cause(snap, health)
-        ping_ok = True
-        if health:
-            ping_ok = bool(((health.get("checks") or {}).get("ping") or {}).get("ok", True))
-            if "ping_missing" in (health.get("issues") or []):
-                ping_ok = False
+        cause, label, suppressed = apply_false_adapter_down_override(
+            cause, label, snap, health=health, ping_ok=ping_ok,
+        )
+        known_ping = connectivity_ping_ok(health, ping_ok)
+        if known_ping is None:
+            weak_ping_ok = True
+            if health:
+                weak_ping_ok = bool(((health.get("checks") or {}).get("ping") or {}).get("ok", True))
+                if "ping_missing" in (health.get("issues") or []):
+                    weak_ping_ok = False
+        else:
+            weak_ping_ok = bool(known_ping)
         flaps = int(snap.get("status_flaps") or 0)
         wlan_flaps = int(snap.get("wlan_flaps") or 0)
         loop_like = cause in ("adapter_down", "reconnect_loop", "link_loss")
@@ -807,17 +901,18 @@ class WifiRecovery:
             and (
                 flaps >= 2
                 or wlan_flaps >= 2
-                or not ping_ok
+                or not weak_ping_ok
                 or ((not cls._power_save_applied) and flaps >= 1)
             )
         )
         # After power-save already applied, slow-but-stable link is not a reconnect loop.
-        if cause == "weak_link" and cls._power_save_applied and flaps < 2 and wlan_flaps < 2 and ping_ok:
+        if cause == "weak_link" and cls._power_save_applied and flaps < 2 and wlan_flaps < 2 and weak_ping_ok:
             weak_with_pain = False
         snap["cause"] = cause
         snap["cause_label"] = label
         snap["overlay"] = overlay_word_for_cause(cause)
-        snap["unstable"] = bool(loop_like or weak_with_pain)
+        snap["false_adapter_down"] = bool(suppressed)
+        snap["unstable"] = False if suppressed else bool(loop_like or weak_with_pain)
         prev = cls.last_detect or {}
         if prev.get("cause") != cause or prev.get("overlay") != snap["overlay"]:
             logger.info(
@@ -1090,6 +1185,8 @@ class WifiRecovery:
         sleep_fn: Callable[[float], None] = time.sleep,
         clock_fn: Callable[[], float] = time.time,
         stability_sec: float = STABILITY_WINDOW_SEC,
+        automatic: bool = False,
+        ping_ok: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Sửa Wi-Fi rớt / flap. Không dừng giữa chừng chỉ vì Ping may mắn
@@ -1104,13 +1201,20 @@ class WifiRecovery:
             snapshot=snapshot,
             health=health,
             include_events=bool(snapshot) or True,
+            ping_ok=ping_ok,
         ) if snapshot is None else cls.detect_wifi_instability(
-            snapshot=snapshot, health=health, include_events=False,
+            snapshot=snapshot, health=health, include_events=False, ping_ok=ping_ok,
         )
         cause, cause_label = classify_wifi_cause(snap, health)
+        cause, cause_label, suppressed = apply_false_adapter_down_override(
+            cause, cause_label, snap, health=health, ping_ok=ping_ok,
+        )
         snap["cause"] = cause
         snap["cause_label"] = cause_label
         snap["overlay"] = overlay_word_for_cause(cause)
+        snap["false_adapter_down"] = bool(suppressed)
+        if suppressed:
+            snap["unstable"] = False
         sticky = cause in ("reconnect_loop", "weak_link", "link_loss")
         ping_before = float(((health.get("checks") or {}).get("ping") or {}).get("ping_ms") or -1)
         steps: List[Dict[str, Any]] = []
@@ -1176,17 +1280,48 @@ class WifiRecovery:
             skipped.append("Không phải Wi-Fi — bỏ qua lộ trình sửa Wi-Fi.")
             return _pack(ping_before, ping_before > 0, False, "not_wifi", "Không phát hiện adapter Wi-Fi.")
 
+        if suppressed:
+            skipped.append(
+                "Bỏ qua flush DNS và ARP — Wi-Fi radio không Up nhưng ping hoặc Ethernet vẫn ổn."
+            )
+            msg = (
+                "Card Wi-Fi không Up nhưng máy vẫn online (ping thành công hoặc đang dùng Ethernet). "
+                "Không flush DNS, không làm mới ARP/NetBIOS."
+            )
+            logger.info(f"[WifiRecovery] {msg}")
+            return _pack(ping_before, ping_before > 0, False, "online_not_adapter_down", msg)
+
         if cause == "ok" and not snap.get("unstable"):
             msg = "Wi-Fi đang ổn định. Không cần reconnect hay renew DHCP."
             skipped.append("Bỏ qua sửa vì Wi-Fi không flap / không yếu.")
             return _pack(ping_before if ping_before > 0 else _remeasure(), True, False, "wifi_stable", msg)
 
-        # 1. Flush DNS + ARP (luôn an toàn)
-        dns_res = NetworkOptimizer.flush_dns()
-        steps.append({"action": "flush_dns", "success": bool(dns_res.get("success")), "message": dns_res.get("message")})
-        arp_res = NetworkOptimizer.purge_arp_netbios()
-        steps.append({"action": "purge_arp_netbios", "success": bool(arp_res.get("success")), "message": arp_res.get("message")})
-        ping_now = _remeasure()
+        # 1. Flush DNS + ARP.
+        # Automatic ticks must not flush when ping already works and DNS is not failing.
+        # That loop (about every 15s) ran while Chrome was online and blanked tabs.
+        # Manual optimize (full_optimize / network dialog) does not set automatic=True.
+        dns_check = ((health.get("checks") or {}).get("dns") or {})
+        dns_failed = dns_check.get("ok") is False or "dns_fail" in (health.get("issues") or [])
+        ping_already_ok = ping_before > 0 or ping_ok is True
+        skip_auto_flush = bool(automatic) and ping_already_ok and not dns_failed
+        if skip_auto_flush:
+            skipped.append(
+                "Bỏ qua flush DNS và làm mới ARP/NetBIOS — ping đang thành công và DNS không lỗi."
+            )
+            ping_now = ping_before
+        else:
+            dns_res = NetworkOptimizer.flush_dns()
+            steps.append({"action": "flush_dns", "success": bool(dns_res.get("success")), "message": dns_res.get("message")})
+            arp_res = NetworkOptimizer.purge_arp_netbios()
+            steps.append({"action": "purge_arp_netbios", "success": bool(arp_res.get("success")), "message": arp_res.get("message")})
+            ping_now = _remeasure()
+        if skip_auto_flush and not sticky:
+            msg = (
+                "Ping đang thành công và DNS không lỗi. "
+                "Không flush DNS, không làm mới ARP/NetBIOS."
+            )
+            logger.info(f"[WifiRecovery] {msg}")
+            return _pack(ping_now, True, False, "connectivity_ok_skip_flush", msg)
         if ping_now > 0 and not sticky:
             stopped_at = "purge_arp_netbios"
             msg = (
@@ -1318,13 +1453,44 @@ class WifiRecovery:
         unrecovered_repairs: int,
         max_unrecovered: int = 2,
         first_cooldown_sec: float = 12.0,
+        *,
+        auto_network_optimize_enabled: bool = True,
+        ping_ok: Optional[bool] = None,
+        cause: str = "",
+        outage_sec: Optional[float] = None,
+        min_outage_sec: float = 0.0,
+        last_recovered_ts: float = 0.0,
+        recovered_cooldown_sec: float = 0.0,
     ) -> bool:
-        """Kích hoạt auto-fix Wi-Fi. Không phụ thuộc Ping (ICMP vẫn có thể OK khi WLAN flap)."""
-        if not enabled:
+        """
+        Kích hoạt auto-fix Wi-Fi.
+
+        ICMP vẫn có thể OK khi WLAN flap thật (reconnect_loop), nên ping tốt
+        một mình không chặn flap. adapter_down + ping tốt thì không kích hoạt
+        (radio Down trong khi máy đang online). auto_network_optimize_enabled
+        tắt thì vòng WifiRecovery không chạy. Sau một lần sửa mà ping đã về,
+        chờ recovered_cooldown_sec thay vì cửa sổ 12 giây.
+        """
+        if not enabled or not auto_network_optimize_enabled:
             return False
         if not unstable:
             return False
+        if ping_ok is True and str(cause or "") == "adapter_down":
+            return False
         if int(unrecovered_repairs) >= int(max_unrecovered):
+            return False
+        if (
+            ping_ok is True
+            and float(last_recovered_ts or 0) > 0
+            and float(recovered_cooldown_sec or 0) > 0
+            and (float(now_ts) - float(last_recovered_ts)) < float(recovered_cooldown_sec)
+        ):
+            return False
+        if (
+            outage_sec is not None
+            and float(min_outage_sec or 0) > 0
+            and float(outage_sec) < float(min_outage_sec)
+        ):
             return False
         if int(unrecovered_repairs) <= 0:
             effective_cd = max(0.0, float(first_cooldown_sec))

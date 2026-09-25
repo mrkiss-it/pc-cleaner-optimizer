@@ -91,6 +91,12 @@ class ProcessManager:
         try:
             p = psutil.Process(pid)
             name = p.name()
+            from core.memory_optimizer import is_browser_working_set_protected
+            if is_browser_working_set_protected(name):
+                return {
+                    "success": False,
+                    "error": f"Không thu working set của trình duyệt ({name}).",
+                }
             if name.lower() in PROTECTED_PROCESSES or pid in (0, 4):
                 return {
                     "success": False,

@@ -561,6 +561,213 @@ def test_dns_only_when_filtering():
         _restore_wifi_repair(orig)
 
 
+def _down_radio_snap(**overrides):
+    """Wi-Fi radio Down / link 0 — the false adapter_down shape from user logs."""
+    return _wifi_snap(
+        is_up=False,
+        status="disconnected",
+        state="disconnected",
+        ssid="",
+        link_mbps=0.0,
+        status_flaps=0,
+        wlan_flaps=0,
+        link_loss=True,
+        filtering_dns=False,
+        dns_servers=["8.8.8.8"],
+        unstable=True,
+        cause="adapter_down",
+        signal="",
+        **overrides,
+    )
+
+
+def _online_health(ping_ms=58.0):
+    return {
+        "ok": True,
+        "issues": [],
+        "checks": {
+            "adapter": {"ok": True, "adapters": ["Ethernet"]},
+            "gateway": {"ok": True},
+            "dns": {"ok": True},
+            "connectivity": {"ok": True},
+            "ping": {"ok": True, "ping_ms": ping_ms, "status": "ok"},
+        },
+    }
+
+
+def test_false_adapter_down_when_ping_or_ethernet_ok():
+    WifiRecovery.reset_state()
+    down = WifiRecovery.detect_wifi_instability(
+        snapshot=_down_radio_snap(),
+        include_events=False,
+        health=_online_health(55),
+        ping_ok=True,
+    )
+    assert down["cause"] == "ok"
+    assert down["unstable"] is False
+    assert down.get("false_adapter_down") is True
+
+    WifiRecovery.reset_state()
+    eth = WifiRecovery.get_wifi_snapshot(
+        adapters=[
+            {
+                "Name": "Wi-Fi",
+                "Status": "Disconnected",
+                "LinkSpeed": 0,
+                "InterfaceDescription": "MediaTek Wi-Fi 6 MT7921 Wireless LAN Card",
+            },
+            {
+                "Name": "Ethernet",
+                "Status": "Up",
+                "LinkSpeed": "1 Gbps",
+                "InterfaceDescription": "Realtek PCIe GbE Family Controller",
+            },
+        ],
+        wlan_text="",
+        event_text="",
+        include_events=False,
+        now=8000.0,
+        dns_text="",
+    )
+    assert eth["is_up"] is False
+    assert eth["alternate_link_up"] is True
+    assert float(eth["link_mbps"]) <= 0
+    det = WifiRecovery.detect_wifi_instability(snapshot=eth, include_events=False)
+    assert det["cause"] == "ok", det.get("cause")
+    assert det["unstable"] is False
+
+    WifiRecovery.reset_state()
+    real = WifiRecovery.detect_wifi_instability(
+        snapshot=_down_radio_snap(),
+        include_events=False,
+        health={
+            "issues": ["ping_missing"],
+            "checks": {"ping": {"ok": False, "ping_ms": -1}},
+        },
+        ping_ok=False,
+    )
+    assert real["cause"] == "adapter_down"
+    assert real["unstable"] is True
+    WifiRecovery.reset_state()
+
+
+def test_auto_path_does_not_flush_every_15s_when_ping_ok():
+    """Adapter weirdness + successful ping must not flush DNS on each 15s tick."""
+    import inspect
+    from core.scheduler import BackgroundScheduler
+
+    tick_src = inspect.getsource(BackgroundScheduler._tick)
+    repair_src = inspect.getsource(BackgroundScheduler.run_auto_wifi_drop_fix)
+    assert "auto_network_optimize_enabled" in tick_src
+    assert "automatic=True" in repair_src
+    assert "flush_dns" in inspect.getsource(NetworkOptimizer.full_optimize)
+
+    orig, counts = _patch_wifi_repair()
+    clock = FakeClock(1000)
+    gate = RecoveryToastGate()
+    try:
+        health = _online_health(58)
+        snap_in = _down_radio_snap(alternate_link_up=True)
+        last_trigger = 0.0
+        last_recovered = 0.0
+        unrecovered = 0
+        fired = 0
+        for _ in range(8):
+            clock.t += 15
+            now = clock.t
+            snap = WifiRecovery.detect_wifi_instability(
+                snapshot=dict(snap_in),
+                include_events=False,
+                health=health,
+                ping_ok=True,
+            )
+            gate.observe_wifi(bool(snap.get("unstable")), now)
+            due = WifiRecovery.should_trigger_wifi_drop_fix(
+                enabled=True,
+                unstable=bool(snap.get("unstable")),
+                now_ts=now,
+                last_trigger_ts=last_trigger,
+                cooldown_sec=300,
+                unrecovered_repairs=unrecovered,
+                first_cooldown_sec=12,
+                auto_network_optimize_enabled=True,
+                ping_ok=True,
+                cause=str(snap.get("cause") or ""),
+                outage_sec=gate.wifi_outage_sec(now),
+                min_outage_sec=45,
+                last_recovered_ts=last_recovered,
+                recovered_cooldown_sec=900,
+            )
+            if due:
+                fired += 1
+                last_trigger = now
+                last_recovered = now
+                WifiRecovery.diagnose_and_repair_wifi_drop(
+                    apply_dns=False,
+                    snapshot=snap,
+                    health=health,
+                    automatic=True,
+                    ping_ok=True,
+                    sleep_fn=clock.sleep,
+                    clock_fn=clock.time,
+                    stability_sec=1,
+                )
+        assert snap["cause"] == "ok"
+        assert fired == 0
+        assert counts["flush"] == 0, "automatic path flushed DNS while ping was OK"
+        assert counts["arp"] == 0
+
+        direct = WifiRecovery.diagnose_and_repair_wifi_drop(
+            apply_dns=False,
+            snapshot=_down_radio_snap(alternate_link_up=True),
+            health=health,
+            automatic=True,
+            ping_ok=True,
+            sleep_fn=lambda _s: None,
+            clock_fn=lambda: 0.0,
+            stability_sec=1,
+        )
+        assert counts["flush"] == 0
+        assert counts["arp"] == 0
+        assert direct["repaired"] is False
+        assert "flush" in direct["message"].lower() or any("flush" in s.lower() for s in direct.get("skipped", []))
+
+        assert WifiRecovery.should_trigger_wifi_drop_fix(
+            True, True, 5000, 0, 300, 0, first_cooldown_sec=12,
+            auto_network_optimize_enabled=False,
+            cause="reconnect_loop",
+            outage_sec=120,
+            min_outage_sec=45,
+        ) is False
+
+        assert WifiRecovery.should_trigger_wifi_drop_fix(
+            True, True, 5000, 0, 300, 0, first_cooldown_sec=12,
+            ping_ok=False,
+            cause="adapter_down",
+            outage_sec=15,
+            min_outage_sec=45,
+        ) is False
+        assert WifiRecovery.should_trigger_wifi_drop_fix(
+            True, True, 5000, 0, 300, 0, first_cooldown_sec=12,
+            ping_ok=False,
+            cause="adapter_down",
+            outage_sec=50,
+            min_outage_sec=45,
+        ) is True
+
+        assert WifiRecovery.should_trigger_wifi_drop_fix(
+            True, True, 5000, 0, 300, 0, first_cooldown_sec=12,
+            ping_ok=True,
+            cause="reconnect_loop",
+            outage_sec=120,
+            min_outage_sec=45,
+            last_recovered_ts=4900,
+            recovered_cooldown_sec=900,
+        ) is False
+    finally:
+        _restore_wifi_repair(orig)
+
+
 def test_should_trigger_wifi_and_wins_over_ping():
     T = WifiRecovery.should_trigger_wifi_drop_fix
     assert T(False, True, 1000, 0, 300, 0) is False
@@ -649,6 +856,8 @@ def test_connected_weak_skips_ssid_reconnect():
 def test_config_wifi_defaults():
     assert int(DEFAULT_CONFIG.get("auto_network_wifi_fix_first_cooldown_seconds", 99)) <= 15
     assert int(DEFAULT_CONFIG.get("auto_network_wifi_fix_cooldown_seconds", 0)) >= 60
+    assert int(DEFAULT_CONFIG.get("auto_network_wifi_fix_min_outage_seconds", 0)) >= 45
+    assert int(DEFAULT_CONFIG.get("auto_network_wifi_fix_recovered_cooldown_seconds", 0)) >= 600
     assert DEFAULT_CONFIG.get("auto_network_ping_fix_enabled") is True
     assert STABILITY_WINDOW_SEC >= 8
     assert int(DEFAULT_CONFIG.get("auto_network_recovery_success_toast_cooldown_seconds", 0)) >= 60
@@ -1109,6 +1318,8 @@ if __name__ == "__main__":
         test_power_save_no_nic_toggle,
         test_repair_does_not_stop_on_lucky_ping_during_flap,
         test_dns_only_when_filtering,
+        test_false_adapter_down_when_ping_or_ethernet_ok,
+        test_auto_path_does_not_flush_every_15s_when_ping_ok,
         test_should_trigger_wifi_and_wins_over_ping,
         test_detect_reconnect_loop_from_events,
         test_missing_ping_routes_to_wifi,

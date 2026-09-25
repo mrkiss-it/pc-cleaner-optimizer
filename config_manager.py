@@ -165,6 +165,10 @@ DEFAULT_CONFIG = {
     "auto_network_ping_fix_cooldown_seconds": 300,
     "auto_network_wifi_fix_first_cooldown_seconds": 12,
     "auto_network_wifi_fix_cooldown_seconds": 300,
+    # Sustained failure before the first auto Wi-Fi repair (scheduler is 15s).
+    "auto_network_wifi_fix_min_outage_seconds": 45,
+    # After a repair that already restored ping, do not flush again for 15 min.
+    "auto_network_wifi_fix_recovered_cooldown_seconds": 900,
     "auto_network_recovery_success_toast_cooldown_seconds": 180,
     "auto_network_recovery_min_outage_retoast_seconds": 60,
     "auto_network_recovery_failure_toast_cooldown_seconds": 45,
