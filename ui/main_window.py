@@ -735,12 +735,13 @@ class MainWindow(QMainWindow):
         self.btn_deep_c.setToolTip(
             "Quét trước, hiện dung lượng từng mục, chỉ xóa sau khi bạn bấm «Dọn ngay». "
             "Gồm temp, cache trình duyệt, WebView2, thumbnail, shader GPU, crash dump, "
-            "cache ứng dụng, cache chat (Discord, Telegram, Zalo, Messenger, Teams, Viber), "
+            "cache ứng dụng, cache chat (Discord, Telegram, Zalo, Messenger, Teams, Viber, "
+            "WhatsApp, Signal, Skype), cache Zoom và log OBS nếu có, "
             "cache TikTok nếu có, "
             "và cache công cụ build tạo lại được của tài khoản này. "
             "Không cần quyền Administrator. "
-            "Thùng rác, tệp cũ trong Downloads, cache Steam/Epic và thư mục trống "
-            "chỉ chạy khi bạn đang bật các mục đó. "
+            "Thùng rác, tệp cũ trong Downloads, cache Steam/Epic, DaVinci, Flutter/Android "
+            "và thư mục trống chỉ chạy khi bạn đang bật các mục đó. "
             "Mục «Cần Admin» bị bỏ qua và không được tính là đã giải phóng."
         )
         self.btn_deep_c.setStyleSheet("""
@@ -993,6 +994,22 @@ class MainWindow(QMainWindow):
         lbl_info.setStyleSheet("color: #94a3b8; font-weight: 600; margin-bottom: 4px;")
         layout.addWidget(lbl_info)
 
+        preset_row = QHBoxLayout()
+        self.btn_perf_preset = QPushButton("Ưu tiên hiệu năng")
+        self.btn_perf_preset.setProperty("class", "btn-secondary")
+        self.btn_perf_preset.setCursor(Qt.PointingHandCursor)
+        self.btn_perf_preset.setToolTip(
+            "Bật temp, cache và cache chat không cần Admin. "
+            "Không bật thùng rác, Downloads, cache đồ họa/dev đang tắt mặc định, hay mục cần Admin."
+        )
+        self.btn_perf_preset.clicked.connect(self._apply_performance_preset)
+        preset_hint = QLabel("Chỉ mục an toàn, tái tạo được. Không hiện hộp thoại UAC.")
+        preset_hint.setStyleSheet("color: #64748b; font-size: 11px;")
+        preset_row.addWidget(self.btn_perf_preset)
+        preset_row.addWidget(preset_hint)
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
+
         cfg_targets = self.config_manager.get("targets", {})
 
         self.target_rows = {}
@@ -1060,7 +1077,7 @@ class MainWindow(QMainWindow):
             normalize_min_clean_mb(self.config_manager.get("c_drive_min_clean_mb", DEFAULT_MIN_CLEAN_MB))
         )
         self.spin_min_clean_mb.valueChanged.connect(self._auto_save_targets)
-        lbl_min_hint = QLabel("Quét vẫn hiện mọi mục. 0 = tick tất cả mục có dữ liệu.")
+        lbl_min_hint = QLabel("Quét vẫn hiện mọi mục. Cache đồ họa/dev có ngưỡng riêng cao hơn.")
         lbl_min_hint.setStyleSheet("color: #64748b; font-size: 11px;")
         row_min_clean.addWidget(lbl_min_clean)
         row_min_clean.addWidget(self.spin_min_clean_mb)
@@ -1192,6 +1209,19 @@ class MainWindow(QMainWindow):
         self.list_exclude_paths.takeItem(row)
         self.lbl_exclude_status.setText("Đã xóa đường dẫn khỏi danh sách loại trừ.")
         self._save_exclude_paths()
+
+    def _apply_performance_preset(self):
+        from core.c_drive_clean import apply_performance_preset
+
+        current = {key: row.is_checked() for key, row in self.target_rows.items()}
+        flags = apply_performance_preset(current)
+        for key, row in self.target_rows.items():
+            if key not in flags:
+                continue
+            row.checkbox.blockSignals(True)
+            row.checkbox.setChecked(bool(flags[key]))
+            row.checkbox.blockSignals(False)
+        self._auto_save_targets()
 
     def _auto_save_targets(self):
         """Tự động lưu tức thì các tùy chọn dọn dẹp mỗi khi người dùng thay đổi checkbox."""

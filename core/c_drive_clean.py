@@ -307,6 +307,109 @@ _UNITY_CACHE_RELS = (
     "tmp",
 )
 _UNITY_PROJECT_PARTS = frozenset({"assets", "projectsettings", "library"})
+# Cache Electron tạo lại được. Không gồm IndexedDB, Local Storage hay cơ sở dữ liệu chat.
+_REGEN_CACHE_SUBS = (
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    "logs",
+    "Temp",
+    "tmp",
+    os.path.join("Service Worker", "CacheStorage"),
+)
+_REGEN_CACHE_DIR_NAMES = frozenset({
+    "cache",
+    "code cache",
+    "gpucache",
+    "dawncache",
+    "dawngraphitecache",
+    "dawnwebgpucache",
+    "logs",
+    "temp",
+    "tmp",
+    "cachestorage",
+})
+_WHATSAPP_ROOT_NAMES = ("WhatsApp", "WhatsApp Desktop")
+_WHATSAPP_PACKAGE_PREFIXES = ("5319275A.WhatsAppDesktop_",)
+_SIGNAL_ROOT_NAMES = ("Signal", "Signal Beta")
+_SKYPE_ROOT_RELS = (
+    os.path.join("Microsoft", "Skype for Desktop"),
+    os.path.join("Microsoft", "Skype"),
+    "Skype",
+)
+_SKYPE_PACKAGE_PREFIXES = ("Microsoft.SkypeApp_",)
+_PACKAGE_WALK_SKIP = frozenset({
+    "localstate",
+    "settings",
+    "roamingstate",
+    "ac",
+    "appdata",
+    "winstore",
+})
+_ZOOM_CACHE_DIR_NAMES = frozenset({
+    "webviewcache",
+    "webviewcache2",
+    "waitingroom",
+    "cache",
+    "code cache",
+    "gpucache",
+    "dawncache",
+    "cefcache",
+    "videodecodestat",
+    "temp",
+    "tmp",
+    "virtualbkgnd_default",
+    "cachestorage",
+})
+_ZOOM_SKIP_DIR_NAMES = frozenset({
+    "virtualbkgnd_custom",
+    "avatar",
+    "confavatar",
+    "plugin",
+    "bin",
+    "zoomappresource",
+    "recording",
+    "recordings",
+    "logs",
+})
+_OBS_CACHE_RELS = (
+    os.path.join("obs-studio", "logs"),
+    os.path.join("obs-studio", "crashes"),
+    os.path.join("obs-studio", "profiler_data"),
+    os.path.join("obs-studio", "updates"),
+    os.path.join("obs-studio", "plugin_config", "obs-browser", "Cache"),
+    os.path.join("obs-studio", "plugin_config", "obs-browser", "Code Cache"),
+    os.path.join("obs-studio", "plugin_config", "obs-browser", "GPUCache"),
+    os.path.join("obs-studio", "plugin_config", "obs-browser", "DawnCache"),
+    os.path.join("obs-studio", "plugin_config", "obs-browser", "Service Worker", "CacheStorage"),
+)
+_OBS_BLOCK_PARTS = frozenset({
+    "scenes",
+    "profiles",
+    "basic",
+})
+_DAVINCI_CACHE_RELS = (
+    "Cache",
+    "CacheClip",
+    os.path.join("Fusion", "Cache"),
+    os.path.join("Support", "logs"),
+    ".logs",
+)
+_DAVINCI_BLOCK_PARTS = frozenset({
+    "documents",
+    "resolve disk database",
+    "preferences",
+    "gallery",
+    "projects",
+})
+# Ngưỡng «Dọn ngay» riêng: cache dựng lại rất chậm hoặc rất lớn, tắt mặc định.
+DAVINCI_OFFER_MIN_MB = 256
+DEV_BUILD_OFFER_MIN_MB = 100
+OBS_LOG_MIN_AGE_DAYS = 7
+_LOG_DIR_NAMES = frozenset({"logs", "log", "crashes", "profiler_data", ".logs"})
 _OFFICE_SAFE_RELS = (
     os.path.join("Microsoft", "Office", "16.0", "WebServiceCache"),
     os.path.join("Microsoft", "Office", "16.0", "SmartLookupCache"),
@@ -440,6 +543,8 @@ def _meta(
     risk: str,
     default_enabled: bool,
     clean_mode: str,
+    offer_min_mb: int = 0,
+    log_min_age_days: int = 0,
 ) -> Dict[str, Any]:
     return {
         "label_vi": label_vi,
@@ -449,6 +554,8 @@ def _meta(
         "risk": risk,
         "default_enabled": default_enabled,
         "clean_mode": clean_mode,
+        "offer_min_mb": max(0, int(offer_min_mb or 0)),
+        "log_min_age_days": max(0, int(log_min_age_days or 0)),
     }
 
 
@@ -463,6 +570,8 @@ TARGET_ORDER: Sequence[str] = (
     "gpu_shader_caches",
     "crash_dumps",
     "app_caches",
+    "zoom_cache",
+    "obs_cache",
     "discord_cache",
     "telegram_cache",
     "zalo_cache",
@@ -470,16 +579,21 @@ TARGET_ORDER: Sequence[str] = (
     "teams_cache",
     "tiktok_cache",
     "viber_cache",
+    "whatsapp_cache",
+    "signal_cache",
+    "skype_cache",
     "steam_caches",
     "epic_caches",
     "adobe_caches",
     "blender_caches",
+    "davinci_caches",
     "unity_caches",
     "empty_user_folders",
     "toolchain_caches",
     "nuget_packages",
     "gradle_caches",
     "cargo_cache",
+    "flutter_android_caches",
     "office_cache",
     "office_file_cache",
     "store_cache",
@@ -580,12 +694,15 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
     ),
     "app_caches": _meta(
         label_vi=(
-            "Bộ nhớ đệm ứng dụng (VS Code, Spotify, Slack, "
-            "Zoom, Notion, CapCut, JetBrains)"
+            "Bộ nhớ đệm ứng dụng (VS Code, Cursor, Spotify, Slack, "
+            "Zoom, Figma, Notion, CapCut, JetBrains)"
         ),
         description_vi=(
-            "Chỉ cache hoặc log đã biết, kể cả htmlcache của Steam. "
-            "Cache Discord, Telegram, Zalo, Messenger và Teams nằm ở mục riêng. "
+            "Chỉ cache hoặc log đã biết, kể cả htmlcache của Steam, "
+            "Cursor, Figma, Postman và GitHub Desktop. "
+            "Log Zoom nằm ở đây; cache WebView của Zoom nằm ở mục riêng. "
+            "Cache Discord, Telegram, Zalo, Messenger, Teams, WhatsApp, Signal và Skype "
+            "cũng nằm ở mục riêng. "
             "Không xóa tin nhắn, dự án CapCut, nhạc Spotify đã tải, "
             "cấu hình IDE hay thư mục AppData lạ."
         ),
@@ -594,6 +711,34 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
         risk="safe",
         default_enabled=True,
         clean_mode="contents",
+    ),
+    "zoom_cache": _meta(
+        label_vi="Cache Zoom (WebView / tạm)",
+        description_vi=(
+            "WebviewCache, WaitingRoom, cache CEF và hình nền mặc định trong hồ sơ Zoom. "
+            "Log Zoom vẫn ở mục cache ứng dụng. Không xóa hình nền tự thêm, avatar, "
+            "plugin hay bản ghi. Không cài thì 0 B. Chỉ tick sẵn khi đạt ngưỡng «Dọn ngay»."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "obs_cache": _meta(
+        label_vi="Cache và log OBS Studio",
+        description_vi=(
+            "Chỉ log, crash, profiler, bản cập nhật tạm và cache obs-browser. "
+            f"Log, crash và profiler chỉ xóa khi cũ hơn {OBS_LOG_MIN_AGE_DAYS} ngày. "
+            "Không xóa cảnh (scenes), profile hay plugin_config ngoài cache trình duyệt. "
+            "Không cài thì 0 B. Chỉ tick sẵn khi đạt ngưỡng «Dọn ngay»."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+        log_min_age_days=OBS_LOG_MIN_AGE_DAYS,
     ),
     "discord_cache": _meta(
         label_vi="Cache Discord (Cache / GPUCache)",
@@ -680,6 +825,46 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
         default_enabled=True,
         clean_mode="contents",
     ),
+    "whatsapp_cache": _meta(
+        label_vi="Cache WhatsApp (Cache / GPUCache)",
+        description_vi=(
+            "Chỉ Cache, Code Cache, GPUCache, log và TempState của WhatsApp Desktop "
+            "trong hồ sơ của bạn, kể cả gói Store. Không xóa IndexedDB, Local Storage, "
+            "LocalState hay cơ sở dữ liệu tin nhắn. Không cài thì 0 B. "
+            "Chỉ tick sẵn khi đạt ngưỡng «Dọn ngay»."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "signal_cache": _meta(
+        label_vi="Cache Signal (cache tạm)",
+        description_vi=(
+            "Chỉ Cache, Code Cache, GPUCache, log và temp ngay trong thư mục Signal. "
+            "Không xóa sql, attachments.noindex hay cơ sở dữ liệu tin nhắn. "
+            "Không cài thì 0 B. Chỉ tick sẵn khi đạt ngưỡng «Dọn ngay»."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
+    "skype_cache": _meta(
+        label_vi="Cache Skype (Cache / GPUCache)",
+        description_vi=(
+            "Chỉ cache Electron và TempState/WebView của Skype trong hồ sơ của bạn. "
+            "Không xóa main.db, IndexedDB hay thư mục tài khoản. Không cài thì 0 B. "
+            "Chỉ tick sẵn khi đạt ngưỡng «Dọn ngay»."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="safe",
+        default_enabled=True,
+        clean_mode="contents",
+    ),
     "steam_caches": _meta(
         label_vi="Cache Steam (tắt mặc định)",
         description_vi=(
@@ -729,6 +914,24 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
         risk="caution",
         default_enabled=False,
         clean_mode="contents",
+    ),
+    "davinci_caches": _meta(
+        label_vi="Cache DaVinci Resolve (tắt mặc định)",
+        description_vi=(
+            "Chỉ Cache, CacheClip, Fusion\\Cache và log trong AppData\\Blackmagic Design\\"
+            "DaVinci Resolve của tài khoản này. "
+            f"Log chỉ xóa khi cũ hơn {OBS_LOG_MIN_AGE_DAYS} ngày. "
+            f"Tắt mặc định. Khi bật, «Dọn ngay» chỉ tick sẵn nếu từ {DAVINCI_OFFER_MIN_MB} MB "
+            "(hoặc ngưỡng chung nếu cao hơn) vì dựng lại cache mất thời gian. "
+            "Không xóa Resolve Disk Database, Preferences, Gallery hay dự án. Không cài thì 0 B."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+        offer_min_mb=DAVINCI_OFFER_MIN_MB,
+        log_min_age_days=OBS_LOG_MIN_AGE_DAYS,
     ),
     "unity_caches": _meta(
         label_vi="Cache Unity (tắt mặc định)",
@@ -808,6 +1011,23 @@ TARGET_CATALOG: Dict[str, Dict[str, Any]] = {
         risk="caution",
         default_enabled=False,
         clean_mode="contents",
+    ),
+    "flutter_android_caches": _meta(
+        label_vi="Cache Flutter, Android và Go (tắt mặc định)",
+        description_vi=(
+            "Chỉ cache tạo lại được trong hồ sơ: Pub Cache, .pub-cache, "
+            ".android\\cache, .android\\build-cache, flutter\\bin\\cache "
+            "(kể cả fvm\\versions\\*\\bin\\cache) và GOCACHE (go-build). "
+            f"Tắt mặc định. Khi bật, «Dọn ngay» chỉ tick sẵn nếu từ {DEV_BUILD_OFFER_MIN_MB} MB "
+            "(hoặc ngưỡng chung nếu cao hơn). "
+            "Không xóa Android SDK, máy ảo AVD, .gradle\\caches (mục riêng) hay dự án."
+        ),
+        needs_admin=False,
+        scope="user",
+        risk="caution",
+        default_enabled=False,
+        clean_mode="contents",
+        offer_min_mb=DEV_BUILD_OFFER_MIN_MB,
     ),
     "shell_font_cache": _meta(
         label_vi="Font cache và bộ nhớ đệm Explorer",
@@ -1044,6 +1264,9 @@ TARGET_GROUPS: Sequence[tuple] = (
         "teams_cache",
         "viber_cache",
         "tiktok_cache",
+        "whatsapp_cache",
+        "signal_cache",
+        "skype_cache",
     )),
     ("gpu_game", "GPU & Game", (
         "shader_cache",
@@ -1057,13 +1280,17 @@ TARGET_GROUPS: Sequence[tuple] = (
         "gradle_caches",
         "cargo_cache",
         "unity_caches",
+        "flutter_android_caches",
     )),
     ("creative", "Đồ họa", (
         "adobe_caches",
         "blender_caches",
+        "davinci_caches",
     )),
     ("apps", "Ứng dụng", (
         "app_caches",
+        "zoom_cache",
+        "obs_cache",
         "office_cache",
         "office_file_cache",
         "store_cache",
@@ -1273,6 +1500,36 @@ def default_hibernate_off(environ: Optional[Dict[str, str]] = None) -> Dict[str,
 
 def default_target_flags() -> Dict[str, bool]:
     flags = {key: bool(TARGET_CATALOG[key]["default_enabled"]) for key in TARGET_ORDER}
+    flags["ram_optimize"] = True
+    return flags
+
+
+def performance_priority_keys() -> List[str]:
+    """Temp, cache và cache chat không cần Admin, đang bật mặc định, rủi ro thấp."""
+    return [
+        key for key in TARGET_ORDER
+        if not TARGET_CATALOG[key]["needs_admin"]
+        and TARGET_CATALOG[key]["default_enabled"]
+        and TARGET_CATALOG[key].get("risk") == "safe"
+        and key not in {"recycle_bin", "downloads_old", "empty_user_folders"}
+    ]
+
+
+def apply_performance_preset(current: Optional[Dict[str, bool]] = None) -> Dict[str, bool]:
+    """
+    «Ưu tiên hiệu năng»: bật temp/cache/chat cache không cần Admin.
+    Tắt thùng rác, Downloads, mục tắt mặc định (đồ họa, dev, launcher)
+    và mọi mục cần Admin. Không tự hiện UAC.
+    """
+    flags: Dict[str, bool] = {}
+    if isinstance(current, dict):
+        for key, value in current.items():
+            flags[str(key)] = bool(value)
+    for key, value in default_target_flags().items():
+        flags.setdefault(key, value)
+    safe = set(performance_priority_keys())
+    for key in TARGET_ORDER:
+        flags[key] = key in safe
     flags["ram_optimize"] = True
     return flags
 
@@ -1669,14 +1926,31 @@ def _package_scoped_dirs(
     return found
 
 
+def _append_editor_caches(bucket: List[str], root: str) -> None:
+    """Cache VS Code / Cursor tạo lại được. Không đụng User hay workspaceStorage."""
+    if not root or not _exists(root) or os.path.islink(root):
+        return
+    for sub in (
+        "Cache",
+        "CachedData",
+        "CachedExtensionVSIXs",
+        "Code Cache",
+        "GPUCache",
+        "logs",
+    ):
+        _append_if_dir(bucket, os.path.join(root, sub))
+
+
 def _app_cache_paths(local_app_data: str, app_data: str) -> List[str]:
     found: List[str] = []
+    editor_names = ("Code", "Code - Insiders", "Code - OSS", "Cursor")
+    electron_names = ("Figma", "Postman", "GitHub Desktop")
     if app_data:
-        code_base = os.path.join(app_data, "Code")
-        if _exists(code_base):
-            for sub in ("Cache", "CachedData", "CachedExtensionVSIXs", "GPUCache", "logs"):
-                _append_if_dir(found, os.path.join(code_base, sub))
+        for name in editor_names:
+            _append_editor_caches(found, os.path.join(app_data, name))
         _append_if_dir(found, os.path.join(app_data, "npm-cache"))
+        for name in electron_names:
+            _append_electron_caches(found, os.path.join(app_data, name))
     if local_app_data:
         _append_if_dir(found, os.path.join(local_app_data, "pip", "cache"))
         _append_if_dir(found, os.path.join(local_app_data, "npm-cache"))
@@ -1707,6 +1981,11 @@ def _app_cache_paths(local_app_data: str, app_data: str) -> List[str]:
         for name in ("Slack", "slack", "Notion"):
             _append_electron_caches(found, os.path.join(app_data, name))
         _append_if_dir(found, os.path.join(app_data, "Zoom", "logs"))
+    if local_app_data:
+        for name in electron_names:
+            _append_electron_caches(found, os.path.join(local_app_data, name))
+        for name in ("Cursor",):
+            _append_editor_caches(found, os.path.join(local_app_data, name))
     return found
 
 
@@ -2170,6 +2449,7 @@ def _collect_named_dirs(
     dir_names: Iterable[str],
     *,
     max_depth: int,
+    skip_names: Optional[Iterable[str]] = None,
 ) -> None:
     """Lấy đúng thư mục có tên cache/temp. Không lấy chính root, không đi vào dữ liệu nhạy cảm."""
     if not root or not _exists(root) or os.path.islink(root) or not os.path.isdir(root):
@@ -2177,6 +2457,7 @@ def _collect_named_dirs(
     if path_is_forbidden(root) or path_has_sensitive_data(root) or path_is_game_install(root):
         return
     names = {str(name).lower() for name in dir_names}
+    skipped = {str(name).lower() for name in (skip_names or ())}
     try:
         root_abs = os.path.abspath(root)
     except (OSError, ValueError):
@@ -2201,6 +2482,8 @@ def _collect_named_dirs(
             ):
                 continue
             lowered = name.lower()
+            if lowered in skipped:
+                continue
             if lowered in names and child != root_abs:
                 _append_if_dir(bucket, child)
                 continue
@@ -2332,6 +2615,193 @@ def _unity_cache_paths(local_app_data: str, app_data: str, user_profile: str) ->
                 continue
             _append_if_dir(found, path)
     return found
+
+
+def _package_regen_caches(local_app_data: str, prefixes: Sequence[str]) -> List[str]:
+    """TempState, cache WebView và thư mục cache đã biết trong gói Store. Không đụng LocalState."""
+    found: List[str] = []
+    if not local_app_data or path_is_forbidden(local_app_data):
+        return found
+    found.extend(_package_webview_caches(local_app_data, prefixes))
+    packages = os.path.join(local_app_data, "Packages")
+    if not _exists(packages) or os.path.islink(packages) or not os.path.isdir(packages):
+        return found
+    try:
+        names = list(os.listdir(packages))
+    except OSError:
+        return found
+    for name in names:
+        if not any(name.startswith(prefix) for prefix in prefixes):
+            continue
+        base = os.path.join(packages, name)
+        if os.path.islink(base) or not os.path.isdir(base) or path_is_forbidden(base):
+            continue
+        _collect_named_dirs(
+            found,
+            base,
+            _REGEN_CACHE_DIR_NAMES,
+            max_depth=6,
+            skip_names=_PACKAGE_WALK_SKIP,
+        )
+    return found
+
+
+def _whatsapp_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found = _named_cache_paths(
+        (local_app_data, app_data),
+        _WHATSAPP_ROOT_NAMES,
+        _REGEN_CACHE_SUBS,
+    )
+    if local_app_data:
+        found.extend(_package_regen_caches(local_app_data, _WHATSAPP_PACKAGE_PREFIXES))
+    return found
+
+
+def _signal_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    """Chỉ cache/log ngay dưới thư mục Signal. Không đi vào sql hay attachments."""
+    found = _named_cache_paths(
+        (local_app_data, app_data),
+        _SIGNAL_ROOT_NAMES,
+        _REGEN_CACHE_SUBS,
+    )
+    kept: List[str] = []
+    for path in found:
+        if _path_has_part(path, {"sql", "attachments.noindex", "attachments"}):
+            continue
+        kept.append(path)
+    return kept
+
+
+def _skype_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found: List[str] = []
+    for base in (local_app_data, app_data):
+        if not base or path_is_forbidden(base):
+            continue
+        for rel in _SKYPE_ROOT_RELS:
+            root = os.path.join(base, rel)
+            for sub in _REGEN_CACHE_SUBS:
+                _append_if_dir(found, os.path.join(root, sub))
+    if local_app_data:
+        found.extend(_package_regen_caches(local_app_data, _SKYPE_PACKAGE_PREFIXES))
+    return found
+
+
+def _zoom_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    """Cache Zoom sâu hơn log (log vẫn thuộc app_caches). Không đụng hình nền tự thêm."""
+    found: List[str] = []
+    for base in (local_app_data, app_data):
+        if not base or path_is_forbidden(base):
+            continue
+        _collect_named_dirs(
+            found,
+            os.path.join(base, "Zoom"),
+            _ZOOM_CACHE_DIR_NAMES,
+            max_depth=4,
+            skip_names=_ZOOM_SKIP_DIR_NAMES,
+        )
+    return found
+
+
+def _obs_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found: List[str] = []
+    for base in (local_app_data, app_data):
+        if not base or path_is_forbidden(base) or _is_machine_vendor_tree(base):
+            continue
+        for rel in _OBS_CACHE_RELS:
+            path = os.path.join(base, rel)
+            if _path_has_part(path, _OBS_BLOCK_PARTS):
+                continue
+            _append_if_dir(found, path)
+    return found
+
+
+def _davinci_cache_paths(local_app_data: str, app_data: str) -> List[str]:
+    found: List[str] = []
+    for base in (local_app_data, app_data):
+        if not base or path_is_forbidden(base) or _is_machine_vendor_tree(base):
+            continue
+        parent = os.path.join(base, "Blackmagic Design")
+        for child in _list_child_dirs(parent):
+            if not os.path.basename(child).lower().startswith("davinci resolve"):
+                continue
+            if path_is_forbidden(child) or path_has_sensitive_data(child):
+                continue
+            for rel in _DAVINCI_CACHE_RELS:
+                path = os.path.join(child, rel)
+                if _path_has_part(path, _DAVINCI_BLOCK_PARTS):
+                    continue
+                _append_if_dir(found, path)
+    return found
+
+
+def _is_android_install_tree(path: str) -> bool:
+    """SDK và máy ảo Android không phải cache. Không xóa."""
+    parts = _path_parts(path)
+    if "avd" in parts:
+        return True
+    for index, part in enumerate(parts):
+        if part == "android" and index + 1 < len(parts) and parts[index + 1] == "sdk":
+            return True
+    return False
+
+
+def _append_flutter_tool_cache(bucket: List[str], sdk_root: str) -> None:
+    if not sdk_root or _is_machine_vendor_tree(sdk_root) or path_is_forbidden(sdk_root):
+        return
+    cache = os.path.join(sdk_root, "bin", "cache")
+    if _is_android_install_tree(cache) or _is_machine_vendor_tree(cache):
+        return
+    _append_if_dir(bucket, cache)
+
+
+def _flutter_android_cache_paths(
+    local_app_data: str,
+    app_data: str,
+    user_profile: str,
+) -> List[str]:
+    """Cache build trong hồ sơ. Không đụng Android SDK, AVD hay cây Program Files."""
+    found: List[str] = []
+    for base in (local_app_data, app_data):
+        if not base or path_is_forbidden(base) or _is_machine_vendor_tree(base):
+            continue
+        _append_if_dir(found, os.path.join(base, "Pub", "Cache"))
+        _append_if_dir(found, os.path.join(base, "go-build"))
+    if user_profile and not path_is_forbidden(user_profile) and not _is_machine_vendor_tree(user_profile):
+        _append_if_dir(found, os.path.join(user_profile, ".pub-cache"))
+        _append_if_dir(found, os.path.join(user_profile, ".android", "cache"))
+        _append_if_dir(found, os.path.join(user_profile, ".android", "build-cache"))
+        _append_if_dir(found, os.path.join(user_profile, ".cache", "go-build"))
+        for rel in (
+            "flutter",
+            os.path.join("sdk", "flutter"),
+            os.path.join(".flutter", "flutter"),
+            os.path.join("fvm", "default"),
+        ):
+            _append_flutter_tool_cache(found, os.path.join(user_profile, rel))
+        for versions in (
+            os.path.join(user_profile, "fvm", "versions"),
+            os.path.join(local_app_data, "fvm", "versions") if local_app_data else "",
+        ):
+            for version_dir in _list_child_dirs(versions):
+                _append_flutter_tool_cache(found, version_dir)
+        if local_app_data:
+            _append_flutter_tool_cache(found, os.path.join(local_app_data, "flutter"))
+    return [path for path in found if not _is_android_install_tree(path)]
+
+
+def log_age_days_for_path(key: str, path: str) -> int:
+    """Số ngày tối thiểu cho thư mục log. 0 = xóa cả nội dung cache, không lọc tuổi."""
+    meta = TARGET_CATALOG.get(str(key or "")) or {}
+    try:
+        days = int(meta.get("log_min_age_days") or 0)
+    except (TypeError, ValueError):
+        return 0
+    if days <= 0 or not path:
+        return 0
+    base = os.path.basename(os.path.normpath(path)).lower()
+    if base in _LOG_DIR_NAMES:
+        return days
+    return 0
 
 
 def _is_reparse_point(path: str) -> bool:
@@ -2685,12 +3155,21 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
     targets["teams_cache"].extend(_teams_cache_paths(local_app_data, app_data))
     targets["tiktok_cache"].extend(_tiktok_cache_paths(local_app_data, app_data))
     targets["viber_cache"].extend(_viber_cache_paths(local_app_data, app_data))
+    targets["whatsapp_cache"].extend(_whatsapp_cache_paths(local_app_data, app_data))
+    targets["signal_cache"].extend(_signal_cache_paths(local_app_data, app_data))
+    targets["skype_cache"].extend(_skype_cache_paths(local_app_data, app_data))
+    targets["zoom_cache"].extend(_zoom_cache_paths(local_app_data, app_data))
+    targets["obs_cache"].extend(_obs_cache_paths(local_app_data, app_data))
     targets["gpu_shader_caches"].extend(_gpu_shader_cache_paths(local_app_data, user_profile))
     targets["steam_caches"].extend(_steam_cache_paths(environ, local_app_data, user_profile))
     targets["epic_caches"].extend(_epic_cache_paths(local_app_data))
     targets["adobe_caches"].extend(_adobe_cache_paths(local_app_data, app_data))
     targets["blender_caches"].extend(_blender_cache_paths(local_app_data, app_data))
     targets["unity_caches"].extend(_unity_cache_paths(local_app_data, app_data, user_profile))
+    targets["davinci_caches"].extend(_davinci_cache_paths(local_app_data, app_data))
+    targets["flutter_android_caches"].extend(
+        _flutter_android_cache_paths(local_app_data, app_data, user_profile)
+    )
     targets["empty_user_folders"].extend(
         _empty_folder_roots(user_profile, local_app_data, user_temp, system_root)
     )
@@ -2776,7 +3255,15 @@ def build_target_paths(environ: Optional[Dict[str, str]] = None) -> Dict[str, Li
                 continue
             if key == "unity_caches" and _is_unity_project_tree(path):
                 continue
-            if key in {"adobe_caches", "blender_caches", "unity_caches", "tiktok_cache", "viber_cache"}:
+            if key == "flutter_android_caches" and _is_android_install_tree(path):
+                continue
+            if key == "obs_cache" and _path_has_part(path, _OBS_BLOCK_PARTS):
+                continue
+            if key == "davinci_caches" and _path_has_part(path, _DAVINCI_BLOCK_PARTS):
+                continue
+            if key == "signal_cache" and _path_has_part(path, {"sql", "attachments.noindex", "attachments"}):
+                continue
+            if key in {"adobe_caches", "blender_caches", "unity_caches", "tiktok_cache", "viber_cache", "davinci_caches"}:
                 if _path_has_part(path, {"documents", "creative cloud libraries"}):
                     continue
             if key == "tiktok_cache" and _path_has_part(path, {"capcut"}):
@@ -3447,10 +3934,13 @@ def _estimate_target_size(
         return {"size_bytes": 0, "file_count": count}
     total = 0
     count = 0
+    env = os.environ if environ is None else environ
+    profile = str(env.get("USERPROFILE", "") or "")
     for path in target_paths.get(key, []):
-        if meta.get("clean_mode") == "old_files":
-            env = os.environ if environ is None else environ
-            profile = str(env.get("USERPROFILE", "") or "")
+        log_days = log_age_days_for_path(key, path)
+        if log_days > 0:
+            stat_info = scan_old_files(path, log_days, now_ts, user_profile=profile)
+        elif meta.get("clean_mode") == "old_files":
             stat_info = scan_old_files(path, min_age_days, now_ts, user_profile=profile)
         else:
             stat_info = scan_tree(path)
@@ -3625,6 +4115,9 @@ def _estimate_reclaimable_rows(
         }
         if key == "downloads_old":
             row["min_age_days"] = days
+        log_days = int(meta.get("log_min_age_days") or 0)
+        if log_days > 0:
+            row["log_min_age_days"] = log_days
         if row["size_unknown"] and will_run and not reason:
             row["reason"] = RECYCLE_SIZE_UNKNOWN_VI
         rows.append(row)
@@ -3713,7 +4206,14 @@ def category_offered_by_default(row: Dict[str, Any], min_mb: Any) -> bool:
         return True
     if size <= 0 and files <= 0:
         return False
-    threshold = normalize_min_clean_mb(min_mb) * 1024 * 1024
+    threshold_mb = normalize_min_clean_mb(min_mb)
+    try:
+        floor_mb = int((TARGET_CATALOG.get(key) or {}).get("offer_min_mb") or 0)
+    except (TypeError, ValueError):
+        floor_mb = 0
+    if floor_mb > 0:
+        threshold_mb = max(threshold_mb, floor_mb)
+    threshold = threshold_mb * 1024 * 1024
     if threshold <= 0:
         return True
     return size >= threshold
@@ -3774,6 +4274,13 @@ def format_scan_preview_vi(result: Dict[str, Any]) -> str:
             if row.get("status") == "ready" and row.get("key") in _ALWAYS_PREVIEW_KEYS:
                 lines.append(f"• {name}: khoảng 0 B")
                 shown += 1
+            continue
+        log_days = int(row.get("log_min_age_days") or 0)
+        if log_days > 0:
+            lines.append(
+                f"• {name}: khoảng {format_freed_vi(size)} ({count} tệp; log chỉ tính khi cũ hơn {log_days} ngày)"
+            )
+            shown += 1
             continue
         lines.append(f"• {name}: khoảng {format_freed_vi(size)} ({count} tệp)")
         shown += 1
