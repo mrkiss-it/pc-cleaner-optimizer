@@ -3,7 +3,7 @@
 ; MyAppName / MyAppVersion / MyAppPublisher MUST match app_meta.py (enforced by tests).
 
 #define MyAppName "PC Auto Cleaner & Optimizer"
-#define MyAppVersion "3.8.6"
+#define MyAppVersion "3.8.7"
 #define MyAppPublisher "PC Cleaner Team"
 #define MyAppURL "https://github.com/mrkiss-it/pc-cleaner-optimizer"
 #define MyAppExeName "PCAutoCleaner.exe"

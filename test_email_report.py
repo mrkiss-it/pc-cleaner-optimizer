@@ -215,7 +215,7 @@ def _capture_logs():
 
 
 def test_defaults_are_off_and_password_is_secret():
-    assert APP_VERSION == "3.8.6"
+    assert APP_VERSION == "3.8.7"
     assert DEFAULT_CONFIG["email_report_enabled"] is False
     assert DEFAULT_CONFIG["email_report_frequency"] == "weekly"
     assert DEFAULT_CONFIG["email_report_send_hour"] == 8
@@ -231,7 +231,7 @@ def test_report_uses_only_supplied_data():
     assert "°C" not in empty["text"]
     assert "RAM" not in empty["text"]
     assert "Wi-Fi" not in empty["text"]
-    assert "3.8.6" in empty["text"]
+    assert "3.8.7" in empty["text"]
     assert "không qua máy chủ mail" in empty["text"]
 
     filled = build_report(

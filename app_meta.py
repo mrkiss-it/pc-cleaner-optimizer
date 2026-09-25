@@ -3,7 +3,7 @@ ThÃ´ng tin phiÃªn báº£n vÃ  kho GitHub dÃ¹ng chung cho á»©ng dá»
 """
 
 APP_NAME = "PC Auto Cleaner & Optimizer"
-APP_VERSION = "3.8.6"
+APP_VERSION = "3.8.7"
 APP_PUBLISHER = "PC Cleaner Team"
 
 GITHUB_OWNER = "mrkiss-it"

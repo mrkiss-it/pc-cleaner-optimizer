@@ -3661,7 +3661,7 @@ from core.companion_moment import _count_line, note_one_tap_outcome, schedule_ac
 from core.companion_profile import choose_today_insight, format_muted_browse, mute_is_forever
 from core.companion_skills import clear_declined_offer, list_declined_offers
 
-check(APP_VERSION == "3.8.6", "phase 3 does not bump APP_VERSION")
+check(APP_VERSION == "3.8.7", "phase 3 does not bump APP_VERSION")
 
 grow_empty = _fresh_dir()
 empty_growth = learning_growth(base_dir=grow_empty, now=phase_day)
@@ -3847,7 +3847,7 @@ from core.companion_moment import (
 from core.companion_profile import mute_topic, quiet_hours_settings, set_quiet_hours, topic_is_muted
 from core.exam_focus import ExamMeetingFocus
 
-check(APP_VERSION == "3.8.6", "phase 4 does not bump APP_VERSION")
+check(APP_VERSION == "3.8.7", "phase 4 does not bump APP_VERSION")
 check(quiet_hours_settings(base_dir=_fresh_dir())["enabled"] is False, "quiet hours stay opt-in")
 check(quiet_hours_settings(base_dir=_fresh_dir())["start"] == "23:00", "existing quiet start stays 23:00")
 check(quiet_hours_settings(base_dir=_fresh_dir())["end"] == "07:00", "existing quiet end stays 07:00")
