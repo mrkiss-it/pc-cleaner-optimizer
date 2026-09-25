@@ -122,8 +122,8 @@ def _tree(root):
     }
 
 
-def test_version_stays_386():
-    assert APP_VERSION == "3.8.6"
+def test_version_stays_387():
+    assert APP_VERSION == "3.8.7"
 
 
 def test_catalog_defaults_match_config():
@@ -2245,7 +2245,7 @@ def test_ui_exposes_deep_clean_and_admin_label():
 
 def _run():
     tests = [
-        test_version_stays_386,
+        test_version_stays_387,
         test_catalog_defaults_match_config,
         test_paths_stay_inside_current_user_and_skip_protected,
         test_non_admin_skips_system_targets_and_counts_only_deleted_bytes,
