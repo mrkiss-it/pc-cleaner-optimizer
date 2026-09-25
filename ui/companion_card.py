@@ -10,7 +10,6 @@ from typing import Any, Optional
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
-    QCheckBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -21,11 +20,15 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
+
+from ui.flow_layout import FlowLayout
+from ui.widgets import WrappingCheckBox
 
 from app_meta import APP_NAME
 from core.companion import (
@@ -213,9 +216,7 @@ class CompanionInsightBar(QFrame):
         self.row_week.hide()
 
         self.row_pins = QWidget()
-        pins_row = QHBoxLayout(self.row_pins)
-        pins_row.setContentsMargins(0, 0, 0, 0)
-        pins_row.setSpacing(8)
+        pins_row = FlowLayout(self.row_pins, margin=0, h_spacing=8, v_spacing=6, expand=False)
         self.lbl_pins = _plain_label("#c4b5fd")
         pins_row.addWidget(self.lbl_pins)
         self.pin_action_buttons = []
@@ -236,7 +237,6 @@ class CompanionInsightBar(QFrame):
             pins_row.addWidget(unpin)
             self.pin_action_buttons.append(action)
             self.pin_unpin_buttons.append(unpin)
-        pins_row.addStretch(1)
         self.row_pins.hide()
 
         self.row_checkin = QWidget()
@@ -259,9 +259,7 @@ class CompanionInsightBar(QFrame):
         self.row_checkin.hide()
 
         self.row_follow = QWidget()
-        follow_row = QHBoxLayout(self.row_follow)
-        follow_row.setContentsMargins(0, 0, 0, 0)
-        follow_row.setSpacing(8)
+        follow_row = FlowLayout(self.row_follow, margin=0, h_spacing=8, v_spacing=6, expand=False)
         self.lbl_follow = _plain_label("#ddd6fe")
         self.btn_follow_yes = QPushButton("Có ích")
         self.btn_follow_yes.setStyleSheet(_BTN_STYLE)
@@ -333,9 +331,7 @@ class CompanionInsightBar(QFrame):
         self.row_eod.hide()
 
         self.row_conflict = QWidget()
-        conflict_row = QHBoxLayout(self.row_conflict)
-        conflict_row.setContentsMargins(0, 0, 0, 0)
-        conflict_row.setSpacing(8)
+        conflict_row = FlowLayout(self.row_conflict, margin=0, h_spacing=8, v_spacing=6, expand=False)
         self.lbl_conflict = _plain_label("#fde68a")
         self.btn_conflict_unmute = QPushButton("Bỏ im chủ đề")
         self.btn_conflict_unmute.setStyleSheet(_BTN_STYLE)
@@ -357,9 +353,7 @@ class CompanionInsightBar(QFrame):
         self.row_conflict.hide()
 
         self.row_insight = QWidget()
-        row = QHBoxLayout(self.row_insight)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
+        row = FlowLayout(self.row_insight, margin=0, h_spacing=8, v_spacing=6, expand=False)
         self.lbl_insight = _plain_label("#e0e7ff")
         self.btn_action = QPushButton("")
         self.btn_action.setStyleSheet(_BTN_STYLE)
@@ -1358,27 +1352,27 @@ class CompanionCard(QFrame):
         layout.addWidget(self.lbl_correction)
 
         if not self.compact:
-            self.chk_enabled = QCheckBox("Ghi nhật ký máy (local, không gửi đám mây)")
+            self.chk_enabled = WrappingCheckBox("Ghi nhật ký máy (local, không gửi đám mây)")
             self.chk_enabled.setStyleSheet("font-weight: bold; font-size: 13px; color: #c4b5fd;")
-            self.chk_reflect = QCheckBox(
+            self.chk_reflect = WrappingCheckBox(
                 "Phản tỉnh buổi tối / sổ tay (Gemini nếu đã bật; không thì chỉ số liệu)"
             )
             self.chk_reflect.setStyleSheet("font-size: 12px; color: #cbd5e1;")
-            self.chk_propose = QCheckBox(
+            self.chk_propose = WrappingCheckBox(
                 "Cho phép đề xuất Dọn nhẹ / Trước thi khi đã lớn dần (không tự chạy, không WinSxS)"
             )
             self.chk_propose.setStyleSheet("font-size: 12px; color: #cbd5e1;")
-            self.chk_nudges = QCheckBox(
+            self.chk_nudges = WrappingCheckBox(
                 "Gợi ý nhẹ khi đã học thói quen máy (không liên tục)"
             )
             self.chk_nudges.setStyleSheet("font-size: 12px; color: #cbd5e1;")
-            self.chk_quiet = QCheckBox("Giờ yên lặng 23:00–07:00 (không nhắc, không thông báo)")
+            self.chk_quiet = WrappingCheckBox("Giờ yên lặng 23:00–07:00 (không nhắc, không thông báo)")
             self.chk_quiet.setStyleSheet("font-size: 12px; color: #cbd5e1;")
             self.chk_quiet.setToolTip(
                 "Mặc định tắt. Bật để mình im từ 23:00 đến 07:00: không thông báo nổi, "
                 "không chào buổi sáng giữa đêm. Dòng hôm nay vẫn hiện, nhẹ hơn."
             )
-            self.chk_quiet_actions = QCheckBox("Vẫn hiện nút đề xuất trong giờ yên lặng")
+            self.chk_quiet_actions = WrappingCheckBox("Vẫn hiện nút đề xuất trong giờ yên lặng")
             self.chk_quiet_actions.setStyleSheet("font-size: 12px; color: #cbd5e1;")
             self.chk_quiet_actions.setToolTip("Chỉ khi bạn muốn. Mặc định giờ yên lặng không có nút đề xuất.")
             layout.addWidget(self.chk_enabled)
@@ -1400,7 +1394,7 @@ class CompanionCard(QFrame):
             self.chk_quiet.toggled.connect(self._persist_quiet)
             self.chk_quiet_actions.toggled.connect(self._persist_quiet)
 
-        offer_row = QHBoxLayout()
+        offer_row = FlowLayout(h_spacing=8, v_spacing=6, expand=False)
         self.lbl_offer = QLabel("")
         self.lbl_offer.setWordWrap(True)
         self.lbl_offer.setStyleSheet("color: #fde68a; font-size: 11px; background: transparent; border: none;")
@@ -1421,7 +1415,7 @@ class CompanionCard(QFrame):
         offer_row.addWidget(self.btn_skip_skill_forever)
         layout.addLayout(offer_row)
 
-        btns = QHBoxLayout()
+        btns = FlowLayout(h_spacing=8, v_spacing=6, expand=False)
         self.btn_helpful = QPushButton("Hữu ích")
         self.btn_helpful.setStyleSheet(_BTN_STYLE)
         self.btn_helpful.setToolTip("Phản hồi giúp AI lớn dần — không phải wall-clock.")
@@ -1448,7 +1442,6 @@ class CompanionCard(QFrame):
         btns.addWidget(self.btn_reflect)
         btns.addWidget(self.btn_weekly)
         btns.addWidget(self.btn_manage)
-        btns.addStretch()
         layout.addLayout(btns)
 
         self.lbl_reflect_status = QLabel("")
@@ -1804,10 +1797,18 @@ class CompanionDialog(QDialog):
         self.config_manager = config_manager
         self._reflect_worker: Optional[CompanionReflectWorker] = None
         self.setWindowTitle(f"AI đồng hành — {APP_NAME}")
-        self.resize(560, 920)
         self._growth_dismissed = False
         self.setStyleSheet("QDialog { background: #0f172a; color: #e2e8f0; }")
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        host = QWidget()
+        root = QVBoxLayout(host)
+        root.setContentsMargins(8, 4, 8, 8)
         root.setSpacing(10)
 
         self.lbl_badge = QLabel("Giai đoạn 0 · Mới gặp")
@@ -2017,6 +2018,11 @@ class CompanionDialog(QDialog):
         foot.addStretch()
         foot.addWidget(close_btn)
         root.addLayout(foot)
+
+        scroll.setWidget(host)
+        outer.addWidget(scroll)
+        from ui.window_fit import apply_client_size
+        apply_client_size(self, 560, 640, 480, 420)
 
         self.refresh()
 

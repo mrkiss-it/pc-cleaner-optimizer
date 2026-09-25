@@ -178,8 +178,8 @@ DEFAULT_CONFIG = {
     "window_geometry": {
         "x": -1,
         "y": -1,
-        "width": 1000,
-        "height": 680,
+        "width": 1200,
+        "height": 640,
         "is_maximized": False
     },
     "last_active_tab": 0,
@@ -504,8 +504,8 @@ class ConfigManager:
             "last_active_tab": self.config.get("last_active_tab", 0),
             "x": merged.get("x", 100),
             "y": merged.get("y", 100),
-            "width": merged.get("width", 1050),
-            "height": merged.get("height", 680),
+            "width": merged.get("width", 1200),
+            "height": merged.get("height", 640),
             "is_maximized": merged.get("is_maximized", False),
             "maximized": merged.get("is_maximized", False),
         }

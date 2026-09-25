@@ -399,5 +399,34 @@ QPushButton.btn-tweak-off:hover {
     background: #475569;
     color: #f1f5f9;
 }
+
+/* Wrapped main-window tabs (native QTabBar is hidden — it scrolls sideways). */
+QPushButton#navTab {
+    background-color: #0b0f19;
+    color: #94a3b8;
+    padding: 8px 12px;
+    margin: 0px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 12px;
+    border: 1px solid transparent;
+    text-align: center;
+}
+
+QPushButton#navTab:hover {
+    color: #38bdf8;
+    background-color: #1e293b;
+}
+
+QPushButton#navTab:checked {
+    color: #38bdf8;
+    background-color: #0f172a;
+    border: 1px solid #1e293b;
+    border-bottom: 2px solid #38bdf8;
+}
+
+QTabBar {
+    qproperty-drawBase: 0;
+}
 """
 
