@@ -101,10 +101,16 @@ class NetworkOptimizerDialog(QDialog):
             parent_win = self.parent()
             unlock_cb = getattr(parent_win, "unlock_location_now", None) if parent_win else None
             power_cb = getattr(parent_win, "disable_wifi_power_saving_now", None) if parent_win else None
+            toggle_cb = getattr(parent_win, "set_wifi_stability_enabled", None) if parent_win else None
             self.wifi_stability_card.bind(
                 unlock_location=unlock_cb if callable(unlock_cb) else self._on_unlock_location_clicked,
                 disable_power_save=power_cb if callable(power_cb) else None,
+                on_monitor_toggle=toggle_cb if callable(toggle_cb) else None,
             )
+            if parent_win is not None and hasattr(parent_win, "config_manager"):
+                self.wifi_stability_card.set_monitor_enabled(
+                    bool(parent_win.config_manager.get("wifi_stability_enabled", False))
+                )
 
         # Kết nối timer cập nhật tốc độ mạng
         self.monitor_timer = QTimer(self)
@@ -552,6 +558,22 @@ class NetworkOptimizerDialog(QDialog):
             unrecovered_repairs=unrecovered,
             force_show=bool(self._focus_wifi_stability),
         )
+        try:
+            from core.wifi_stability import WifiStabilityMonitor
+            parent = self.parent()
+            enabled = False
+            saved = {}
+            if parent is not None and hasattr(parent, "config_manager"):
+                enabled = bool(parent.config_manager.get("wifi_stability_enabled", False))
+                raw = parent.config_manager.get("wifi_stability_status") or {}
+                if isinstance(raw, dict):
+                    saved = raw
+            live = WifiStabilityMonitor.snapshot()
+            status = dict(live) if live else dict(saved)
+            card.set_monitor_enabled(enabled)
+            card.apply_monitor_status(status)
+        except Exception:
+            pass
 
     def focus_wifi_stability(self):
         self._focus_wifi_stability = True

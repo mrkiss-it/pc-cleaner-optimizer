@@ -43,7 +43,7 @@ Chạy `PCAutoCleaner_Setup.exe` trên máy **chưa cài** (hoặc đã gỡ s�
 - [ ] **Cài đặt (Settings)** có đủ:
   - **Cập nhật** — Kiểm Tra Cập Nhật / Cập nhật
   - **Gỡ cài đặt** — nút trong Settings (không nhầm **Gỡ Phần Mềm** trên dashboard)
-  - **Ổn định Wi-Fi**
+  - **Ổn định Wi-Fi** — công tắc mặc định tắt; trạng thái (lần rớt / lần sửa / nguyên nhân)
   - **Nhiệt laptop** — ngưỡng °C + toast khi nóng
   - **AI đồng hành** — giai đoạn 0→3 (nhãn tiếng Việt), **Phản tỉnh / Viết sổ tay**, xem/xóa nhật ký & kỹ năng (empty-state nếu cài mới)
 
@@ -74,6 +74,7 @@ Cài lại giữa hai lần. Kiểm **cả hai lối**.
 - [ ] Có Gemini API key (Copilot) → chat chạy, không crash
 - [ ] Copilot: Cấu Hình AI chọn **Tự động / Gemini**; Gemini online khi có mạng + API key; nếu mất mạng / chưa có key thì hiện hướng dẫn tiếng Việt (cần mạng / API key) — không bịa câu trả lời LLM
 - [ ] Wi-Fi yếu → thẻ/tip **Ổn định Wi-Fi** hiện; toast **không spam** (cooldown ~30 phút)
+- [ ] **Ổn định Wi-Fi** mặc định tắt. Bật rồi tắt lại được. Khi mạng vẫn ping được, app không flush DNS và không reconnect. Khi mất mạng thật đủ lâu mới reconnect / renew DHCP (không UAC im lặng, không VPN)
 - [ ] **Nhiệt laptop**: dashboard / Pin & Phần cứng hiện số khi có cảm biến; empty-state tiếng Việt nếu không (không bịa °C); Settings có ngưỡng ~90°C
 - [ ] Dashboard **Trước thi / họp**: bật → badge ĐANG TẬP TRUNG; tắt → khôi phục. Không đổi DNS/Wi-Fi
 - [ ] **AI đồng hành**: Copilot hiện giai đoạn tiếng Việt; Settings có thẻ nhật ký/kỹ năng; bấm **Phản tỉnh / Viết sổ tay**; xem/xóa bộ nhớ local (có xác nhận); cài mới hiện empty-state (không bịa kỷ niệm)

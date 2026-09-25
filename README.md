@@ -193,13 +193,19 @@ Một nút trên **Bảng Điều Khiển** (và khay hệ thống) để chuẩ
 
 ---
 
-### 11. 📶 Ổn định Wi-Fi (hướng dẫn, không sửa driver)
+### 11. 📶 Ổn định Wi-Fi (theo dõi nhẹ + hướng dẫn, không phải VPN)
 
-Thẻ **Ổn định Wi-Fi** trong Settings (luôn hiện) và Trung tâm Mạng khi Wi-Fi yếu / rớt / vòng reconnect (hay gặp trên MediaTek MT7921 và 2.4 GHz).
+Thẻ **Ổn định Wi-Fi** trong Settings (luôn hiện) và Trung tâm Mạng.
 
-- App **có thể** flush DNS, renew DHCP, reconnect SSID và tắt tiết kiệm pin card.
-- App **không** sửa driver MediaTek hay sóng RF — chỉ gợi ý bước Windows (Settings Wi-Fi, Device Manager, Location).
-- Toast hướng dẫn **không spam** (cooldown khoảng 30 phút). Chi tiết kiểm tra: [docs/RELEASE_SMOKE_TEST.md](docs/RELEASE_SMOKE_TEST.md).
+**Công tắc «Bật Ổn định Wi-Fi» mặc định TẮT.** Khi bật, app theo dõi ping và card Wi-Fi. Chỉ khi mất kết nối thật (card không Up, hoặc ping đo được là lỗi) và kéo dài khoảng 60 giây thì mới reconnect SSID hoặc renew DHCP. Cooldown tối thiểu 5 phút, sau một lần đã hồi thì chờ 15 phút, tối đa 2 lần chưa hồi rồi dừng.
+
+- Chế độ này **không** flush DNS, **không** reset stack, **không** EmptyWorkingSet / đụng trình duyệt, **không** VPN, **không** tự hiện UAC. Nếu Windows đòi Admin, app ghi «đã bỏ qua» và dừng bước đó.
+- Tắt «tự động tối ưu mạng» **không** tắt chế độ này. Bật chế độ này **không** bật lại vòng Flush DNS / WifiRecovery.
+- Nếu ô «Khi Ping / Wi-Fi rớt» vẫn bật, đường sửa đó vẫn có thể flush khi ping thật sự mất. Tắt ô đó nếu chỉ muốn sửa nhẹ.
+- Thẻ hiện lần rớt gần nhất, lần sửa gần nhất, và nguyên nhân đoán: `adapter_down` / `no_ping` / `dns` / `ok`.
+- Phần gợi ý (5 GHz, driver, tiết kiệm pin, Location) vẫn là hướng dẫn — app không sửa driver hay sóng RF. Toast gợi ý không spam (cooldown khoảng 30 phút).
+
+Chi tiết kiểm tra: [docs/RELEASE_SMOKE_TEST.md](docs/RELEASE_SMOKE_TEST.md).
 
 ---
 
@@ -268,7 +274,7 @@ pc-cleaner-optimizer/
 │   ├── thermal_monitor.py      # Nhiệt CPU/GPU (LHM/OHM WMI, nvidia-smi, ACPI) — không bịa số
 │   ├── network_optimizer.py    # Đo tốc độ DNS song song, tối ưu TCP/IP, cấu hình Adapter
 │   ├── wifi_recovery.py        # Phát hiện Wi-Fi rớt / vòng reconnect, DHCP, reconnect SSID
-│   ├── wifi_stability.py       # Gợi ý Ổn định Wi-Fi (Windows; không sửa driver/RF)
+│   ├── wifi_stability.py       # Ổn định Wi-Fi: gợi ý + monitor nhẹ (không VPN, không flush)
 │   ├── update_checker.py       # Kiểm tra GitHub Releases (không tự cài)
 │   ├── update_installer.py     # Tải PCAutoCleaner_Setup.exe rồi mở bộ cài
 │   ├── disk_health_optimizer.py# S.M.A.R.T NVMe/SSD Health, nhiệt độ & TRIM Optimizer
@@ -371,6 +377,7 @@ python test_update_installer.py
 python test_setup_wizard.py
 python test_uninstall_wizard.py
 python test_wifi_recovery.py
+python test_wifi_stability.py
 ```
 
 

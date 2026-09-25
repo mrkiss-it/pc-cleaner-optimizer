@@ -9,12 +9,15 @@ from typing import Any, Callable, Dict, Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
+    QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
 
 from core.wifi_stability import (
     DISCLAIMER,
+    NOTE_DISABLED,
+    NOTE_JUST_ENABLED,
     build_wifi_stability_guidance,
+    format_stability_status_text,
     open_windows_target,
 )
 
@@ -53,14 +56,16 @@ def _notify(title: str, message: str, ok: bool = True) -> None:
 
 
 class WifiStabilityCard(QFrame):
-    """Tip card used by Network dialog (conditional) and Settings (always on)."""
+    """Tip card plus the Ổn định Wi-Fi monitor toggle (default off)."""
 
-    def __init__(self, parent=None, *, always_visible: bool = False):
+    def __init__(self, parent=None, *, always_visible: bool = False, show_monitor: bool = True):
         super().__init__(parent)
         self.setObjectName("WifiStabilityCard")
         self.always_visible = bool(always_visible)
+        self.show_monitor = bool(show_monitor)
         self._unlock_location: Optional[Callable[[], Any]] = None
         self._disable_power_save: Optional[Callable[[], Any]] = None
+        self._on_monitor_toggle: Optional[Callable[[bool], Any]] = None
         self._guidance: Dict[str, Any] = {}
         self.setStyleSheet("""
             QFrame#WifiStabilityCard {
@@ -77,6 +82,31 @@ class WifiStabilityCard(QFrame):
         self.lbl_title = QLabel("📶 Ổn định Wi-Fi")
         self.lbl_title.setStyleSheet("color: #67e8f9; font-size: 13px; font-weight: 800;")
         layout.addWidget(self.lbl_title)
+
+        self.chk_monitor = QCheckBox("Bật Ổn định Wi-Fi (theo dõi kết nối, mặc định tắt)")
+        self.chk_monitor.setStyleSheet("font-weight: bold; font-size: 12px; color: #67e8f9;")
+        self.chk_monitor.setChecked(False)
+        self.chk_monitor.setVisible(self.show_monitor)
+        layout.addWidget(self.chk_monitor)
+
+        self.lbl_monitor_help = QLabel(
+            "Khi bật: theo dõi ping và card Wi-Fi. Chỉ reconnect hoặc renew DHCP khi mất mạng thật "
+            "và đã kéo dài. Không Flush DNS, không reset stack, không đụng trình duyệt, không VPN, "
+            "không tự hiện UAC. Tắt «tự động tối ưu mạng» không tắt chế độ này; bật chế độ này cũng "
+            "không bật lại vòng Flush DNS. Nếu ô «Khi Ping / Wi-Fi rớt» đang bật, đường đó vẫn có thể "
+            "flush khi ping thật sự mất — tắt ô đó nếu bạn chỉ muốn sửa nhẹ."
+        )
+        self.lbl_monitor_help.setWordWrap(True)
+        self.lbl_monitor_help.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        self.lbl_monitor_help.setVisible(self.show_monitor)
+        layout.addWidget(self.lbl_monitor_help)
+
+        self.lbl_monitor_status = QLabel(NOTE_DISABLED)
+        self.lbl_monitor_status.setWordWrap(True)
+        self.lbl_monitor_status.setStyleSheet("color: #e2e8f0; font-size: 11px;")
+        self.lbl_monitor_status.setVisible(self.show_monitor)
+        layout.addWidget(self.lbl_monitor_status)
+        self.chk_monitor.toggled.connect(self._emit_monitor_toggle)
 
         self.lbl_intro = QLabel(DISCLAIMER)
         self.lbl_intro.setWordWrap(True)
@@ -108,20 +138,51 @@ class WifiStabilityCard(QFrame):
         self.btn_location.clicked.connect(self._on_unlock_location)
         self.btn_location.setVisible(False)
 
-        if self.always_visible:
-            self.apply_guidance(build_wifi_stability_guidance())
+        self.apply_guidance(build_wifi_stability_guidance())
+        if self.always_visible or self.show_monitor:
             self.setVisible(True)
-        else:
-            self.setVisible(False)
 
     def bind(
         self,
         *,
         unlock_location: Optional[Callable[[], Any]] = None,
         disable_power_save: Optional[Callable[[], Any]] = None,
+        on_monitor_toggle: Optional[Callable[[bool], Any]] = None,
     ) -> None:
         self._unlock_location = unlock_location
         self._disable_power_save = disable_power_save
+        if on_monitor_toggle is not None:
+            self._on_monitor_toggle = on_monitor_toggle
+
+    def set_monitor_enabled(self, enabled: bool) -> None:
+        """Sync the checkbox without writing config again."""
+        enabled = bool(enabled)
+        if self.chk_monitor.isChecked() == enabled:
+            return
+        self.chk_monitor.blockSignals(True)
+        self.chk_monitor.setChecked(enabled)
+        self.chk_monitor.blockSignals(False)
+
+    def apply_monitor_status(self, status: Optional[Dict[str, Any]] = None) -> None:
+        data = status if isinstance(status, dict) else {}
+        if not data:
+            self.lbl_monitor_status.setText(NOTE_DISABLED if not self.chk_monitor.isChecked() else NOTE_JUST_ENABLED)
+            return
+        shown = dict(data)
+        shown["enabled"] = bool(self.chk_monitor.isChecked()) if self.show_monitor else bool(data.get("enabled"))
+        if shown["enabled"] and shown.get("note") == NOTE_DISABLED:
+            shown["note"] = NOTE_JUST_ENABLED
+        if not shown["enabled"]:
+            shown["note"] = NOTE_DISABLED
+        self.lbl_monitor_status.setText(format_stability_status_text(shown))
+
+    def _emit_monitor_toggle(self, checked: bool) -> None:
+        if checked:
+            self.lbl_monitor_status.setText(NOTE_JUST_ENABLED)
+        else:
+            self.lbl_monitor_status.setText(NOTE_DISABLED)
+        if self._on_monitor_toggle:
+            self._on_monitor_toggle(bool(checked))
 
     def apply_guidance(self, guidance: Optional[Dict[str, Any]] = None) -> None:
         data = guidance if isinstance(guidance, dict) else build_wifi_stability_guidance()
@@ -135,11 +196,17 @@ class WifiStabilityCard(QFrame):
                 bullets.append(f"• {text}")
         self.lbl_tips.setText("<br/>".join(bullets))
         loc_on = bool(data.get("location_locked"))
-        self.btn_location.setVisible(loc_on)
-        if self.always_visible:
+        show_guidance = self.always_visible or bool(data.get("offer")) or loc_on
+        self.lbl_intro.setVisible(show_guidance)
+        self.lbl_tips.setVisible(show_guidance)
+        self.btn_5ghz.setVisible(show_guidance)
+        self.btn_driver.setVisible(show_guidance)
+        self.btn_power.setVisible(show_guidance)
+        self.btn_location.setVisible(show_guidance and loc_on)
+        if self.always_visible or self.show_monitor or show_guidance:
             self.setVisible(True)
         else:
-            self.setVisible(bool(data.get("offer")) or loc_on)
+            self.setVisible(False)
 
     def refresh_from_detect(
         self,

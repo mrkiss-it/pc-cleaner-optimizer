@@ -174,6 +174,15 @@ DEFAULT_CONFIG = {
     "auto_network_recovery_failure_toast_cooldown_seconds": 45,
     "auto_network_recovery_cta_toast_cooldown_seconds": 0,
     "auto_network_wifi_stability_tip_cooldown_seconds": 1800,
+    # Dedicated monitor. Default OFF so it does not surprise anyone.
+    # Independent of auto_network_optimize_enabled: off does not stop this
+    # mode, and this mode does not turn flush/DNS loops back on.
+    "wifi_stability_enabled": False,
+    "wifi_stability_min_outage_seconds": 60,
+    "wifi_stability_cooldown_seconds": 300,
+    "wifi_stability_recovered_cooldown_seconds": 900,
+    "wifi_stability_max_unrecovered": 2,
+    "wifi_stability_status": {},
     "auto_best_dns_enabled": False,
     "auto_best_dns_interval_hours": 2,
     "auto_security_scan_enabled": True,
