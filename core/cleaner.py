@@ -28,6 +28,7 @@ from core.c_drive_clean import (
     normalize_exclude_paths,
     _EmptyDirBudget,
     list_empty_directories,
+    log_age_days_for_path,
     prune_nested_target_paths,
     read_c_drive_free_bytes,
     resolve_clean_plan,
@@ -288,7 +289,11 @@ class JunkCleaner:
                 cat_bytes = 0
                 cat_files = 0
                 for path in sized_paths.get(cat_key, []):
-                    stat_info = scan_tree(path)
+                    log_days = log_age_days_for_path(cat_key, path)
+                    if log_days > 0:
+                        stat_info = scan_old_files(path, log_days, moment, user_profile=user_profile)
+                    else:
+                        stat_info = scan_tree(path)
                     cat_bytes += stat_info["size_bytes"]
                     cat_files += stat_info["file_count"]
 
@@ -540,10 +545,11 @@ class JunkCleaner:
                         "sync_root": 0,
                     }
                     for path in pruned_paths.get(cat_key, []):
+                        log_days = log_age_days_for_path(cat_key, path)
                         part = clean_one_path(
                             path,
-                            clean_mode=meta["clean_mode"],
-                            min_age_days=days,
+                            clean_mode="old_files" if log_days > 0 else meta["clean_mode"],
+                            min_age_days=log_days if log_days > 0 else days,
                             now_ts=moment,
                             user_profile=user_profile,
                             system_root=system_root,

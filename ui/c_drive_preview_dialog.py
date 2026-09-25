@@ -91,7 +91,7 @@ class CDrivePreviewDialog(QDialog):
         self.spin_min_clean_mb.setSpecialValueText("0 MB (tick mọi mục)")
         self.spin_min_clean_mb.setValue(normalize_min_clean_mb(min_clean_mb))
         self.spin_min_clean_mb.valueChanged.connect(self._apply_threshold_checks)
-        threshold_hint = QLabel("Mục nhỏ hơn vẫn hiện. 0 = tick mọi mục có dữ liệu.")
+        threshold_hint = QLabel("Mục nhỏ hơn vẫn hiện. Cache đồ họa/dev có ngưỡng riêng.")
         threshold_hint.setStyleSheet("color: #64748b; font-size: 11px;")
         threshold_row.addWidget(threshold_label)
         threshold_row.addWidget(self.spin_min_clean_mb)
@@ -255,6 +255,9 @@ class CDrivePreviewDialog(QDialog):
         elif row.get("key") == "downloads_old":
             days = int(row.get("min_age_days") or getattr(self, "_downloads_days", 30) or 30)
             detail = f"khoảng {format_freed_vi(size)} ({count} tệp, cũ hơn {days} ngày)"
+        elif int(row.get("log_min_age_days") or 0) > 0:
+            days = int(row.get("log_min_age_days") or 0)
+            detail = f"khoảng {format_freed_vi(size)} ({count} tệp; log chỉ tính khi cũ hơn {days} ngày)"
         elif size <= 0 and count <= 0:
             detail = "khoảng 0 B"
         else:
