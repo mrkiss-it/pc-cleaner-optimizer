@@ -15,6 +15,66 @@ MIN_WORKING_SET_BYTES = 8 * 1024 * 1024
 # Chỉ bỏ qua khi mẫu CPU đã biết và đang cao. 0 nghĩa là chưa có mẫu, không phải "rảnh".
 BUSY_CPU_SKIP_PERCENT = 30.0
 
+# Interactive browsers and their renderer / GPU / host processes.
+# EmptyWorkingSet on these blanks or kills tabs. Chromium renderers share the
+# browser exe (chrome.exe, msedge.exe); Firefox also uses plugin-container.exe;
+# WebView2 host is msedgewebview2.exe. Auto RAM optimize and Game Booster both
+# call MemoryOptimizer.optimize_ram, so this denylist covers both.
+BROWSER_WORKING_SET_DENYLIST = frozenset({
+    "chrome.exe",
+    "chrome_proxy.exe",
+    "msedge.exe",
+    "msedgewebview2.exe",
+    "microsoftedge.exe",
+    "microsoftedgecp.exe",
+    "firefox.exe",
+    "plugin-container.exe",
+    "brave.exe",
+    "opera.exe",
+    "opera_gx.exe",
+    "vivaldi.exe",
+    "chromium.exe",
+    "coccoc.exe",
+    "browser.exe",
+    "yandex.exe",
+    "iexplore.exe",
+    "tor.exe",
+    "waterfox.exe",
+    "librewolf.exe",
+    "palemoon.exe",
+})
+_BROWSER_NAME_PREFIXES = (
+    "chrome",
+    "msedge",
+    "microsoftedge",
+    "firefox",
+    "plugin-container",
+    "brave",
+    "opera",
+    "vivaldi",
+    "chromium",
+    "coccoc",
+    "waterfox",
+    "librewolf",
+    "iexplore",
+    "palemoon",
+)
+
+
+def is_browser_working_set_protected(name: str) -> bool:
+    """True when EmptyWorkingSet must not touch this browser or its child host."""
+    token = str(name or "").strip().lower().replace("/", "\\")
+    base = token.rsplit("\\", 1)[-1]
+    if not base:
+        return False
+    if base in BROWSER_WORKING_SET_DENYLIST:
+        return True
+    stem = base[:-4] if base.endswith(".exe") else base
+    for prefix in _BROWSER_NAME_PREFIXES:
+        if stem == prefix or stem.startswith((prefix + "_", prefix + "-")):
+            return True
+    return False
+
 RAM_TRIM_NOTE_VI = (
     "EmptyWorkingSet (API Win32 có tài liệu) chỉ thu nhỏ working set — bộ nhớ tiến trình đang giữ. "
     "Không tắt ứng dụng. Không xóa standby list: app không gọi NtSetSystemInformation vì lệnh đó "
@@ -67,6 +127,9 @@ def format_ram_report_vi(result: Dict[str, Any]) -> str:
     protected = int(result.get("skipped_protected") or 0)
     if protected:
         skipped_bits.append(f"{protected} tiến trình hệ thống")
+    browsers = int(result.get("skipped_browser") or 0)
+    if browsers:
+        skipped_bits.append(f"{browsers} tiến trình trình duyệt (không thu working set)")
     small = int(result.get("skipped_small") or 0)
     if small:
         skipped_bits.append(f"{small} tiến trình có working set dưới 8 MB")
@@ -131,8 +194,9 @@ class MemoryOptimizer:
         """
         Thu nhỏ working set bằng EmptyWorkingSet trên tiến trình người dùng.
 
-        Tiến trình trong whitelist (ghim), tiến trình hệ thống, working set nhỏ
-        và tiến trình đang dùng nhiều CPU được bỏ qua. Không gọi API xóa standby list.
+        Tiến trình trong whitelist (ghim), trình duyệt (chrome/msedge/firefox và
+        tiến trình host), tiến trình hệ thống, working set nhỏ và tiến trình đang
+        dùng nhiều CPU được bỏ qua. Không gọi API xóa standby list.
         """
         now = time.time()
         if cls._last_result is not None and (now - cls._last_run_time < 2.5):
@@ -158,6 +222,7 @@ class MemoryOptimizer:
         skipped_whitelist = 0
         skipped_whitelist_names = []
         skipped_protected = 0
+        skipped_browser = 0
         skipped_small = 0
         skipped_busy = 0
         skipped_access = 0
@@ -171,6 +236,9 @@ class MemoryOptimizer:
                 pid = int(pid)
                 name = (info.get("name") or "").lower()
                 if pid <= 4 or pid == self_pid:
+                    continue
+                if is_browser_working_set_protected(name):
+                    skipped_browser += 1
                     continue
                 if name in safe_whitelist:
                     skipped_whitelist += 1
@@ -224,7 +292,8 @@ class MemoryOptimizer:
             f"[RAM Optimizer] EmptyWorkingSet trên {processes_flushed} tiến trình. "
             f"RAM trống: {available_before_mb:.1f} -> {available_after_mb:.1f} MB "
             f"(+{freed_mb:.1f} MB). Bỏ qua ghim={skipped_whitelist}, "
-            f"hệ thống={skipped_protected}, nhỏ={skipped_small}, bận={skipped_busy}."
+            f"trình duyệt={skipped_browser}, hệ thống={skipped_protected}, "
+            f"nhỏ={skipped_small}, bận={skipped_busy}."
         )
 
         result = {
@@ -234,6 +303,7 @@ class MemoryOptimizer:
             "skipped_whitelist": skipped_whitelist,
             "skipped_whitelist_names": skipped_whitelist_names,
             "skipped_protected": skipped_protected,
+            "skipped_browser": skipped_browser,
             "skipped_small": skipped_small,
             "skipped_busy": skipped_busy,
             "skipped_access": skipped_access,

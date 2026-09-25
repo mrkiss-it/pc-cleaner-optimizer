@@ -57,7 +57,9 @@ class GameBooster:
         cls._saved_priorities.clear()
         safe_whitelist = whitelist or set()
 
-        # 1. Giải phóng RAM tối đa (truyền whitelist vào optimizer)
+        # 1. Giải phóng RAM tối đa (truyền whitelist vào optimizer).
+        # EmptyWorkingSet đi qua MemoryOptimizer, cùng denylist trình duyệt
+        # (chrome.exe, msedge.exe, firefox.exe và tiến trình host/renderer).
         ram_res = MemoryOptimizer.optimize_ram(whitelist=safe_whitelist)
         freed_ram_mb = ram_res.get("freed_mb", 0.0)
 

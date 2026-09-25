@@ -43,6 +43,9 @@ class BackgroundScheduler(QObject):
         self.wifi_fix_first_cooldown_seconds = 12
         self.wifi_fix_unrecovered = 0
         self.wifi_fix_max_unrecovered = 2
+        # Epoch seconds. Set when an auto repair ran while ping was already OK
+        # so the next ticks do not flush DNS again 15 seconds later.
+        self.last_wifi_fix_recovered_ts = 0.0
         self.recovery_toast_gate = RecoveryToastGate()
         self.thermal_toast_gate = ThermalToastGate()
         self.low_disk_toast_gate = LowDiskToastGate()
@@ -91,8 +94,22 @@ class BackgroundScheduler(QObject):
 
         wifi_snap = {}
         try:
+            ping_val = float(ping)
+        except (TypeError, ValueError):
+            ping_val = -1.0
+        ping_measured = bool(net_info.get("ping_measured", False))
+        if ping_val > 0:
+            ping_ok_arg = True
+        elif ping_measured:
+            ping_ok_arg = False
+        else:
+            ping_ok_arg = None
+        try:
             from core.wifi_recovery import WifiRecovery
-            wifi_snap = WifiRecovery.detect_wifi_instability(include_events=True)
+            wifi_snap = WifiRecovery.detect_wifi_instability(
+                include_events=True,
+                ping_ok=ping_ok_arg,
+            )
             if not wifi_snap.get("unstable"):
                 self.wifi_fix_unrecovered = 0
         except Exception:
@@ -124,9 +141,21 @@ class BackgroundScheduler(QObject):
             self.wifi_fix_cooldown_seconds
         ))
         ping_fix_enabled = bool(config.get("auto_network_ping_fix_enabled", True))
+        # auto_network_optimize_enabled must also stop WifiRecovery flush loops.
+        # ping-fix alone used to keep flushing every scheduler tick.
+        auto_net_optimize = bool(config.get("auto_network_optimize_enabled", True))
         wifi_fix_due = False
+        wifi_outage = 0.0
         try:
-            from core.wifi_recovery import WifiRecovery
+            wifi_outage = self.recovery_toast_gate.wifi_outage_sec(now.timestamp())
+        except Exception:
+            wifi_outage = 0.0
+        try:
+            from core.wifi_recovery import (
+                WIFI_AUTO_MIN_OUTAGE_SEC,
+                WIFI_AUTO_RECOVERED_COOLDOWN_SEC,
+                WifiRecovery,
+            )
             wifi_fix_due = WifiRecovery.should_trigger_wifi_drop_fix(
                 enabled=ping_fix_enabled,
                 unstable=bool(wifi_snap.get("unstable")),
@@ -136,6 +165,19 @@ class BackgroundScheduler(QObject):
                 unrecovered_repairs=self.wifi_fix_unrecovered,
                 max_unrecovered=self.wifi_fix_max_unrecovered,
                 first_cooldown_sec=wifi_first_cd,
+                auto_network_optimize_enabled=auto_net_optimize,
+                ping_ok=ping_ok_arg,
+                cause=str(wifi_snap.get("cause") or ""),
+                outage_sec=wifi_outage,
+                min_outage_sec=float(config.get(
+                    "auto_network_wifi_fix_min_outage_seconds",
+                    WIFI_AUTO_MIN_OUTAGE_SEC,
+                )),
+                last_recovered_ts=float(self.last_wifi_fix_recovered_ts or 0),
+                recovered_cooldown_sec=float(config.get(
+                    "auto_network_wifi_fix_recovered_cooldown_seconds",
+                    WIFI_AUTO_RECOVERED_COOLDOWN_SEC,
+                )),
             )
         except Exception:
             wifi_fix_due = False
@@ -164,8 +206,15 @@ class BackgroundScheduler(QObject):
         )
         if wifi_fix_due:
             self.last_wifi_fix_trigger = now
-            wifi_outage = self.recovery_toast_gate.wifi_outage_sec(now.timestamp())
-            self.run_auto_wifi_drop_fix(wifi_snap, outage_seconds=wifi_outage)
+            if ping_ok_arg is True:
+                # Ping is already up. Hold the long recovered cooldown immediately
+                # so the 15s timer cannot start another flush before this one returns.
+                self.last_wifi_fix_recovered_ts = now.timestamp()
+            self.run_auto_wifi_drop_fix(
+                wifi_snap,
+                outage_seconds=wifi_outage,
+                ping_ok=ping_ok_arg,
+            )
         elif ping_fix_due:
             self.last_ping_fix_trigger = now
             ping_outage = self.recovery_toast_gate.ping_outage_sec(now.timestamp())
@@ -454,7 +503,7 @@ class BackgroundScheduler(QObject):
 
         threading.Thread(target=_worker, daemon=True, name="MissingPingFix").start()
 
-    def run_auto_wifi_drop_fix(self, wifi_snap=None, outage_seconds: float = 0.0):
+    def run_auto_wifi_drop_fix(self, wifi_snap=None, outage_seconds: float = 0.0, ping_ok=None):
         """
         Tự động sửa Wi-Fi rớt / vòng reconnect (DHCP, SSID, tắt tiết kiệm pin).
         Ưu tiên hơn missing-ping khi cả hai cùng đến hạn.
@@ -470,8 +519,16 @@ class BackgroundScheduler(QObject):
                 result = WifiRecovery.diagnose_and_repair_wifi_drop(
                     apply_dns=False,
                     snapshot=wifi_snap,
+                    automatic=True,
+                    ping_ok=ping_ok,
                 )
                 recovered = bool(result.get("recovered"))
+                try:
+                    ping_after = float(result.get("ping_after") or -1)
+                except (TypeError, ValueError):
+                    ping_after = -1.0
+                if recovered and ping_after > 0:
+                    self.last_wifi_fix_recovered_ts = time.time()
                 if recovered:
                     self.wifi_fix_unrecovered = 0
                     self.ping_fix_unrecovered = 0

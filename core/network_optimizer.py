@@ -755,7 +755,9 @@ class NetworkOptimizer:
         wifi = {"ok": True, "is_wifi": False, "unstable": False, "cause": "ok", "detail": "Không phải Wi-Fi."}
         try:
             from core.wifi_recovery import WifiRecovery
-            wifi = WifiRecovery.detect_wifi_instability(include_events=False, event_text="")
+            wifi = WifiRecovery.detect_wifi_instability(
+                include_events=False, event_text="", ping_ok=ping_ok,
+            )
             wifi.setdefault("detail", wifi.get("cause_label") or "")
             wifi["ok"] = not bool(wifi.get("unstable"))
         except Exception:
